@@ -206,3 +206,46 @@ fn cli_invocation_generates_expected_outputs() {
             .expect("utf8 filename")
     );
 }
+
+#[test]
+fn cli_invocation_infers_library_name_from_library_path_stem() {
+    let fixture = build_bindgen_fixture();
+    let out_dir = unique_out_dir(&fixture.out_dir, "cli-infer-name");
+
+    let target = match fixture_target_os() {
+        core_x::foreign::TargetOs::Macos => "macos",
+        core_x::foreign::TargetOs::Linux => "linux",
+        core_x::foreign::TargetOs::Windows => "windows",
+    };
+
+    let status = Command::new(env!("CARGO_BIN_EXE_corex-bindgen"))
+        .arg("--header")
+        .arg(&fixture.header)
+        .arg("--target-os")
+        .arg(target)
+        .arg("--library-path")
+        .arg(&fixture.dylib)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .status()
+        .expect("spawn cli");
+
+    assert!(status.success(), "cli exited with non-zero status");
+
+    let inferred_name = fixture
+        .dylib
+        .file_stem()
+        .and_then(|v| v.to_str())
+        .expect("fixture dylib stem should be utf8")
+        .to_string();
+    let source_path = out_dir.join(format!("{inferred_name}.cx"));
+    let manifest_path = out_dir.join("corex.foreign.toml");
+    assert!(source_path.exists());
+    assert!(manifest_path.exists());
+
+    let source =
+        fs::read_to_string(&source_path).expect("read generated source");
+    let parsed = parse_foreign_file(&source).expect("parse generated source");
+    assert_eq!(parsed.libraries().len(), 1);
+    assert_eq!(parsed.libraries()[0].library_name(), inferred_name);
+}

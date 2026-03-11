@@ -117,9 +117,8 @@ impl Display for BindgenError {
 impl std::error::Error for BindgenError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::HeaderRead { source, .. } | Self::OutputWrite { source, .. } => {
-                Some(source)
-            }
+            Self::HeaderRead { source, .. }
+            | Self::OutputWrite { source, .. } => Some(source),
             Self::ClangInvocation { .. }
             | Self::UnsupportedDeclaration { .. }
             | Self::UnsupportedType { .. } => None,
