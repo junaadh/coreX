@@ -41,9 +41,9 @@ pub use decl::{
     StructMember, UseItem, UseTree, WhereClause, WherePredicate,
 };
 pub use expr::{
-    ArrayElement, BinaryOp, CallArg, ClosureParam, Expr, MacroExprArgs,
-    MatchArm, MatchArmBody, StringLiteral, StringPart, StructLiteralField,
-    TypeExpr, UnaryOp,
+    ArrayElement, AssignOp, BinaryOp, CallArg, ClosureParam, Expr,
+    MacroExprArgs, MatchArm, MatchArmBody, StringLiteral, StringPart,
+    StructLiteralField, TypeExpr, UnaryOp,
 };
 pub use item::{File, Item};
 pub use pattern::Pattern;

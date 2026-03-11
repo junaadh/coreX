@@ -382,25 +382,44 @@ From lowest precedence to highest precedence:
 | 2 | Range (`..`, `..=`) | left |
 | 3 | Logical OR | left |
 | 4 | Logical AND | left |
-| 5 | Equality | left |
-| 6 | Comparison | left |
-| 7 | Additive (`+`, `-`) | left |
-| 8 | Multiplicative (`*`, `/`, `%`) | left |
-| 9 | Prefix unary (`try`, `!`, `-`, future `&`) | right |
-| 10 | Postfix (`()`, `[]`, `.`, `::`, trailing closure) | left |
-| 11 | Primary | n/a |
+| 5 | Bitwise OR (`|`) | left |
+| 6 | Bitwise XOR (`^`) | left |
+| 7 | Bitwise AND (`&`) | left |
+| 8 | Equality | left |
+| 9 | Comparison | left |
+| 10 | Shift (`<<`, `>>`) | left |
+| 11 | Additive (`+`, `-`) | left |
+| 12 | Multiplicative (`*`, `/`, `%`) | left |
+| 13 | Prefix unary (`try`, `!`, `-`, future `&`) | right |
+| 14 | Postfix (`()`, `[]`, `.`, `::`, trailing closure) | left |
+| 15 | Primary | n/a |
 
 This table is a frontend parsing contract. Operator overloading is intentionally not part of this draft.
 
 ### 13.2 Operators currently assumed by the grammar
 
 ```ebnf
-assignment_op      = "=" ;
+assignment_op      = "="
+                   | "+="
+                   | "-="
+                   | "*="
+                   | "/="
+                   | "%="
+                   | "^="
+                   | "|="
+                   | "&="
+                   | "<<="
+                   | ">>="
+                   ;
 range_op           = ".." | "..=" ;
 logical_or_op      = "||" ;
 logical_and_op     = "&&" ;
+bitwise_or_op      = "|" ;
+bitwise_xor_op     = "^" ;
+bitwise_and_op     = "&" ;
 equality_op        = "==" | "!=" ;
 comparison_op      = "<" | "<=" | ">" | ">=" ;
+shift_op           = "<<" | ">>" ;
 additive_op        = "+" | "-" ;
 multiplicative_op  = "*" | "/" | "%" ;
 prefix_op          = "!" | "-" ;
@@ -427,14 +446,26 @@ range_expr          = logical_or_expr
 logical_or_expr     = logical_and_expr,
                       { logical_or_op, logical_and_expr } ;
 
-logical_and_expr    = equality_expr,
-                      { logical_and_op, equality_expr } ;
+logical_and_expr    = bitwise_or_expr,
+                      { logical_and_op, bitwise_or_expr } ;
+
+bitwise_or_expr     = bitwise_xor_expr,
+                      { bitwise_or_op, bitwise_xor_expr } ;
+
+bitwise_xor_expr    = bitwise_and_expr,
+                      { bitwise_xor_op, bitwise_and_expr } ;
+
+bitwise_and_expr    = equality_expr,
+                      { bitwise_and_op, equality_expr } ;
 
 equality_expr       = comparison_expr,
                       { equality_op, comparison_expr } ;
 
-comparison_expr     = additive_expr,
-                      { comparison_op, additive_expr } ;
+comparison_expr     = shift_expr,
+                      { comparison_op, shift_expr } ;
+
+shift_expr          = additive_expr,
+                      { shift_op, additive_expr } ;
 
 additive_expr       = multiplicative_expr,
                       { additive_op, multiplicative_expr } ;

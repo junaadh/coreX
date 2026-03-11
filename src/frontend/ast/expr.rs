@@ -15,17 +15,38 @@ pub enum UnaryOp {
 pub enum BinaryOp {
     LogicalOr,
     LogicalAnd,
+    BitOr,
+    BitXor,
+    BitAnd,
     Equal,
     NotEqual,
     Less,
     LessEqual,
     Greater,
     GreaterEqual,
+    ShiftLeft,
+    ShiftRight,
     Add,
     Subtract,
     Multiply,
     Divide,
     Remainder,
+}
+
+/// Assignment operator spelling preserved in source AST.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AssignOp {
+    Assign,
+    AddAssign,
+    SubAssign,
+    MulAssign,
+    DivAssign,
+    RemAssign,
+    BitXorAssign,
+    BitOrAssign,
+    BitAndAssign,
+    ShlAssign,
+    ShrAssign,
 }
 
 /// Source string literal preserving interpolation boundaries.
@@ -166,6 +187,8 @@ pub enum Expr {
         rhs: Box<Spanned<Expr>>,
     },
     Assignment {
+        /// Assignment spelling (`=`, `+=`, `<<=`, ...).
+        op: AssignOp,
         target: Box<Spanned<Expr>>,
         value: Box<Spanned<Expr>>,
     },

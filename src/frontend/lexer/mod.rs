@@ -15,6 +15,8 @@
 //! ## Longest-match policy
 //! Lexing applies longest-match for overlapping punctuators:
 //! - `..=` before `..` before `.`
+//! - `<<=` before `<<` before `<`
+//! - `>>=` before `>>` before `>`
 //! - `::` before `:`
 //! - `->` before `-`
 //! - `=>` before `=`
@@ -22,6 +24,16 @@
 //! - `!=` before `!`
 //! - `<=` before `<`
 //! - `>=` before `>`
+//! - `+=` before `+`
+//! - `-=` before `-`
+//! - `*=` before `*`
+//! - `/=` before `/`
+//! - `%=` before `%`
+//! - `^=` before `^`
+//! - `|=` before `|`
+//! - `&=` before `&`
+//! - `&&` before `&`
+//! - `||` before `|`
 //!
 //! Float/range disambiguation rule:
 //! - a `.` starts a float fractional part only when followed by a digit
@@ -87,6 +99,7 @@
 
 pub mod comment;
 pub mod cursor;
+pub mod punct;
 mod token;
 
 pub use comment::{
@@ -94,6 +107,7 @@ pub use comment::{
     consume_line_comment, skip_trivia, skip_whitespace,
 };
 pub use cursor::SourceCursor;
+pub use punct::lex_punct_or_operator;
 pub use token::{
     CommentKind, Keyword, Span, Token, TokenKind, classify_keyword,
     classify_keyword_token,
