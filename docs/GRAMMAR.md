@@ -301,12 +301,13 @@ extern_param       = labeled_param ;
 ### 8.4 Supported Foreign Type Surface (Current Parser)
 
 ```ebnf
-type = "void"
-     | "i32"
-     | "usize"
-     | "*", "const", "void"
-     | "*", "mut", "void"
-     ;
+type         = "void"
+             | "i32"
+             | "usize"
+             | pointer_type
+             ;
+
+pointer_type = "*", [ "mut" ], "void" ;
 ```
 
 Examples:
@@ -314,7 +315,7 @@ Examples:
 ```text
 @call(.C)
 extern libSystem {
-    fn strlen(_ s: *const void) -> usize;
+    fn strlen(_ s: *void) -> usize;
     fn pid = getpid() -> i32;
 }
 ```
@@ -362,7 +363,7 @@ Context rules:
 @call(.C)
 
 extern libSystem {
-    fn strlen(_ s: *const void) -> usize;
+    fn strlen(_ s: *void) -> usize;
 }
 
 let s = @format("value \(x)");
@@ -707,7 +708,7 @@ Semantic notes:
 ```text
 @call(.C)
 extern libSystem {
-    fn strlen(s: *const void) -> usize;
+    fn strlen(s: *void) -> usize;
     fn pid = getpid() -> i32;
 }
 

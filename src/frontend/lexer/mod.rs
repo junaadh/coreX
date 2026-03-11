@@ -59,6 +59,10 @@
 //! `void`) are lexed as ordinary identifiers. Primitive/builtin recognition is
 //! a later semantic step, not a dedicated keyword-token classification.
 //!
+//! Raw pointer type surface is `*T` and `*mut T`. Pointer mutability is
+//! expressed by the existing `mut` token after `*`; there is no `const`
+//! keyword/token in pointer type syntax.
+//!
 //! ## Numeric literal surface
 //! Integer literal spellings include:
 //! - decimal (`123`)
@@ -99,7 +103,11 @@
 
 pub mod comment;
 pub mod cursor;
+pub mod ident;
+pub mod lex;
+pub mod number;
 pub mod punct;
+pub mod string;
 mod token;
 
 pub use comment::{
@@ -107,7 +115,14 @@ pub use comment::{
     consume_line_comment, skip_trivia, skip_whitespace,
 };
 pub use cursor::SourceCursor;
+pub use ident::lex_ident_like;
+pub use lex::{Lexer, LexerError};
+pub use number::lex_number;
 pub use punct::lex_punct_or_operator;
+pub use string::{
+    StringLexError, StringLexMode, lex_char_literal, lex_interpolation_end,
+    lex_string_segment, lex_string_start,
+};
 pub use token::{
     CommentKind, Keyword, Span, Token, TokenKind, classify_keyword,
     classify_keyword_token,

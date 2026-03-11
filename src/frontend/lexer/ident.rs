@@ -1,0 +1,203 @@
+//! Identifier-like lexing for the `coreX` frontend.
+//!
+//! This layer lexes:
+//! - ordinary identifiers
+//! - reserved keywords (via existing keyword classification helpers)
+//! - closure shorthand params (`$0`, `$1`, ...)
+//!
+//! Builtin primitive type names remain ordinary identifiers lexically.
+//! They are recognized as builtins in later semantic analysis.
+
+use super::{SourceCursor, Token, TokenKind, classify_keyword_token};
+
+/// Lexes one identifier-like token at the current cursor position.
+///
+/// This function returns:
+/// - keyword token kinds for reserved keyword spellings
+/// - [`TokenKind::Ident`] for non-keyword identifiers
+/// - [`TokenKind::ClosureShorthandParam`] for `$` followed by one or more
+///   ASCII digits
+///
+/// Returns `None` without consuming input when current position is not
+/// identifier-like for this layer.
+#[must_use]
+pub fn lex_ident_like(cursor: &mut SourceCursor<'_>) -> Option<Token> {
+    if let Some(token) = lex_closure_shorthand_param(cursor) {
+        return Some(token);
+    }
+
+    let first = cursor.peek()?;
+    if !is_ident_start(first) {
+        return None;
+    }
+
+    let start = cursor.mark();
+    let _ = cursor.bump();
+    cursor.eat_while(is_ident_continue);
+
+    let spelling = cursor.slice_from(start);
+    let kind = classify_keyword_token(spelling).unwrap_or(TokenKind::Ident);
+    Some(Token::new(kind, cursor.current_span_from(start)))
+}
+
+fn lex_closure_shorthand_param(cursor: &mut SourceCursor<'_>) -> Option<Token> {
+    if cursor.peek() != Some('$') {
+        return None;
+    }
+    let Some(next) = cursor.peek_next() else {
+        return None;
+    };
+    if !next.is_ascii_digit() {
+        return None;
+    }
+
+    let start = cursor.mark();
+    let _ = cursor.bump();
+    cursor.eat_while(|ch| ch.is_ascii_digit());
+    Some(Token::new(
+        TokenKind::ClosureShorthandParam,
+        cursor.current_span_from(start),
+    ))
+}
+
+fn is_ident_start(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphabetic()
+}
+
+fn is_ident_continue(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphanumeric()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lex_plain_identifier() {
+        let mut cursor = SourceCursor::new("hello");
+        let token = lex_ident_like(&mut cursor).expect("identifier");
+        assert_eq!(token.kind, TokenKind::Ident);
+        assert_eq!(token.span.start, 0);
+        assert_eq!(token.span.end, 5);
+    }
+
+    #[test]
+    fn lex_identifier_with_underscore_and_digits() {
+        let mut cursor = SourceCursor::new("_foo123");
+        let token = lex_ident_like(&mut cursor).expect("identifier");
+        assert_eq!(token.kind, TokenKind::Ident);
+        assert_eq!(token.span.start, 0);
+        assert_eq!(token.span.end, 7);
+    }
+
+    #[test]
+    fn classifies_reserved_keywords() {
+        let cases = [
+            ("fn", TokenKind::KwFn),
+            ("struct", TokenKind::KwStruct),
+            ("self", TokenKind::KwSelfValue),
+            ("Self", TokenKind::KwSelfType),
+            ("try", TokenKind::KwTry),
+            ("return", TokenKind::KwReturn),
+        ];
+
+        for (input, expected) in cases {
+            let mut cursor = SourceCursor::new(input);
+            let token = lex_ident_like(&mut cursor).expect("keyword");
+            assert_eq!(token.kind, expected, "input: {input}");
+            assert_eq!(token.span.start, 0, "input: {input}");
+            assert_eq!(token.span.end, input.len(), "input: {input}");
+        }
+    }
+
+    #[test]
+    fn builtin_primitive_type_names_remain_identifiers() {
+        for input in ["u8", "i32", "f64", "bool", "char", "string", "void"] {
+            let mut cursor = SourceCursor::new(input);
+            let token = lex_ident_like(&mut cursor).expect("identifier");
+            assert_eq!(token.kind, TokenKind::Ident, "input: {input}");
+            assert_eq!(token.span.start, 0, "input: {input}");
+            assert_eq!(token.span.end, input.len(), "input: {input}");
+        }
+    }
+
+    #[test]
+    fn lex_closure_shorthand_param_single_digit() {
+        let mut cursor = SourceCursor::new("$0");
+        let token = lex_ident_like(&mut cursor).expect("shorthand");
+        assert_eq!(token.kind, TokenKind::ClosureShorthandParam);
+        assert!(cursor.is_eof());
+    }
+
+    #[test]
+    fn lex_closure_shorthand_param_multi_digit() {
+        let mut cursor = SourceCursor::new("$12");
+        let token = lex_ident_like(&mut cursor).expect("shorthand");
+        assert_eq!(token.kind, TokenKind::ClosureShorthandParam);
+        assert_eq!(token.span.start, 0);
+        assert_eq!(token.span.end, 3);
+        assert!(cursor.is_eof());
+    }
+
+    #[test]
+    fn closure_shorthand_stops_before_identifier_tail() {
+        let mut cursor = SourceCursor::new("$0abc");
+        let token = lex_ident_like(&mut cursor).expect("shorthand");
+        assert_eq!(token.kind, TokenKind::ClosureShorthandParam);
+        assert_eq!(token.span.start, 0);
+        assert_eq!(token.span.end, 2);
+        assert_eq!(cursor.remaining(), "abc");
+    }
+
+    #[test]
+    fn returns_none_without_consuming_for_non_ident_start() {
+        for input in ["1abc", "(", ".."] {
+            let mut cursor = SourceCursor::new(input);
+            let start = cursor.offset();
+            let token = lex_ident_like(&mut cursor);
+            assert!(token.is_none(), "input: {input}");
+            assert_eq!(cursor.offset(), start, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn returns_none_without_consuming_for_invalid_dollar_forms() {
+        for input in ["$", "$x"] {
+            let mut cursor = SourceCursor::new(input);
+            let start = cursor.offset();
+            let token = lex_ident_like(&mut cursor);
+            assert!(token.is_none(), "input: {input}");
+            assert_eq!(cursor.offset(), start, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn returned_span_matches_consumed_bytes() {
+        let mut ident = SourceCursor::new("hello1 ");
+        let ident_token = lex_ident_like(&mut ident).expect("identifier");
+        assert_eq!(ident_token.kind, TokenKind::Ident);
+        assert_eq!(ident_token.span.start, 0);
+        assert_eq!(ident_token.span.end, 6);
+
+        let mut keyword = SourceCursor::new("return;");
+        let keyword_token = lex_ident_like(&mut keyword).expect("keyword");
+        assert_eq!(keyword_token.kind, TokenKind::KwReturn);
+        assert_eq!(keyword_token.span.start, 0);
+        assert_eq!(keyword_token.span.end, 6);
+
+        let mut shorthand = SourceCursor::new("$12x");
+        let shorthand_token =
+            lex_ident_like(&mut shorthand).expect("shorthand");
+        assert_eq!(shorthand_token.kind, TokenKind::ClosureShorthandParam);
+        assert_eq!(shorthand_token.span.start, 0);
+        assert_eq!(shorthand_token.span.end, 3);
+    }
+
+    #[test]
+    fn identifier_does_not_classify_prefix_keyword() {
+        let mut cursor = SourceCursor::new("fnName");
+        let token = lex_ident_like(&mut cursor).expect("identifier");
+        assert_eq!(token.kind, TokenKind::Ident);
+        assert!(cursor.is_eof());
+    }
+}
