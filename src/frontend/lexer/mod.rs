@@ -85,8 +85,15 @@
 //! - `.` is lexical; shorthand member (`.variant`) vs member access
 //!   (`value.member`) is parser-contextual.
 
+pub mod comment;
+pub mod cursor;
 mod token;
 
+pub use comment::{
+    Comment, CommentError, consume_block_comment, consume_comment,
+    consume_line_comment, skip_trivia, skip_whitespace,
+};
+pub use cursor::SourceCursor;
 pub use token::{
     CommentKind, Keyword, Span, Token, TokenKind, classify_keyword,
     classify_keyword_token,
