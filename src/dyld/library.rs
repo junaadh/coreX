@@ -83,10 +83,12 @@ impl Library {
         Ok(RawSymbol::from_ptr(addr))
     }
 
+    #[must_use]
     pub fn as_ptr(&self) -> *mut c_void {
         self.handle
     }
 
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -126,8 +128,8 @@ impl Drop for Library {
 fn path_to_cstring(path: &Path) -> Result<CString, DlError> {
     #[cfg(target_family = "unix")]
     {
-        return CString::new(path.as_os_str().as_bytes())
-            .map_err(|_| DlError::InteriorNul { what: "path" });
+        CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| DlError::InteriorNul { what: "path" })
     }
 
     #[cfg(not(target_family = "unix"))]
@@ -140,7 +142,7 @@ fn path_to_cstring(path: &Path) -> Result<CString, DlError> {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
+    use std::ffi::{CString, OsString, c_char};
     use std::os::unix::ffi::OsStringExt;
     use std::path::PathBuf;
 
@@ -149,6 +151,10 @@ mod tests {
         "/System/Library/Frameworks/Foundation.framework/Foundation";
     const BAD_LIBRARY_PATH: &str =
         "/definitely/not/a/real/library/path/libnope.dylib";
+
+    type PutsFn = unsafe extern "C" fn(*const c_char) -> i32;
+    type StrlenFn = unsafe extern "C" fn(*const c_char) -> usize;
+    type GetPidFn = unsafe extern "C" fn() -> i32;
 
     #[test]
     fn open_known_system_library() {
@@ -220,5 +226,47 @@ mod tests {
         let framework = Library::open(FOUNDATION_PATH)
             .expect("Foundation framework should open");
         assert!(!framework.as_ptr().is_null());
+    }
+
+    #[test]
+    fn call_puts_smoke_test() {
+        let lib = Library::open(LIBSYSTEM_PATH).expect("libSystem should open");
+        let puts = lib.symbol("puts").expect("puts should resolve");
+
+        // Safety: test uses the known libc signature for `puts` and keeps `lib` alive.
+        let puts_fn: PutsFn = unsafe { puts.cast() };
+        let msg = CString::new("dyld smoke test: puts")
+            .expect("CString literal has no NUL");
+
+        // Safety: `msg` is a valid C string pointer for the duration of the call.
+        let rc = unsafe { puts_fn(msg.as_ptr()) };
+        assert!(rc >= 0);
+    }
+
+    #[test]
+    fn call_strlen_smoke_test() {
+        let lib = Library::open(LIBSYSTEM_PATH).expect("libSystem should open");
+        let strlen = lib.symbol("strlen").expect("strlen should resolve");
+
+        // Safety: test uses the known libc signature for `strlen` and keeps `lib` alive.
+        let strlen_fn: StrlenFn = unsafe { strlen.cast() };
+        let input = CString::new("hello").expect("CString literal has no NUL");
+
+        // Safety: `input` is a valid C string pointer for the duration of the call.
+        let len = unsafe { strlen_fn(input.as_ptr()) };
+        assert_eq!(len, 5);
+    }
+
+    #[test]
+    fn call_getpid_smoke_test() {
+        let lib = Library::open(LIBSYSTEM_PATH).expect("libSystem should open");
+        let getpid = lib.symbol("getpid").expect("getpid should resolve");
+
+        // Safety: test uses the known libc signature for `getpid` and keeps `lib` alive.
+        let getpid_fn: GetPidFn = unsafe { getpid.cast() };
+
+        // Safety: `getpid` takes no arguments and is safe to invoke in-process.
+        let pid = unsafe { getpid_fn() };
+        assert!(pid > 0);
     }
 }
