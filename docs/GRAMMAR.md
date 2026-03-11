@@ -25,11 +25,50 @@ ident_continue  = "_" | letter | digit ;
 ### 2.2 Literals
 
 ```ebnf
-integer_literal = digit, { digit } ;
-string_literal  = '"', { string_char | interpolation }, '"' ;
-interpolation   = "\\(", expr, ")" ;
-boolean_literal = "true" | "false" ;
+literal            = integer_literal
+                   | float_literal
+                   | char_literal
+                   | string_literal
+                   | boolean_literal
+                   ;
+
+integer_literal    = dec_integer
+                   | hex_integer
+                   | oct_integer
+                   | legacy_oct_integer
+                   ;
+
+dec_integer        = digit, { digit_or_sep } , [ integer_suffix ] ;
+hex_integer        = "0x", hex_digit, { hex_digit_or_sep } , [ integer_suffix ] ;
+oct_integer        = "0o", oct_digit, { oct_digit_or_sep } , [ integer_suffix ] ;
+legacy_oct_integer = "0", oct_digit, { oct_digit_or_sep } , [ integer_suffix ] ;
+
+float_literal      = dec_integer_no_suffix, ".", digit, { digit_or_sep }, [ exponent_part ]
+                   | dec_integer_no_suffix, exponent_part
+                   ;
+
+dec_integer_no_suffix = digit, { digit_or_sep } ;
+
+exponent_part      = ("e" | "E"), [ "+" | "-" ], digit, { digit_or_sep } ;
+
+integer_suffix     = primitive_int_type
+                   | "_", primitive_int_type
+                   ;
+
+char_literal       = "'", char_content, "'" ;
+string_literal     = '"', { string_char | interpolation }, '"' ;
+interpolation      = "\\(", expr, ")" ;
+boolean_literal    = "true" | "false" ;
 ```
+
+Literal notes:
+
+- Numeric literals allow `_` separators in integer and float spellings.
+- Supported integer examples: `123`, `0x7A`, `0o65`, `044`, `87u8`, `87_u8`.
+- Supported float examples: `1.25`, `1e9`, `1.0e-3`, `2E+10`.
+- A dot starts the fractional part of a float only when followed by a digit; this avoids conflict with range operators.
+- `.5` and `1.` are not part of this literal surface.
+- `string` values are UTF-8 throughout the language.
 
 ### 2.3 Whitespace and Comments
 
@@ -221,6 +260,16 @@ impl_body             = "{", { impl_member }, "}" ;
 impl_member           = init_decl | fn_decl ;
 ```
 
+### 7.4 Builtin primitive type names
+
+Builtin primitive type names are recognized semantically as predefined types
+while remaining ordinary identifier-shaped names in source:
+
+- `u8`, `u16`, `u32`, `u64`, `usize`
+- `i8`, `i16`, `i32`, `i64`, `isize`
+- `f32`, `f64`
+- `bool`, `char`, `string`, `void`
+
 ## 8. Foreign Declarations
 
 ### 8.1 Extern Block
@@ -407,6 +456,10 @@ Range examples:
 - `1..=2`
 - `1..`
 - `..10`
+- `1.0..2.0`
+- `1.0..=2.0`
+
+Range operands are expressions, so both integer and float endpoints are valid.
 
 ### 13.4 Postfix expressions
 
