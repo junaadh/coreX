@@ -16,6 +16,7 @@ mod library;
 mod manifest;
 mod parse;
 
+pub use crate::ffi::ForeignCallConv;
 pub use decl::{
     ForeignFunctionDecl, ForeignLibraryDecl, LoweringError,
     lower_foreign_library_decl, validate_foreign_library_decl,

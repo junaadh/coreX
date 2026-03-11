@@ -1,4 +1,4 @@
-use super::{CallError, NativeType, Signature, Value};
+use super::{CallError, ForeignCallConv, NativeType, Signature, Value};
 use crate::dyld::RawSymbol;
 use core::ffi::c_void;
 use libffi::middle::{Arg, Cif, CodePtr, Type};
@@ -17,6 +17,7 @@ enum ArgStorage {
 /// This type does not own a callee symbol. A symbol is provided at call-time.
 pub struct PreparedCall {
     signature: Signature,
+    call_conv: ForeignCallConv,
     cif: Cif,
 }
 
@@ -24,24 +25,52 @@ impl std::fmt::Debug for PreparedCall {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PreparedCall")
             .field("signature", &self.signature)
+            .field("call_conv", &self.call_conv)
             .finish_non_exhaustive()
     }
 }
 
 impl PreparedCall {
-    /// Validates and prepares reusable call metadata from `signature`.
+    /// Validates and prepares reusable call metadata from `signature` using
+    /// the default foreign call convention.
     ///
     /// # Errors
     /// Returns [`CallError::UnsupportedType`] when the signature contains
     /// unsupported argument types.
     pub fn new(signature: Signature) -> Result<Self, CallError> {
+        Self::new_with_call_conv(signature, ForeignCallConv::default_foreign())
+    }
+
+    /// Validates and prepares reusable call metadata from `signature` and
+    /// explicit foreign calling-convention metadata.
+    ///
+    /// The current runtime behavior supports C calling convention only.
+    ///
+    /// # Errors
+    /// Returns [`CallError::UnsupportedType`] when the signature contains
+    /// unsupported argument types.
+    pub fn new_with_call_conv(
+        signature: Signature,
+        call_conv: ForeignCallConv,
+    ) -> Result<Self, CallError> {
         let cif = prepare_cif(&signature)?;
-        Ok(Self { signature, cif })
+        Ok(Self {
+            signature,
+            call_conv,
+            cif,
+        })
     }
 
     #[must_use]
     pub fn signature(&self) -> &Signature {
         &self.signature
+    }
+
+    #[must_use]
+    /// Returns the explicit resolved foreign calling convention for this
+    /// prepared call metadata.
+    pub fn call_conv(&self) -> ForeignCallConv {
+        self.call_conv
     }
 
     /// Invokes `symbol` using this prepared call metadata.
@@ -114,7 +143,10 @@ pub fn call_symbol(
     sig: &Signature,
     args: &[Value],
 ) -> Result<Value, CallError> {
-    let prepared = PreparedCall::new(sig.clone())?;
+    let prepared = PreparedCall::new_with_call_conv(
+        sig.clone(),
+        ForeignCallConv::default_foreign(),
+    )?;
     call_prepared(&prepared, symbol, args)
 }
 
@@ -244,6 +276,7 @@ fn call_with_cif(
 mod tests {
     use super::*;
     use crate::dyld::Library;
+    use crate::ffi::ForeignCallConv;
     use std::ffi::CString;
 
     const LIBSYSTEM_PATH: &str = "/usr/lib/libSystem.B.dylib";
@@ -254,6 +287,17 @@ mod tests {
         let prepared =
             PreparedCall::new(sig.clone()).expect("prepare should succeed");
         assert_eq!(prepared.signature(), &sig);
+        assert_eq!(prepared.call_conv(), ForeignCallConv::C);
+    }
+
+    #[test]
+    fn prepared_call_carries_explicit_call_conv() {
+        let prepared = PreparedCall::new_with_call_conv(
+            Signature::new(vec![], NativeType::I32),
+            ForeignCallConv::C,
+        )
+        .expect("prepare should succeed");
+        assert_eq!(prepared.call_conv(), ForeignCallConv::C);
     }
 
     #[test]

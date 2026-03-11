@@ -2,7 +2,7 @@ use super::decl::{
     ForeignFunctionDecl, ForeignLibraryDecl, LoweringError,
     validate_foreign_library_decl,
 };
-use crate::ffi::{NativeType, Signature};
+use crate::ffi::{ForeignCallConv, NativeType, Signature};
 use std::fmt::{Display, Formatter};
 use std::path::PathBuf;
 
@@ -274,13 +274,23 @@ pub fn parse_foreign_file(
 /// Source syntax omits runtime library paths, so lowering requires an explicit
 /// `library_path` argument.
 ///
+/// Lowering resolves call-convention attributes with precedence:
+/// function-level overrides block-level, block-level overrides default, and the
+/// default foreign calling convention is C.
+///
 /// # Errors
 /// Returns [`LoweringError`] if the lowered normalized declaration fails
-/// structural validation.
+/// structural validation, or if duplicate call-convention attributes are
+/// present on one block/function item.
 pub fn lower_parsed_foreign_library_decl(
     parsed: &ParsedForeignLibraryDecl,
     library_path: impl Into<PathBuf>,
 ) -> Result<ForeignLibraryDecl, LoweringError> {
+    let block_call_conv =
+        resolve_block_call_conv(parsed.attributes(), parsed.library_name())?;
+    let default_call_conv =
+        block_call_conv.unwrap_or(ForeignCallConv::default_foreign());
+
     let functions = parsed
         .functions
         .iter()
@@ -292,22 +302,71 @@ pub fn lower_parsed_foreign_library_decl(
                 .collect::<Vec<_>>();
             let ret = map_source_type(function.ret_type);
             let signature = Signature::new(params, ret);
+            let function_call_conv = resolve_function_call_conv(
+                function.attributes(),
+                function.local_name(),
+            )?;
+            let resolved_call_conv = function_call_conv
+                .or(block_call_conv)
+                .unwrap_or(ForeignCallConv::default_foreign());
 
-            ForeignFunctionDecl::new(
+            Ok(ForeignFunctionDecl::with_call_conv(
                 function.local_name.clone(),
                 function.symbol_name.clone(),
                 signature,
-            )
+                resolved_call_conv,
+            ))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, LoweringError>>()?;
 
-    let lowered = ForeignLibraryDecl::new(
+    let lowered = ForeignLibraryDecl::with_default_call_conv(
         parsed.library_name.clone(),
         library_path,
+        default_call_conv,
         functions,
     );
     validate_foreign_library_decl(&lowered)?;
     Ok(lowered)
+}
+
+fn resolve_block_call_conv(
+    attrs: &[Attribute],
+    library_name: &str,
+) -> Result<Option<ForeignCallConv>, LoweringError> {
+    resolve_call_conv(attrs, format!("library `{library_name}`"))
+}
+
+fn resolve_function_call_conv(
+    attrs: &[Attribute],
+    function_name: &str,
+) -> Result<Option<ForeignCallConv>, LoweringError> {
+    resolve_call_conv(attrs, format!("function `{function_name}`"))
+}
+
+fn resolve_call_conv(
+    attrs: &[Attribute],
+    context: String,
+) -> Result<Option<ForeignCallConv>, LoweringError> {
+    let mut conv = None;
+    for attr in attrs {
+        match attr {
+            Attribute::Call(source_conv) => {
+                if conv.is_some() {
+                    return Err(LoweringError::DuplicateCallConvAttribute {
+                        context,
+                    });
+                }
+                conv = Some(map_source_call_conv(*source_conv));
+            }
+        }
+    }
+    Ok(conv)
+}
+
+fn map_source_call_conv(source: CallConv) -> ForeignCallConv {
+    match source {
+        CallConv::C => ForeignCallConv::C,
+    }
 }
 
 fn map_source_type(ty: SourceForeignType) -> NativeType {
@@ -669,7 +728,7 @@ fn is_ident_continue(ch: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::{NativeType, Value};
+    use crate::ffi::{ForeignCallConv, NativeType, Value};
     use crate::foreign::lower_foreign_library_decl;
     use std::ffi::CString;
     use std::path::Path;
@@ -911,6 +970,121 @@ extern sqlite3 {
                 expected: "extern",
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn lower_defaults_to_c_call_conv_when_no_attributes_present() {
+        let parsed = parse_foreign_library_decl(
+            r"
+extern libSystem {
+    fn getpid() -> i32;
+}
+",
+        )
+        .expect("parse source");
+
+        let lowered = lower_parsed_foreign_library_decl(
+            &parsed,
+            "/usr/lib/libSystem.B.dylib",
+        )
+        .expect("lower source");
+
+        assert_eq!(lowered.default_call_conv(), ForeignCallConv::C);
+        assert_eq!(lowered.functions()[0].call_conv(), ForeignCallConv::C);
+    }
+
+    #[test]
+    fn lower_uses_block_call_conv_when_function_has_none() {
+        let parsed = parse_foreign_library_decl(
+            r"
+@call(.C)
+extern libSystem {
+    fn getpid() -> i32;
+}
+",
+        )
+        .expect("parse source");
+
+        let lowered = lower_parsed_foreign_library_decl(
+            &parsed,
+            "/usr/lib/libSystem.B.dylib",
+        )
+        .expect("lower source");
+
+        assert_eq!(lowered.default_call_conv(), ForeignCallConv::C);
+        assert_eq!(lowered.functions()[0].call_conv(), ForeignCallConv::C);
+    }
+
+    #[test]
+    fn lower_function_call_conv_overrides_block_call_conv() {
+        let parsed = parse_foreign_library_decl(
+            r"
+@call(.C)
+extern libSystem {
+    @call(.C)
+    fn getpid() -> i32;
+}
+",
+        )
+        .expect("parse source");
+
+        let lowered = lower_parsed_foreign_library_decl(
+            &parsed,
+            "/usr/lib/libSystem.B.dylib",
+        )
+        .expect("lower source");
+
+        assert_eq!(lowered.functions()[0].call_conv(), ForeignCallConv::C);
+    }
+
+    #[test]
+    fn duplicate_block_call_conv_attribute_is_rejected() {
+        let parsed = parse_foreign_library_decl(
+            r"
+@call(.C)
+@call(.C)
+extern libSystem {
+    fn getpid() -> i32;
+}
+",
+        )
+        .expect("parse source");
+
+        let err = lower_parsed_foreign_library_decl(
+            &parsed,
+            "/usr/lib/libSystem.B.dylib",
+        )
+        .expect_err("duplicate block call-conv should fail");
+
+        assert!(matches!(
+            err,
+            LoweringError::DuplicateCallConvAttribute { .. }
+        ));
+    }
+
+    #[test]
+    fn duplicate_function_call_conv_attribute_is_rejected() {
+        let parsed = parse_foreign_library_decl(
+            r"
+extern libSystem {
+    @call(.C)
+    @call(.C)
+    fn getpid() -> i32;
+}
+",
+        )
+        .expect("parse source");
+
+        let err = lower_parsed_foreign_library_decl(
+            &parsed,
+            "/usr/lib/libSystem.B.dylib",
+        )
+        .expect_err("duplicate function call-conv should fail");
+
+        assert!(matches!(
+            err,
+            LoweringError::DuplicateCallConvAttribute { .. }
         ));
     }
 

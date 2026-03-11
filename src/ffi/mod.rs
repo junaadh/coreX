@@ -4,7 +4,8 @@
 //! - [`NativeType`] describes native argument/return types at runtime.
 //! - [`Value`] carries runtime values for those types.
 //! - [`Signature`] declares parameter and return layout.
-//! - [`PreparedCall`] stores reusable libffi metadata for a fixed signature.
+//! - [`ForeignCallConv`] describes resolved foreign calling convention metadata.
+//! - [`PreparedCall`] stores reusable libffi metadata for a fixed signature and call convention.
 //! - [`call_symbol`] performs preflight validation and dynamic invocation.
 //! - [`call_prepared`] reuses prepared call metadata for repeated invocations.
 //!
@@ -33,12 +34,14 @@
 //! string/object bridging.
 
 mod call;
+mod call_conv;
 mod error;
 mod signature;
 mod types;
 mod value;
 
 pub use call::{PreparedCall, call_prepared, call_symbol};
+pub use call_conv::ForeignCallConv;
 pub use error::CallError;
 pub use signature::Signature;
 pub use types::NativeType;

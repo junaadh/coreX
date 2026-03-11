@@ -1,6 +1,6 @@
 use super::{ForeignError, ForeignFunction};
 use crate::dyld::{DlError, Library};
-use crate::ffi::Signature;
+use crate::ffi::{ForeignCallConv, Signature};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -51,7 +51,30 @@ impl ForeignLibrary {
         symbol_name: impl Into<String>,
         signature: Signature,
     ) -> Result<ForeignFunction, ForeignError> {
-        ForeignFunction::new(self.library.clone(), symbol_name, signature)
+        self.declare_with_call_conv(
+            symbol_name,
+            signature,
+            ForeignCallConv::default_foreign(),
+        )
+    }
+
+    /// Declares a reusable foreign function with explicit call-convention
+    /// metadata.
+    ///
+    /// # Errors
+    /// Returns [`ForeignError`] when declaration fails.
+    pub fn declare_with_call_conv(
+        &self,
+        symbol_name: impl Into<String>,
+        signature: Signature,
+        call_conv: ForeignCallConv,
+    ) -> Result<ForeignFunction, ForeignError> {
+        ForeignFunction::new_with_call_conv(
+            self.library.clone(),
+            symbol_name,
+            signature,
+            call_conv,
+        )
     }
 
     /// Declares and stores a reusable foreign function in this library instance.
@@ -72,7 +95,12 @@ impl ForeignLibrary {
         signature: Signature,
     ) -> Result<(), ForeignError> {
         let symbol_name = symbol_name.into();
-        self.register_decl(symbol_name.clone(), symbol_name, signature)
+        self.register_decl_with_call_conv(
+            symbol_name.clone(),
+            symbol_name,
+            signature,
+            ForeignCallConv::default_foreign(),
+        )
     }
 
     /// Declares and stores a function with explicit local and native symbol names.
@@ -91,10 +119,37 @@ impl ForeignLibrary {
         symbol_name: impl Into<String>,
         signature: Signature,
     ) -> Result<(), ForeignError> {
+        self.register_decl_with_call_conv(
+            local_name,
+            symbol_name,
+            signature,
+            ForeignCallConv::default_foreign(),
+        )
+    }
+
+    /// Declares and stores a function with explicit local/native names and
+    /// explicit resolved call-convention metadata.
+    ///
+    /// # Errors
+    /// Returns:
+    /// - [`ForeignError::DuplicateDeclaration`] when `local_name` is already
+    ///   registered in this instance.
+    /// - any declaration error returned by [`ForeignFunction::new_with_call_conv`].
+    pub fn register_decl_with_call_conv(
+        &mut self,
+        local_name: impl Into<String>,
+        symbol_name: impl Into<String>,
+        signature: Signature,
+        call_conv: ForeignCallConv,
+    ) -> Result<(), ForeignError> {
         let local_name = local_name.into();
         let symbol_name = symbol_name.into();
-        let function =
-            ForeignFunction::new(self.library.clone(), symbol_name, signature)?;
+        let function = ForeignFunction::new_with_call_conv(
+            self.library.clone(),
+            symbol_name,
+            signature,
+            call_conv,
+        )?;
 
         match self.functions.entry(local_name.clone()) {
             std::collections::btree_map::Entry::Vacant(slot) => {
@@ -131,7 +186,7 @@ impl std::fmt::Debug for ForeignLibrary {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
-    use crate::ffi::{NativeType, Value};
+    use crate::ffi::{ForeignCallConv, NativeType, Value};
     use std::ffi::CString;
 
     const LIBSYSTEM_PATH: &str = "/usr/lib/libSystem.B.dylib";
@@ -142,6 +197,7 @@ mod tests {
         let getpid = lib
             .declare("getpid", Signature::new(vec![], NativeType::I32))
             .expect("declare getpid");
+        assert_eq!(getpid.call_conv(), ForeignCallConv::C);
 
         let result = getpid.call(&[]).expect("call getpid");
         match result {

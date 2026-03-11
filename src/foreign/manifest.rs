@@ -447,7 +447,7 @@ fn validate_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::Value;
+    use crate::ffi::{ForeignCallConv, Value};
     use crate::foreign::{
         lower_foreign_library_decl, parse_foreign_file,
         parse_foreign_library_decl,
@@ -886,6 +886,41 @@ macos = "/usr/lib/libSystem.B.dylib"
         assert_eq!(lowered[1].library_name(), "libSystem");
     }
 
+    #[test]
+    fn parse_file_manifest_lower_preserves_call_conv_per_block() {
+        let parsed = parse_foreign_file(
+            r"
+@call(.C)
+extern libSystem {
+    fn getpid() -> i32;
+}
+
+extern libSystem {
+    fn strlen(s: *const void) -> usize;
+}
+",
+        )
+        .expect("file should parse");
+        let manifest = ForeignLibraryManifest::from_toml_str(
+            r#"
+[libraries.libSystem]
+macos = "/usr/lib/libSystem.B.dylib"
+"#,
+        )
+        .expect("manifest should parse");
+
+        let lowered = lower_parsed_foreign_file_with_manifest(
+            &parsed,
+            &manifest,
+            TargetOs::Macos,
+        )
+        .expect("file lowering should succeed");
+
+        assert_eq!(lowered.len(), 2);
+        assert_eq!(lowered[0].functions()[0].call_conv(), ForeignCallConv::C);
+        assert_eq!(lowered[1].functions()[0].call_conv(), ForeignCallConv::C);
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn parse_file_lower_runtime_integration_for_multiple_blocks() {
@@ -946,6 +981,58 @@ macos = "/usr/lib/libSystem.B.dylib"
         }
         match puts_result {
             Value::I32(rc) => assert!(rc >= 0),
+            other => panic!("expected Value::I32, got {other:?}"),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn runtime_integration_still_works_with_explicit_call_conv_metadata() {
+        let parsed = parse_foreign_library_decl(
+            r"
+@call(.C)
+extern libSystem {
+    fn strlen(s: *const void) -> usize;
+    fn pid = getpid() -> i32;
+}
+",
+        )
+        .expect("source should parse");
+        let manifest = ForeignLibraryManifest::from_toml_str(
+            r#"
+[libraries.libSystem]
+macos = "/usr/lib/libSystem.B.dylib"
+"#,
+        )
+        .expect("manifest should parse");
+
+        let decl = lower_parsed_foreign_library_decl_with_manifest(
+            &parsed,
+            &manifest,
+            TargetOs::Macos,
+        )
+        .expect("manifest lowering should succeed");
+
+        assert_eq!(decl.functions()[0].call_conv(), ForeignCallConv::C);
+        assert_eq!(decl.functions()[1].call_conv(), ForeignCallConv::C);
+
+        let runtime = lower_foreign_library_decl(&decl)
+            .expect("runtime lowering should succeed");
+        let strlen = runtime.function("strlen").expect("lookup strlen");
+        let pid = runtime.function("pid").expect("lookup pid");
+
+        let input = CString::new("hello").expect("literal contains no NUL");
+        let strlen_result = strlen
+            .call(&[Value::from_c_string(&input)])
+            .expect("call strlen");
+        let pid_result = pid.call(&[]).expect("call pid");
+
+        match strlen_result {
+            Value::USize(length) => assert_eq!(length, 5),
+            other => panic!("expected Value::USize, got {other:?}"),
+        }
+        match pid_result {
+            Value::I32(pid) => assert!(pid > 0),
             other => panic!("expected Value::I32, got {other:?}"),
         }
     }

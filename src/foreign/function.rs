@@ -1,6 +1,8 @@
 use super::ForeignError;
 use crate::dyld::{Library, RawSymbol};
-use crate::ffi::{PreparedCall, Signature, Value, call_prepared};
+use crate::ffi::{
+    ForeignCallConv, PreparedCall, Signature, Value, call_prepared,
+};
 use std::sync::Arc;
 
 /// Declared foreign function with eager symbol resolution and prepared call metadata.
@@ -14,12 +16,13 @@ pub struct ForeignFunction {
     library: Arc<Library>,
     symbol_name: String,
     symbol: RawSymbol,
+    call_conv: ForeignCallConv,
     prepared: PreparedCall,
 }
 
 impl ForeignFunction {
     /// Declares a foreign function by preparing call metadata and eagerly
-    /// resolving `symbol_name`.
+    /// resolving `symbol_name` with default foreign calling convention metadata.
     ///
     /// # Errors
     /// Returns:
@@ -31,12 +34,33 @@ impl ForeignFunction {
         symbol_name: impl Into<String>,
         signature: Signature,
     ) -> Result<Self, ForeignError> {
+        Self::new_with_call_conv(
+            library,
+            symbol_name,
+            signature,
+            ForeignCallConv::default_foreign(),
+        )
+    }
+
+    /// Declares a foreign function with explicit resolved calling-convention
+    /// metadata.
+    ///
+    /// # Errors
+    /// Returns:
+    /// - [`ForeignError::InvalidSignature`] when the declaration signature
+    ///   cannot be prepared for invocation.
+    /// - [`ForeignError::SymbolResolve`] when symbol resolution fails.
+    pub fn new_with_call_conv(
+        library: Arc<Library>,
+        symbol_name: impl Into<String>,
+        signature: Signature,
+        call_conv: ForeignCallConv,
+    ) -> Result<Self, ForeignError> {
         let symbol_name = symbol_name.into();
-        let prepared = PreparedCall::new(signature).map_err(|source| {
-            ForeignError::InvalidSignature {
-                symbol: symbol_name.clone(),
-                message: source.to_string(),
-            }
+        let prepared = PreparedCall::new_with_call_conv(signature, call_conv)
+            .map_err(|source| ForeignError::InvalidSignature {
+            symbol: symbol_name.clone(),
+            message: source.to_string(),
         })?;
 
         let symbol = library.symbol(&symbol_name).map_err(|source| {
@@ -50,6 +74,7 @@ impl ForeignFunction {
             library,
             symbol_name,
             symbol,
+            call_conv,
             prepared,
         })
     }
@@ -82,6 +107,13 @@ impl ForeignFunction {
     pub fn library(&self) -> &Library {
         self.library.as_ref()
     }
+
+    #[must_use]
+    /// Returns the resolved foreign calling convention metadata used for
+    /// prepared invocation of this declaration.
+    pub fn call_conv(&self) -> ForeignCallConv {
+        self.call_conv
+    }
 }
 
 impl std::fmt::Debug for ForeignFunction {
@@ -89,6 +121,7 @@ impl std::fmt::Debug for ForeignFunction {
         f.debug_struct("ForeignFunction")
             .field("symbol_name", &self.symbol_name)
             .field("signature", self.prepared.signature())
+            .field("call_conv", &self.call_conv)
             .field("symbol", &self.symbol)
             .field("library_path", &self.library.path())
             .finish()
@@ -98,7 +131,7 @@ impl std::fmt::Debug for ForeignFunction {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
-    use crate::ffi::{CallError, NativeType};
+    use crate::ffi::{CallError, ForeignCallConv, NativeType};
     use std::ffi::CString;
 
     const LIBSYSTEM_PATH: &str = "/usr/lib/libSystem.B.dylib";
@@ -113,6 +146,7 @@ mod tests {
             Signature::new(vec![], NativeType::I32),
         )
         .expect("declare getpid");
+        assert_eq!(getpid.call_conv(), ForeignCallConv::C);
 
         let result = getpid.call(&[]).expect("invoke getpid");
         match result {
@@ -324,5 +358,21 @@ mod tests {
         .expect("declare getpid");
 
         assert_eq!(foreign.prepared.signature(), foreign.signature());
+        assert_eq!(foreign.call_conv(), ForeignCallConv::C);
+    }
+
+    #[test]
+    fn runtime_foreign_function_carries_explicit_call_conv() {
+        let lib: Arc<Library> =
+            Arc::from(Library::open(LIBSYSTEM_PATH).expect("open libSystem"));
+        let foreign = ForeignFunction::new_with_call_conv(
+            lib,
+            "getpid",
+            Signature::new(vec![], NativeType::I32),
+            ForeignCallConv::C,
+        )
+        .expect("declare getpid");
+
+        assert_eq!(foreign.call_conv(), ForeignCallConv::C);
     }
 }

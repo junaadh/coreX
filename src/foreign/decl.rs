@@ -1,6 +1,6 @@
 use super::{ForeignError, ForeignLibrary};
 use crate::dyld::DlError;
-use crate::ffi::Signature;
+use crate::ffi::{ForeignCallConv, Signature};
 use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
@@ -9,11 +9,13 @@ use std::path::{Path, PathBuf};
 ///
 /// `ForeignLibraryDecl` is independent of source-language syntax. It captures
 /// a local declaration identity (`library_name`), the runtime library path used
-/// for loading (`library_path`), and the declared functions to lower.
+/// for loading (`library_path`), the resolved block-level default foreign
+/// calling convention, and the declared functions to lower.
 #[derive(Debug, Clone)]
 pub struct ForeignLibraryDecl {
     library_name: String,
     library_path: PathBuf,
+    default_call_conv: ForeignCallConv,
     functions: Vec<ForeignFunctionDecl>,
 }
 
@@ -22,6 +24,7 @@ pub struct ForeignLibraryDecl {
 /// `local_name` is the local declaration/lookup name in the lowered runtime
 /// library. `symbol_name` is the actual native symbol resolved from the
 /// foreign library. `signature` describes the declared call shape.
+/// `call_conv` is the explicitly resolved foreign calling convention.
 ///
 /// This declaration does not verify that the declared signature matches the
 /// actual native ABI of `symbol_name`.
@@ -30,6 +33,7 @@ pub struct ForeignFunctionDecl {
     local_name: String,
     symbol_name: String,
     signature: Signature,
+    call_conv: ForeignCallConv,
 }
 
 /// Errors produced by structural validation and lowering of foreign declarations.
@@ -40,6 +44,9 @@ pub enum LoweringError {
     EmptySymbolName,
     DuplicateLocalName {
         name: String,
+    },
+    DuplicateCallConvAttribute {
+        context: String,
     },
     LoadLibrary {
         path: PathBuf,
@@ -76,6 +83,12 @@ impl Display for LoweringError {
             Self::DuplicateLocalName { name } => {
                 write!(f, "duplicate foreign local function name: {name}")
             }
+            Self::DuplicateCallConvAttribute { context } => {
+                write!(
+                    f,
+                    "duplicate foreign call-convention attribute in {context}"
+                )
+            }
             Self::LoadLibrary { path, source } => {
                 write!(
                     f,
@@ -105,7 +118,8 @@ impl std::error::Error for LoweringError {
             Self::EmptyLibraryName
             | Self::EmptyLocalName
             | Self::EmptySymbolName
-            | Self::DuplicateLocalName { .. } => None,
+            | Self::DuplicateLocalName { .. }
+            | Self::DuplicateCallConvAttribute { .. } => None,
         }
     }
 }
@@ -121,9 +135,27 @@ impl ForeignLibraryDecl {
         library_path: impl Into<PathBuf>,
         functions: Vec<ForeignFunctionDecl>,
     ) -> Self {
+        Self::with_default_call_conv(
+            library_name,
+            library_path,
+            ForeignCallConv::default_foreign(),
+            functions,
+        )
+    }
+
+    /// Creates a parser-neutral foreign library declaration with explicit
+    /// default call-convention metadata for contained function declarations.
+    #[must_use]
+    pub fn with_default_call_conv(
+        library_name: impl Into<String>,
+        library_path: impl Into<PathBuf>,
+        default_call_conv: ForeignCallConv,
+        functions: Vec<ForeignFunctionDecl>,
+    ) -> Self {
         Self {
             library_name: library_name.into(),
             library_path: library_path.into(),
+            default_call_conv,
             functions,
         }
     }
@@ -136,6 +168,13 @@ impl ForeignLibraryDecl {
     #[must_use]
     pub fn library_path(&self) -> &Path {
         &self.library_path
+    }
+
+    #[must_use]
+    /// Returns the resolved default foreign call convention for this library
+    /// declaration.
+    pub fn default_call_conv(&self) -> ForeignCallConv {
+        self.default_call_conv
     }
 
     #[must_use]
@@ -184,10 +223,28 @@ impl ForeignFunctionDecl {
         symbol_name: impl Into<String>,
         signature: Signature,
     ) -> Self {
+        Self::with_call_conv(
+            local_name,
+            symbol_name,
+            signature,
+            ForeignCallConv::default_foreign(),
+        )
+    }
+
+    /// Creates a foreign function declaration with explicit resolved calling
+    /// convention metadata.
+    #[must_use]
+    pub fn with_call_conv(
+        local_name: impl Into<String>,
+        symbol_name: impl Into<String>,
+        signature: Signature,
+        call_conv: ForeignCallConv,
+    ) -> Self {
         Self {
             local_name: local_name.into(),
             symbol_name: symbol_name.into(),
             signature,
+            call_conv,
         }
     }
 
@@ -214,6 +271,13 @@ impl ForeignFunctionDecl {
     #[must_use]
     pub fn signature(&self) -> &Signature {
         &self.signature
+    }
+
+    #[must_use]
+    /// Returns the resolved foreign calling convention for this function
+    /// declaration.
+    pub fn call_conv(&self) -> ForeignCallConv {
+        self.call_conv
     }
 }
 
@@ -272,10 +336,11 @@ pub fn lower_foreign_library_decl(
 
     for function in &decl.functions {
         runtime
-            .register_decl(
+            .register_decl_with_call_conv(
                 function.local_name.clone(),
                 function.symbol_name.clone(),
                 function.signature.clone(),
+                function.call_conv(),
             )
             .map_err(|source| LoweringError::DeclareFunction {
                 local_name: function.local_name.clone(),
@@ -306,6 +371,7 @@ mod tests {
         let decl = ForeignFunctionDecl::new("pid", "getpid", sig);
         assert_eq!(decl.local_name(), "pid");
         assert_eq!(decl.symbol_name(), "getpid");
+        assert_eq!(decl.call_conv(), ForeignCallConv::C);
     }
 
     #[test]
@@ -317,11 +383,23 @@ mod tests {
             vec![ForeignFunctionDecl::identical_name("getpid", sig)],
         );
         assert_eq!(decl.library_name(), "libSystem");
+        assert_eq!(decl.default_call_conv(), ForeignCallConv::C);
         assert_eq!(
             decl.library_path(),
             Path::new("/usr/lib/libSystem.B.dylib")
         );
         assert_eq!(decl.functions().len(), 1);
+    }
+
+    #[test]
+    fn normalized_ir_carries_explicit_call_conv() {
+        let decl = ForeignFunctionDecl::with_call_conv(
+            "pid",
+            "getpid",
+            Signature::new(vec![], NativeType::I32),
+            ForeignCallConv::C,
+        );
+        assert_eq!(decl.call_conv(), ForeignCallConv::C);
     }
 
     #[test]
