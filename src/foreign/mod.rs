@@ -9,6 +9,7 @@
 //! It does not add parser-level syntax, language declarations, or additional ABI
 //! features beyond the existing dynamic call substrate.
 
+mod bindgen;
 mod decl;
 mod error;
 mod function;
@@ -17,6 +18,9 @@ mod manifest;
 mod parse;
 
 pub use crate::ffi::ForeignCallConv;
+pub use bindgen::{
+    BindgenError, BindgenOptions, BindgenOutput, generate_foreign_bindings,
+};
 pub use decl::{
     ForeignFunctionDecl, ForeignLibraryDecl, LoweringError,
     lower_foreign_library_decl, validate_foreign_library_decl,
