@@ -1,4 +1,4 @@
-//! macOS dynamic loader layer.
+//! macOS dynamic loader module.
 //!
 //! ## Scope
 //! This module provides only dynamic loading primitives for macOS:
@@ -24,7 +24,7 @@
 //! 5. `RawSymbol` is non-owning and tied to library lifetime by convention.
 //! 6. `dlerror()` is read immediately after failing loader operations.
 //! 7. Expected runtime failures return `Result` errors, not panics.
-//! 8. Unsafe code is isolated to a small core layer.
+//! 8. Unsafe code is isolated to a small core boundary.
 //!
 //! ## Why Default Flags Are `RTLD_NOW | RTLD_LOCAL`
 //! `RTLD_NOW` surfaces unresolved bindings at load-time, and `RTLD_LOCAL`

@@ -83,7 +83,7 @@ impl ForeignFunction {
     ///
     /// # Errors
     /// Returns [`ForeignError::Invocation`] when argument validation or dynamic
-    /// invocation fails in the underlying call layer.
+    /// invocation fails in the underlying call runtime.
     pub fn call(&self, args: &[Value]) -> Result<Value, ForeignError> {
         call_prepared(&self.prepared, &self.symbol, args).map_err(|source| {
             ForeignError::Invocation {

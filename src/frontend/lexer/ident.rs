@@ -1,6 +1,6 @@
 //! Identifier-like lexing for the `coreX` frontend.
 //!
-//! This layer lexes:
+//! This module lexes:
 //! - ordinary identifiers
 //! - reserved keywords (via existing keyword classification helpers)
 //! - closure shorthand params (`$0`, `$1`, ...)
@@ -19,7 +19,7 @@ use super::{SourceCursor, Token, TokenKind, classify_keyword_token};
 ///   ASCII digits
 ///
 /// Returns `None` without consuming input when current position is not
-/// identifier-like for this layer.
+/// identifier-like for this module.
 #[must_use]
 pub fn lex_ident_like(cursor: &mut SourceCursor<'_>) -> Option<Token> {
     if let Some(token) = lex_closure_shorthand_param(cursor) {

@@ -428,7 +428,7 @@ prefix_op          = "!" | "-" ;
 
 Additional operators may be added later, but parser precedence should be extended explicitly rather than inferred.
 
-### 13.3 Grammar by precedence layer
+### 13.3 Grammar by precedence level
 
 ```ebnf
 expr                = assignment_expr ;

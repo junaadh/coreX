@@ -1,4 +1,4 @@
-//! Reusable foreign function declarations built on top of the dynamic call layer.
+//! Reusable foreign function declarations built on top of the dynamic call runtime.
 //!
 //! This module provides a stable declaration object that packages:
 //! - strong library ownership

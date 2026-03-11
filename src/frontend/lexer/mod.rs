@@ -57,7 +57,7 @@
 //! Builtin primitive type names (`u8`, `u16`, `u32`, `u64`, `usize`, `i8`,
 //! `i16`, `i32`, `i64`, `isize`, `f32`, `f64`, `bool`, `char`, `string`,
 //! `void`) are lexed as ordinary identifiers. Primitive/builtin recognition is
-//! a later semantic step, not a dedicated keyword-token classification.
+//! deferred to semantic analysis, not a dedicated keyword-token classification.
 //!
 //! Raw pointer type surface is `*T` and `*mut T`. Pointer mutability is
 //! expressed by the existing `mut` token after `*`; there is no `const`

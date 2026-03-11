@@ -1,6 +1,6 @@
 //! Numeric literal lexing for the `coreX` frontend.
 //!
-//! This layer lexes integer and float literal spellings and emits
+//! This module lexes integer and float literal spellings and emits
 //! source-preserving numeric token kinds.
 //!
 //! Supported surface includes:
@@ -14,8 +14,8 @@
 //! - a `.` starts the float fractional part only when followed by an ASCII
 //!   digit (`1.25` is float, `1..3` leaves `..` for punct lexing)
 //!
-//! Integer suffix handling is lexical only in this layer. Semantic validation
-//! is deferred to later frontend stages.
+//! Integer suffix handling is lexical only in this module. Semantic validation
+//! is deferred to semantic analysis.
 
 use super::{SourceCursor, Token, TokenKind};
 

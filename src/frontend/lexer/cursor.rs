@@ -1,7 +1,7 @@
 //! UTF-8-safe source traversal utilities for the lexer.
 //!
 //! `SourceCursor` provides byte-offset based character traversal over `&str`
-//! input. This layer is intentionally separate from tokenization: it does not
+//! input. This module is intentionally separate from tokenization: it does not
 //! emit tokens or classify lexical categories.
 //!
 //! It provides safe primitives for peeking, consuming, prefix matching, and

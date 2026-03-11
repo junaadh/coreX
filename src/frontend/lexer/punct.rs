@@ -1,6 +1,6 @@
 //! Punctuation and operator lexing for the `coreX` frontend.
 //!
-//! This layer lexes only punctuation/operator tokens. It does not lex
+//! This module lexes only punctuation/operator tokens. It does not lex
 //! identifiers, keywords, numbers, strings, or chars.
 //!
 //! Longest-match ordering is explicit and critical for correctness, including:

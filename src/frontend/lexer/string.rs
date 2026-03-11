@@ -1,6 +1,6 @@
 //! Char and segmented string lexing for the `coreX` frontend.
 //!
-//! This layer lexes:
+//! This module lexes:
 //! - char literals (`'a'`, `'é'`, `'\\n'`, ...)
 //! - string segment tokens for interpolation-aware string mode
 //!
@@ -17,7 +17,7 @@
 
 use super::{SourceCursor, Token, TokenKind};
 
-/// Minimal string/interpolation mode shell for later full lexer assembly.
+/// Minimal string/interpolation mode shell for full lexer assembly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StringLexMode {
     Normal,
