@@ -1,0 +1,3 @@
+[submodule "tree-sitter"]
+	path = tree-sitter
+	url = git@github.com:junaadh/tree-sitter-corex.git
