@@ -21,6 +21,8 @@ pub use diagnostics::{
 pub use parse_session::ParseSession;
 pub use parsed_file::{FileParseError, ParseSessionError, ParsedFile};
 pub use resolver::{
-    ResolveError, ResolvedScope, ResolvedScopeKind, ScopeGraph, ScopeResolver,
-    resolve_project_scopes,
+    ImportBindingKind, ImportResolveError, ImportResolver, ResolveError,
+    ResolvedImportBinding, ResolvedImports, ResolvedScope, ResolvedScopeKind,
+    ScopeGraph, ScopeResolver, ScopeSymbols, Symbol, SymbolKind,
+    resolve_project_imports, resolve_project_scopes,
 };
