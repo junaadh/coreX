@@ -10,6 +10,7 @@ pub mod lexer;
 pub mod parse_session;
 pub mod parsed_file;
 pub mod parser;
+pub mod resolver;
 pub mod source;
 
 pub use diagnostics::{
@@ -19,3 +20,7 @@ pub use diagnostics::{
 };
 pub use parse_session::ParseSession;
 pub use parsed_file::{FileParseError, ParseSessionError, ParsedFile};
+pub use resolver::{
+    ResolveError, ResolvedScope, ResolvedScopeKind, ScopeGraph, ScopeResolver,
+    resolve_project_scopes,
+};
