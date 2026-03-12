@@ -1,20 +1,283 @@
-# coreX Grammar (Draft)
+# CoreX Language Reference
 
-This document defines the current grammar draft in EBNF form.
+This document defines the current CoreX syntax and project model in EBNF form.
 It is organized by numbered sections and keeps semantic notes separate from syntax.
 
-## 1. Scope
+## 1. Terminology
 
-The grammar below currently focuses on:
+CoreX uses the following terms:
 
-- lexical conventions
-- top-level item structure
-- function/type declarations
-- foreign declaration syntax used by the runtime pipeline
+| Term | Definition |
+|---|---|
+| workspace | Top-level container for one or more projects and a shared build environment |
+| project | Single buildable/importable unit with its own `corex.toml` and dependency root |
+| scope | Source namespace unit defined by files/directories |
 
-## 2. Lexical Conventions
+Hierarchy:
 
-### 2.1 Identifiers
+```text
+workspace
+  └ project
+       └ scopes
+```
+
+The term `package` is not used in this specification.
+
+## 2. Project and Workspace Layout
+
+### 2.1 Project root layout
+
+Project root files:
+
+| File | Meaning |
+|---|---|
+| `corex.toml` | project manifest |
+| `build.cx` | project build script |
+| `src/root.cx` | root scope of the project |
+| `src/main.cx` | optional executable entry |
+
+Example:
+
+```text
+src/
+  root.cx
+  net/
+    net.cx
+    http.cx
+  util.cx
+```
+
+### Root scope file
+
+`src/root.cx` defines the root scope of a project.
+
+Nested scopes do not use `root.cx`.
+
+### 2.2 Workspace and project manifests
+
+A workspace `corex.toml` defines workspace-level configuration and explicit
+workspace members.
+
+A project `corex.toml` defines one project's metadata, dependencies, and build
+configuration.
+
+These are distinct manifests with different roles, even though they use the
+same filename.
+
+Example workspace manifest:
+
+```toml
+# workspace corex.toml
+[workspace]
+name = "example_workspace"
+members = ["projects/app", "projects/util"]
+```
+
+Example project manifest:
+
+```toml
+# project corex.toml
+[project]
+name = "app"
+
+[lib]
+name = "app"
+
+[[bin]]
+name = "app"
+path = "src/main.cx"
+
+[[bin]]
+name = "tool"
+path = "src/bin/tool.cx"
+```
+
+These examples lock target naming concepts and target roles. They do not define
+the complete manifest grammar.
+
+Workspace members are explicit:
+
+```toml
+[workspace]
+name = "example_workspace"
+
+members = [
+  "projects/app",
+  "projects/util"
+]
+```
+
+No automatic filesystem scanning is performed for workspace membership.
+
+### 2.3 Dependencies
+
+Dependencies are explicit per project:
+
+Local dependency:
+
+```toml
+[dependencies]
+util = { path = "../util" }
+```
+
+Git dependency:
+
+```toml
+[dependencies]
+http = { git = "https://github.com/example/http.git" }
+```
+
+Additional keys such as `rev`, `tag`, or `branch` may be supported later.
+
+Rules:
+
+- Workspace members are explicit.
+- Dependencies are explicit.
+- No automatic filesystem discovery of projects.
+- Being a workspace member does not automatically make a project a dependency.
+- Being a dependency does not automatically make a project a workspace member.
+
+### 2.4 Target roles
+
+Project name, library target name, and binary target names are distinct.
+
+Library target:
+
+- A project may define at most one library target.
+- If `src/root.cx` exists and no explicit library target name is configured,
+  the library target name defaults to the project name.
+
+Binary targets:
+
+- A project may define one or more binary targets.
+- If `src/main.cx` exists and no explicit binary target name is configured, the
+  default binary target name is the project name.
+- Additional binary targets may be defined explicitly by manifest
+  configuration.
+
+Import roots:
+
+- Dependency import roots come from target names.
+- Library code is imported using the library target name.
+- Binary targets do not create dependency import roots unless the language
+  defines that explicitly.
+- There is no implicit `lib<name>` prefix rule.
+
+### 2.5 Binary and library scope separation
+
+- `main.cx` does not automatically see names from `root.cx`.
+- Binary code imports library code explicitly using the library target name.
+
+Example:
+
+```text
+use mylib::net::http;
+```
+
+In a binary target, `root::` refers to that binary target's own root scope, not
+the library target.
+
+## 3. Scope Paths and Visibility
+
+### 3.1 Path roots
+
+CoreX path resolution roots:
+
+| Root | Meaning |
+|---|---|
+| `root::` | current project root |
+| `self::` | current scope |
+| `super::` | parent scope |
+| `name::` | dependency project root |
+
+Examples:
+
+```text
+use root::net::http;
+use serde::json;
+```
+
+For `name::...` imports, `name` is resolved from dependency target names.
+
+### 3.2 Scope declarations
+
+Scopes are declared using:
+
+```text
+scope foo;
+```
+
+Grammar:
+
+```ebnf
+scope_decl = [ visibility ], "scope", identifier, ";" ;
+```
+
+Resolution rules:
+
+A scope declared with:
+
+```text
+scope foo;
+```
+
+is resolved by locating either:
+
+- `foo.cx`
+- `foo/foo.cx`
+
+No implicit file discovery is performed for scopes.
+
+If `foo/foo.cx` is used, that file defines the scope `foo`, and other files
+under `foo/` are candidate child scopes of `foo`.
+
+A child scope exists in the scope graph only if declared by its parent using
+`scope <name>;`.
+
+A file under a scope directory that is not declared by the parent scope is not
+part of compilation.
+
+If neither `foo.cx` nor `foo/foo.cx` exists, it is a scope resolution error.
+
+If both `foo.cx` and `foo/foo.cx` exist in the same parent scope, the
+declaration is ambiguous and must be rejected.
+
+### 3.4 Scope resolution errors
+
+- Missing declared scope (`scope foo;` with no `foo.cx` and no `foo/foo.cx`) is
+  a scope resolution error.
+- Ambiguous declared scope (`foo.cx` and `foo/foo.cx` both present) is a scope
+  resolution error.
+- Cyclic scope declarations are invalid and reported as scope resolution
+  errors, not grammar errors.
+
+### 3.3 Visibility
+
+Visibility forms:
+
+- `private` (default)
+- `pub(super)`
+- `pub(project)`
+- `pub`
+
+| Visibility | Meaning |
+|---|---|
+| `private` | visible only in current scope |
+| `pub(super)` | visible to parent scope and scopes inside that parent |
+| `pub(project)` | visible anywhere in the same project |
+| `pub` | exported outside the project |
+
+Scope declarations follow the same visibility rules:
+
+```text
+scope net;
+pub(project) scope util;
+pub scope api;
+```
+
+## 4. Lexical Conventions
+
+### 4.1 Identifiers
 
 ```ebnf
 identifier      = ident_start, { ident_continue } ;
@@ -22,7 +285,7 @@ ident_start     = "_" | letter ;
 ident_continue  = "_" | letter | digit ;
 ```
 
-### 2.2 Literals
+### 4.2 Literals
 
 ```ebnf
 literal            = integer_literal
@@ -70,7 +333,7 @@ Literal notes:
 - `.5` and `1.` are not part of this literal surface.
 - `string` values are UTF-8 throughout the language.
 
-### 2.3 Whitespace and Comments
+### 4.3 Whitespace and Comments
 
 ```ebnf
 whitespace              = { " " | "\t" | "\r" | "\n" } ;
@@ -99,7 +362,7 @@ Outer doc comments (`///`, `/** */`) may attach to the following declaration.
 Inner doc comments (`//!`, `/*! */`) are classified distinctly but are not yet
 fully attached semantically in this frontend stage.
 
-### 2.4 Statement Termination
+### 4.4 Statement Termination
 
 ```ebnf
 terminated_stmt = stmt, ";" ;
@@ -108,12 +371,13 @@ terminated_stmt = stmt, ";" ;
 Simple statements require `;`.
 Blocks may also end with a tail expression (final expression without `;`).
 
-## 3. File Structure
+## 5. File Structure
 
 ```ebnf
 file = { item } ;
 
 item = use_item
+     | scope_decl
      | struct_decl
      | enum_decl
      | impl_decl
@@ -123,37 +387,74 @@ item = use_item
      ;
 ```
 
-## 4. Use Items
+## 6. Use Items
 
 ```ebnf
-use_item       = "use", path_use_tree, ";" ;
-path_use_tree  = path_prefix, [ "::", use_tree ] | use_tree ;
-path_prefix    = identifier, { "::", identifier } ;
+visibility = "pub"
+           | "pub", "(", "super", ")"
+           | "pub", "(", "project", ")"
+           ;
 
-use_tree       = identifier
-               | "self"
-               | "{", use_tree_list, [ "," ], "}"
+use_item = [ visibility ], "use", use_tree, ";" ;
+
+use_tree = use_path
+         | use_path, "as", identifier
+         | use_path, "::", "*"
+         | use_path, "::", use_group
+         ;
+
+use_group = "{", use_group_item, { ",", use_group_item }, [ "," ], "}" ;
+
+use_group_item = "self"
+               | identifier
+               | identifier, "as", identifier
+               | identifier, "::", "*"
+               | identifier, "::", use_group
                ;
 
-use_tree_list  = use_tree, { ",", use_tree } ;
+use_path = use_root, "::", identifier, { "::", identifier } ;
+
+use_root = "root"
+         | "self"
+         | "super"
+         | identifier
+         ;
 ```
 
-Example:
+Supported forms:
 
 ```text
-use core::mod1::mod2::{self, st1, st2};
+use root::scope::Thing;
+use scope::Thing;
+use self::Thing;
+use super::Thing;
+use depname::Thing;
+
+use root::scope::*;
+use scope::*;
+
+use root::scope::{A, B, C};
+use root::scope::{scope::*, scope::{self, SomeThing}};
+
+use root::scope::scope as SomethingElse;
+
+pub use root::api::Client;
+pub(project) use root::internal::helper;
+pub use root::fmt::Writer as OutWriter;
+
+use root::scope::{self, SomeThing};
 ```
 
-## 5. Modifiers
+## 7. Modifiers
 
 ```ebnf
-modifier      = "pub" | "async" ;
+modifier      = visibility | "async" ;
 modifier_list = { modifier } ;
 ```
 
-## 6. Functions and Initializers
+## 8. Functions and Initializers
 
-### 6.1 Function Declarations
+### 8.1 Function Declarations
 
 ```ebnf
 fn_decl      = modifier_list, "fn", identifier, [ generic_params ],
@@ -163,7 +464,7 @@ fn_decl      = modifier_list, "fn", identifier, [ generic_params ],
 return_type  = "->", type ;
 ```
 
-### 6.2 Initializer Declarations
+### 8.2 Initializer Declarations
 
 ```ebnf
 init_decl    = modifier_list, "init", [ init_kind ],
@@ -172,7 +473,7 @@ init_decl    = modifier_list, "init", [ init_kind ],
 init_kind    = "?" | "!" ;
 ```
 
-### 6.3 Parameter Forms
+### 8.3 Parameter Forms
 
 ```ebnf
 param_list      = param, { ",", param } ;
@@ -200,7 +501,7 @@ from str: string
 &mut self
 ```
 
-### 6.4 Generics and Where Clauses
+### 8.4 Generics and Where Clauses
 
 ```ebnf
 generic_params      = "<", generic_param_list, ">" ;
@@ -213,9 +514,9 @@ where_predicate     = type, ":", type_bound_list ;
 type_bound_list     = type, { "+", type } ;
 ```
 
-## 7. Type Declarations
+## 9. Type Declarations
 
-### 7.1 Structs
+### 9.1 Structs
 
 ```ebnf
 struct_decl   = modifier_list, "struct", identifier, [ generic_params ],
@@ -231,7 +532,7 @@ struct_member = field_decl
 field_decl    = identifier, ":", type, "," ;
 ```
 
-### 7.2 Enums
+### 9.2 Enums
 
 ```ebnf
 enum_decl           = modifier_list, "enum", identifier, [ generic_params ],
@@ -253,7 +554,7 @@ enum_case_param     = type
                     ;
 ```
 
-### 7.3 Impl Blocks
+### 9.3 Impl Blocks
 
 ```ebnf
 impl_decl             = "impl", type, [ protocol_conformance ], impl_body ;
@@ -263,7 +564,7 @@ impl_body             = "{", { impl_member }, "}" ;
 impl_member           = init_decl | fn_decl ;
 ```
 
-### 7.4 Builtin primitive type names
+### 9.4 Builtin primitive type names
 
 Builtin primitive type names are recognized semantically as predefined types
 while remaining ordinary identifier-shaped names in source:
@@ -273,9 +574,9 @@ while remaining ordinary identifier-shaped names in source:
 - `f32`, `f64`
 - `bool`, `char`, `string`, `void`
 
-## 8. Foreign Declarations
+## 10. Foreign Declarations
 
-### 8.1 Extern Block
+### 10.1 Extern Block
 
 ```ebnf
 extern_block       = { attribute }, "extern", identifier, "{",
@@ -283,7 +584,7 @@ extern_block       = { attribute }, "extern", identifier, "{",
                      "}" ;
 ```
 
-### 8.2 Foreign Function Declaration
+### 10.2 Foreign Function Declaration
 
 ```ebnf
 extern_member      = { attribute },
@@ -293,7 +594,7 @@ extern_member      = { attribute },
                      ";" ;
 ```
 
-### 8.3 Foreign Parameter Forms
+### 10.3 Foreign Parameter Forms
 
 ```ebnf
 extern_param_list  = extern_param, { ",", extern_param } ;
@@ -301,7 +602,7 @@ extern_param_list  = extern_param, { ",", extern_param } ;
 extern_param       = labeled_param ;
 ```
 
-### 8.4 Supported Foreign Type Surface (Current Parser)
+### 10.4 Supported Foreign Type Surface (Current Parser)
 
 ```ebnf
 type         = "void"
@@ -331,15 +632,15 @@ Semantic notes:
 4. If no explicit call convention is provided, the default foreign calling convention is `C`.
 5. `fn local = symbol(...) -> T;` declares a local imported name distinct from the native symbol name.
 
-## 9. Attributes and Macro-Like Forms
+## 11. Attributes and Macro-Like Forms
 
-### 9.1 Attributes
+### 11.1 Attributes
 
 ```ebnf
 attribute = "@", identifier, [ macro_args ] ;
 ```
 
-### 9.2 Macro Argument Forms
+### 11.2 Macro Argument Forms
 
 ```ebnf
 macro_args = "(", [ argument_list ], ")"
@@ -347,7 +648,7 @@ macro_args = "(", [ argument_list ], ")"
            ;
 ```
 
-### 9.3 Attribute placement and macro interpretation
+### 11.3 Attribute placement and macro interpretation
 
 ```ebnf
 macro_expr      = "@", identifier, [ macro_args ] ;
@@ -373,7 +674,7 @@ Context rules:
 - Attributes are not allowed on ordinary statements, patterns, or arbitrary non-macro expressions.
 - Ordinary comments remain trivia and are not attached as docs.
 
-### 9.4 Context examples
+### 11.4 Context examples
 
 ```text
 @call(.C)
@@ -387,7 +688,7 @@ let s = @format("value \(x)");
 @log("hello");
 ```
 
-## 10. Patterns
+## 12. Patterns
 
 ```ebnf
 pattern                 = wildcard_pattern
@@ -439,7 +740,7 @@ Pattern notes:
 - Tuple patterns require at least one comma; `(x)` is not tuple-pattern syntax.
 - Array/variant/struct rest marker `..` is allowed at most once and must be final.
 
-## 11. Blocks and Statements
+## 13. Blocks and Statements
 
 ```ebnf
 block             = "{", { stmt }, [ tail_expr ], "}" ;
@@ -471,7 +772,7 @@ Block/statement notes:
 - If an expression is followed by `;`, it is an expression statement, not a tail expression.
 - Clause bindings (`if let`, `guard let`, `while let`) still require `= expr`.
 
-## 12. Clause Lists and Control Statements
+## 14. Clause Lists and Control Statements
 
 ```ebnf
 clause_list       = clause, { ";", clause } ;
@@ -494,9 +795,9 @@ Statement-form notes:
 - `else if` chaining is supported through recursive `if_stmt_else`.
 - `guard` is statement-only and always requires `else` block.
 
-## 13. Expressions
+## 15. Expressions
 
-### 13.1 Expression precedence overview
+### 15.1 Expression precedence overview
 
 From lowest precedence to highest precedence:
 
@@ -523,7 +824,7 @@ From lowest precedence to highest precedence:
 
 This table is the parser contract for the currently implemented expression surface.
 
-### 13.2 Operators currently assumed by the grammar
+### 15.2 Operators currently assumed by the grammar
 
 ```ebnf
 assignment_op       = "="
@@ -557,7 +858,7 @@ prefix_op           = "!" | "-" | "try" ;
 
 Token and parser operator surface are aligned with the list above.
 
-### 13.3 Grammar by precedence level
+### 15.3 Grammar by precedence level
 
 ```ebnf
 expr                = assignment_expr ;
@@ -623,7 +924,7 @@ Range examples:
 
 Range operands are expressions, so both integer and float endpoints are valid.
 
-### 13.4 Postfix expressions
+### 15.4 Postfix expressions
 
 ```ebnf
 postfix_expr            = primary_expr, { postfix_suffix } ;
@@ -671,7 +972,7 @@ Examples:
 - `value.method()`
 - `Type::make::<T>(x)`
 
-### 13.5 Primary expressions
+### 15.5 Primary expressions
 
 ```ebnf
 primary_expr              = literal
@@ -700,7 +1001,7 @@ Notes:
 - `Type.variant` is valid enum-case qualification syntax
 - `Type::name(...)` is for static/module namespace access
 
-### 13.6 Spread expressions (literal contexts only)
+### 15.6 Spread expressions (literal contexts only)
 
 ```ebnf
 spread_expr = "..", expr ;
@@ -708,7 +1009,7 @@ spread_expr = "..", expr ;
 
 `spread_expr` is currently modeled in AST but not part of the parser's array/struct literal entry grammar in this parser stage.
 
-### 13.7 Array literals
+### 15.7 Array literals
 
 ```ebnf
 array_literal      = "[", [ array_element_list ], "]" ;
@@ -720,7 +1021,7 @@ Examples:
 - `[]`
 - `[1, 2, 3]`
 
-### 13.8 Struct literals
+### 15.8 Struct literals
 
 ```ebnf
 struct_literal         = type_expr, "{", [ struct_field_init_list ], [ "," ], "}" ;
@@ -744,7 +1045,7 @@ Parser note:
 - Struct literal parsing is intentionally conservative and starts only from
   type-like heads accepted by parser heuristics.
 
-### 13.9 If and match expressions
+### 15.9 If and match expressions
 
 ```ebnf
 if_expr          = "if", clause_list, block, "else", if_expr_else ;
@@ -762,7 +1063,7 @@ Expression-form notes:
 - `else if` chaining is supported via recursive `if_expr`.
 - `else { ... }` is represented as an actual else block expression branch.
 
-### 13.10 Closures
+### 15.10 Closures
 
 ```ebnf
 closure_expr       = "{", [ closure_signature ], closure_body, "}" ;
@@ -789,7 +1090,7 @@ Semantic rule:
   expressions are only produced in explicit grammar contexts (for example
   `if ... else { ... }` branches).
 
-## 14. Protocol declarations
+## 16. Protocol declarations
 
 Protocols combine trait-like requirements with protocol-oriented surface syntax.
 
@@ -850,14 +1151,14 @@ Semantic notes:
 4. `impl Protocol for Type { ... }` is the intended conformance form, even if the exact impl-conformance grammar may be refined later.
 5. Property requirements are declaration-only contracts; storage is not part of protocol syntax.
 
-## 15. Semantic Notes (Non-EBNF)
+## 17. Semantic Notes (Non-EBNF)
 
 - Function aliasing in foreign declarations uses `fn local = native(...)`.
 - In foreign lowering, function-level call convention overrides block-level.
 - When no foreign call-convention attribute is present, default is C.
 - Grammar here specifies syntax shape; runtime ABI truth is validated separately.
 
-## 16. Example Fragment
+## 18. Example Fragment
 
 ```text
 @call(.C)
