@@ -1,0 +1,23 @@
+struct Point {
+  x: i32,
+  y: i32,
+}
+
+enum Option<T> {
+  Some(T),
+  None,
+}
+
+fn patterns_demo(pair: (i32), p: Point, maybe: Option<i32>) {
+  let (x, y) = pair;
+  let Point { x: px, y } = p;
+
+  match maybe {
+    Some(v) => v,
+    _ => 0,
+  };
+
+  x;
+  y;
+  px;
+}

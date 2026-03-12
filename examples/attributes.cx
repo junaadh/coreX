@@ -1,0 +1,21 @@
+@trace
+@inline
+fn instrumented() {
+}
+
+@a
+@b
+fn stacked_attributes() {
+}
+
+struct Config {
+  @inline
+  retries: i32,
+}
+
+enum Mode {
+  @trace
+  Fast,
+  @inline
+  Safe(i32),
+}

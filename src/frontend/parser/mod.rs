@@ -10,3 +10,10 @@ mod parser;
 
 pub use error::ParseError;
 pub use parser::{Parser, parse_source_file};
+
+/// Parses a full source file from a file-oriented source abstraction.
+pub fn parse_source_file_from_source_file(
+    file: &crate::frontend::source::SourceFile,
+) -> Result<crate::frontend::ast::File, ParseError> {
+    parse_source_file(file.source())
+}

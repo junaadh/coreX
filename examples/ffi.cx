@@ -1,0 +1,8 @@
+@call(.C)
+extern libc {
+  fn malloc(size: usize) -> *mut void;
+  fn free(ptr: *void);
+}
+
+fn main() {
+}

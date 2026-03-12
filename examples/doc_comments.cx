@@ -1,0 +1,18 @@
+/// Outer doc for helper
+fn helper() {
+}
+
+/** Block doc for Point */
+struct Point {
+  /// x coordinate
+  x: i32,
+  // normal comment on field
+  y: i32,
+}
+
+enum Status {
+  /// ready variant
+  Ready,
+  // normal variant comment
+  Busy,
+}

@@ -6,4 +6,10 @@
 
 pub mod ast;
 pub mod lexer;
+pub mod parse_session;
 pub mod parser;
+pub mod parsed_file;
+pub mod source;
+
+pub use parsed_file::{FileParseError, ParseSessionError, ParsedFile};
+pub use parse_session::ParseSession;

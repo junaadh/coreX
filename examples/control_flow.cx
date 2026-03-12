@@ -1,0 +1,21 @@
+fn main() {
+  var count: i32 = 0;
+
+  if count == 0 {
+    count = 1;
+  } else {
+    count = 2;
+  }
+
+  while count < 3 {
+    count += 1;
+  }
+
+  let maybe_name = "corex";
+  let name = maybe_name ?? "guest";
+  let label = count > 1 ? "hot" : "cold";
+
+  user?.profile;
+  name;
+  label;
+}

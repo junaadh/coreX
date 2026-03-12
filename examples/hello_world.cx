@@ -1,0 +1,7 @@
+fn print_line(message: string) {
+  message;
+}
+
+fn main() {
+  print_line("Hello, CoreX!");
+}
