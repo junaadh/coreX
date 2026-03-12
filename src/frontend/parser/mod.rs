@@ -1,11 +1,9 @@
-//! Handwritten source parser scaffolding for `coreX`.
+//! Handwritten source parser for `coreX`.
 //!
 //! This module consumes lexer tokens into source AST nodes.
-//! This module currently focuses on parser architecture:
-//! - token cursor helpers
-//! - structured parse errors
-//! - file/item entry points
-//! - minimal top-level coverage to support incremental parser growth
+//! It owns parser cursor utilities, declaration parsing, block/statement
+//! parsing, and expression parsing over the current frontend grammar surface.
+//! Outer doc comments are collected from source and attached to declarations.
 
 mod error;
 mod parser;

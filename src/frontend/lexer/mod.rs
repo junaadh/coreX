@@ -1,9 +1,9 @@
 //! Canonical in-code lexer specification for `coreX`.
 //!
 //! This module defines the token surface and lexical policy used by the
-//! frontend. It intentionally does not implement a full lexer yet; the goal is
-//! to keep lexer rules explicit, versioned with code, and ready for parser
-//! integration.
+//! frontend. The lexer implementation is split into focused submodules
+//! (cursor, trivia/comments, punctuators/operators, identifiers/keywords,
+//! numbers, strings/chars) and assembled by the `Lexer` driver.
 //!
 //! ## Responsibilities
 //! - split UTF-8 source into a token stream
@@ -34,6 +34,8 @@
 //! - `&=` before `&`
 //! - `&&` before `&`
 //! - `||` before `|`
+//! - `?.` before `?`
+//! - `??` before `?`
 //!
 //! Float/range disambiguation rule:
 //! - a `.` starts a float fractional part only when followed by a digit
@@ -52,6 +54,10 @@
 //! - inner doc block: `/*! ... */`
 //!
 //! Block comments close with normal `*/`.
+//!
+//! Parser-facing helpers in [`comment`] let later stages collect doc comments
+//! distinctly (`///`, `/**`, and inner forms) while ordinary comments remain
+//! trivia.
 //!
 //! ## Primitive type names
 //! Builtin primitive type names (`u8`, `u16`, `u32`, `u64`, `usize`, `i8`,
@@ -98,8 +104,12 @@
 //!   vs macro expression is parser-contextual.
 //! - `..` / `..=` are lexical tokens; whether `..expr` is spread or range is
 //!   parser-contextual.
+//! - `as?` is lexed as `KwAs` followed by `Question`; optional-cast vs
+//!   conditional/ternary use of `?` is parser-contextual.
 //! - `.` is lexical; shorthand member (`.variant`) vs member access
 //!   (`value.member`) is parser-contextual.
+//! - `!` is lexical; prefix logical-not vs postfix force-unwrap is
+//!   parser-contextual.
 
 pub mod comment;
 pub mod cursor;
@@ -111,8 +121,10 @@ pub mod string;
 mod token;
 
 pub use comment::{
-    Comment, CommentError, consume_block_comment, consume_comment,
-    consume_line_comment, skip_trivia, skip_whitespace,
+    Comment, CommentError, collect_doc_comments, consume_block_comment,
+    consume_comment, consume_doc_comment, consume_line_comment,
+    consume_outer_doc_comment, is_doc_comment_kind, is_outer_doc_comment_kind,
+    skip_trivia, skip_whitespace,
 };
 pub use cursor::SourceCursor;
 pub use ident::lex_ident_like;

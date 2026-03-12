@@ -21,6 +21,8 @@ pub enum Type {
     Reference(Box<Spanned<Type>>),
     MutableReference(Box<Spanned<Type>>),
     /// Pointer from source `*T` (immutable/read-only pointee form).
+    ///
+    /// Variant name is legacy and corresponds to source `*T`, not `*const T`.
     ConstPointer(Box<Spanned<Type>>),
     MutablePointer(Box<Spanned<Type>>),
     Array(Box<Spanned<Type>>),

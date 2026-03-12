@@ -22,6 +22,7 @@ pub struct ClauseList {
 pub struct BindingClause {
     pub pattern: Spanned<Pattern>,
     pub ty: Option<Spanned<Type>>,
+    /// Clause bindings (`if let`, `guard let`, `while let`) require initializer.
     pub value: Box<Spanned<Expr>>,
 }
 
@@ -37,14 +38,16 @@ pub enum Clause {
 pub struct LetStmt {
     pub pattern: Spanned<Pattern>,
     pub ty: Option<Spanned<Type>>,
-    pub value: Box<Spanned<Expr>>,
+    /// Initializer is optional for ordinary `let` statements.
+    pub value: Option<Box<Spanned<Expr>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VarStmt {
     pub pattern: Spanned<Pattern>,
     pub ty: Option<Spanned<Type>>,
-    pub value: Box<Spanned<Expr>>,
+    /// Initializer is optional for ordinary `var` statements.
+    pub value: Option<Box<Spanned<Expr>>>,
 }
 
 /// `guard` is statement-only and requires an `else` block.
@@ -60,7 +63,21 @@ pub struct WhileStmt {
     pub body: Block,
 }
 
-/// Placeholder shape for `for` statement syntax.
+/// Statement-form `if` supports optional `else` and `else if` chains.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct IfStmt {
+    pub clauses: ClauseList,
+    pub then_branch: Block,
+    pub else_branch: Option<IfStmtElse>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum IfStmtElse {
+    If(Box<Spanned<IfStmt>>),
+    Block(Block),
+}
+
+/// `for` statement source shape.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ForStmt {
     pub pattern: Spanned<Pattern>,
@@ -71,6 +88,7 @@ pub struct ForStmt {
 /// Source statements.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Stmt {
+    If(Spanned<IfStmt>),
     Let(Spanned<LetStmt>),
     Var(Spanned<VarStmt>),
     Expr {

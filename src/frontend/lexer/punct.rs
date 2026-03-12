@@ -24,6 +24,8 @@
 //! - `&=` before `&`
 //! - `&&` before `&`
 //! - `||` before `|`
+//! - `?.` before `?`
+//! - `??` before `?`
 
 use super::{SourceCursor, Token, TokenKind};
 
@@ -84,6 +86,10 @@ pub fn lex_punct_or_operator(cursor: &mut SourceCursor<'_>) -> Option<Token> {
         TokenKind::PipeEq
     } else if cursor.eat_str("&=") {
         TokenKind::AmpEq
+    } else if cursor.eat_str("?.") {
+        TokenKind::QuestionDot
+    } else if cursor.eat_str("??") {
+        TokenKind::QuestionQuestion
     } else if cursor.eat_if('(') {
         TokenKind::LParen
     } else if cursor.eat_if(')') {
@@ -190,6 +196,8 @@ mod tests {
         let cases = [
             ("..=", TokenKind::DotDotEq),
             ("..", TokenKind::DotDot),
+            ("?.", TokenKind::QuestionDot),
+            ("??", TokenKind::QuestionQuestion),
             ("::", TokenKind::ColonColon),
             ("->", TokenKind::Arrow),
             ("=>", TokenKind::FatArrow),
@@ -299,6 +307,22 @@ mod tests {
         let token = lex_punct_or_operator(&mut cursor).expect("token");
         assert_eq!(token.kind, TokenKind::AmpAmp);
         assert!(cursor.is_eof());
+    }
+
+    #[test]
+    fn longest_match_prefers_questiondot_over_question() {
+        let mut cursor = SourceCursor::new("?.x");
+        let token = lex_punct_or_operator(&mut cursor).expect("token");
+        assert_eq!(token.kind, TokenKind::QuestionDot);
+        assert_eq!(cursor.peek(), Some('x'));
+    }
+
+    #[test]
+    fn longest_match_prefers_questionquestion_over_question() {
+        let mut cursor = SourceCursor::new("??x");
+        let token = lex_punct_or_operator(&mut cursor).expect("token");
+        assert_eq!(token.kind, TokenKind::QuestionQuestion);
+        assert_eq!(cursor.peek(), Some('x'));
     }
 
     #[test]

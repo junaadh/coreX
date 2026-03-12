@@ -25,6 +25,24 @@ pub struct Comment<'a> {
     pub text: &'a str,
 }
 
+/// Returns `true` when comment kind is a doc-comment form.
+#[must_use]
+pub const fn is_doc_comment_kind(kind: CommentKind) -> bool {
+    matches!(
+        kind,
+        CommentKind::DocLine
+            | CommentKind::DocBlock
+            | CommentKind::InnerDocLine
+            | CommentKind::InnerDocBlock
+    )
+}
+
+/// Returns `true` when comment kind is an outer doc-comment form.
+#[must_use]
+pub const fn is_outer_doc_comment_kind(kind: CommentKind) -> bool {
+    matches!(kind, CommentKind::DocLine | CommentKind::DocBlock)
+}
+
 /// Comment-consumption errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommentError {
@@ -161,6 +179,75 @@ pub fn consume_comment<'a>(
         return consume_block_comment(cursor);
     }
     Ok(None)
+}
+
+/// Consumes a doc comment (`///`, `/**`, `//!`, `/*!`) when present.
+///
+/// Returns `Ok(None)` without consuming input when current offset is not at a
+/// doc comment start (including normal `//` and `/*` comments).
+///
+/// # Errors
+/// Returns [`CommentError`] for malformed doc block comments.
+pub fn consume_doc_comment<'a>(
+    cursor: &mut SourceCursor<'a>,
+) -> Result<Option<Comment<'a>>, CommentError> {
+    if cursor.starts_with("///") || cursor.starts_with("//!") {
+        return Ok(consume_line_comment(cursor));
+    }
+    if cursor.starts_with("/**") || cursor.starts_with("/*!") {
+        return consume_block_comment(cursor);
+    }
+    Ok(None)
+}
+
+/// Consumes an outer doc comment (`///`, `/**`) when present.
+///
+/// Returns `Ok(None)` without consuming input when current offset is not at an
+/// outer-doc comment start.
+///
+/// # Errors
+/// Returns [`CommentError`] for malformed outer doc block comments.
+pub fn consume_outer_doc_comment<'a>(
+    cursor: &mut SourceCursor<'a>,
+) -> Result<Option<Comment<'a>>, CommentError> {
+    if cursor.starts_with("///") {
+        return Ok(consume_line_comment(cursor));
+    }
+    if cursor.starts_with("/**") {
+        return consume_block_comment(cursor);
+    }
+    Ok(None)
+}
+
+/// Collects all doc comments from the provided source text in source order.
+///
+/// This helper is parser-oriented: ordinary comments remain ignored, while
+/// doc comments preserve original span/text.
+///
+/// # Errors
+/// Returns [`CommentError`] for malformed block comment forms.
+pub fn collect_doc_comments<'a>(
+    source: &'a str,
+) -> Result<Vec<Comment<'a>>, CommentError> {
+    let mut cursor = SourceCursor::new(source);
+    let mut docs = Vec::new();
+
+    while !cursor.is_eof() {
+        skip_whitespace(&mut cursor);
+
+        if let Some(comment) = consume_doc_comment(&mut cursor)? {
+            docs.push(comment);
+            continue;
+        }
+
+        if consume_comment(&mut cursor)?.is_some() {
+            continue;
+        }
+
+        let _ = cursor.bump();
+    }
+
+    Ok(docs)
 }
 
 /// Consumes all whitespace/comments trivia at current offset.
@@ -303,5 +390,37 @@ mod tests {
         let comment = consume_line_comment(&mut cursor).expect("line comment");
         assert_eq!(comment.text, "// hi");
         assert_eq!(cursor.peek(), Some('\n'));
+    }
+
+    #[test]
+    fn consume_outer_doc_line_comment_distinct_from_normal_comments() {
+        let mut doc_cursor = SourceCursor::new("/// docs");
+        let doc = consume_outer_doc_comment(&mut doc_cursor)
+            .expect("no error")
+            .expect("expected outer doc");
+        assert_eq!(doc.kind, CommentKind::DocLine);
+        assert_eq!(doc.text, "/// docs");
+
+        let mut normal_cursor = SourceCursor::new("// normal");
+        let normal =
+            consume_outer_doc_comment(&mut normal_cursor).expect("no error");
+        assert!(normal.is_none());
+        assert_eq!(normal_cursor.offset(), 0);
+    }
+
+    #[test]
+    fn consume_outer_doc_block_comment_distinct_from_normal_comments() {
+        let mut doc_cursor = SourceCursor::new("/** docs */");
+        let doc = consume_outer_doc_comment(&mut doc_cursor)
+            .expect("no error")
+            .expect("expected outer doc block");
+        assert_eq!(doc.kind, CommentKind::DocBlock);
+        assert_eq!(doc.text, "/** docs */");
+
+        let mut normal_cursor = SourceCursor::new("/* normal */");
+        let normal =
+            consume_outer_doc_comment(&mut normal_cursor).expect("no error");
+        assert!(normal.is_none());
+        assert_eq!(normal_cursor.offset(), 0);
     }
 }

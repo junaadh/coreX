@@ -3,8 +3,8 @@ use std::fmt::{Display, Formatter};
 
 /// Structured parser failure surface.
 ///
-/// Parser errors wrap lexer failures and token expectation failures, and can
-/// represent temporarily unsupported top-level starts while scaffolding grows.
+/// Parser errors wrap lexer failures and token expectation failures. The
+/// `UnsupportedItemStart` variant remains for explicitly gated grammar entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
     Lex(LexerError),

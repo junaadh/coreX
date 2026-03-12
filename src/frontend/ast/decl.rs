@@ -1,6 +1,6 @@
 //! Declaration-level source AST nodes.
 
-use super::span::Spanned;
+use super::span::{Span, Spanned};
 use super::stmt::Block;
 use super::ty::Type;
 
@@ -27,6 +27,23 @@ pub enum AttributeArgs {
     None,
     Paren { raw: String },
     Braced { raw: String },
+}
+
+/// Source-preserving doc-comment form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DocCommentKind {
+    OuterLine,
+    OuterBlock,
+    InnerLine,
+    InnerBlock,
+}
+
+/// Source-level doc comment attached to declarations.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DocComment {
+    pub kind: DocCommentKind,
+    pub span: Span,
+    pub text: String,
 }
 
 /// Receiver syntax for method/initializer declarations.
@@ -80,6 +97,7 @@ pub struct WherePredicate {
 /// Source function declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FunctionDecl {
+    pub docs: Vec<Spanned<DocComment>>,
     pub attributes: Vec<Spanned<Attribute>>,
     pub modifiers: Vec<Modifier>,
     pub name: String,
@@ -101,6 +119,7 @@ pub enum InitKind {
 /// Source initializer declaration (`init`, `init?`, `init!`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InitDecl {
+    pub docs: Vec<Spanned<DocComment>>,
     pub attributes: Vec<Spanned<Attribute>>,
     pub modifiers: Vec<Modifier>,
     pub kind: InitKind,
@@ -111,6 +130,9 @@ pub struct InitDecl {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StructField {
+    pub docs: Vec<Spanned<DocComment>>,
+    /// Source attributes attached to this field declaration.
+    pub attributes: Vec<Spanned<Attribute>>,
     pub name: String,
     pub ty: Spanned<Type>,
 }
@@ -124,6 +146,7 @@ pub enum StructMember {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StructDecl {
+    pub docs: Vec<Spanned<DocComment>>,
     pub attributes: Vec<Spanned<Attribute>>,
     pub modifiers: Vec<Modifier>,
     pub name: String,
@@ -139,6 +162,9 @@ pub enum EnumCaseParam {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EnumCase {
+    pub docs: Vec<Spanned<DocComment>>,
+    /// Source attributes attached to this enum case declaration.
+    pub attributes: Vec<Spanned<Attribute>>,
     pub name: String,
     pub payload: Vec<Spanned<EnumCaseParam>>,
 }
@@ -152,6 +178,7 @@ pub enum EnumMember {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EnumDecl {
+    pub docs: Vec<Spanned<DocComment>>,
     pub attributes: Vec<Spanned<Attribute>>,
     pub modifiers: Vec<Modifier>,
     pub name: String,
@@ -167,6 +194,7 @@ pub enum ImplMember {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ImplDecl {
+    pub docs: Vec<Spanned<DocComment>>,
     pub attributes: Vec<Spanned<Attribute>>,
     pub target: Spanned<Type>,
     pub conformance: Option<Spanned<Type>>,
@@ -187,6 +215,8 @@ pub enum AccessorRequirement {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AssociatedTypeDecl {
+    pub docs: Vec<Spanned<DocComment>>,
+    pub attributes: Vec<Spanned<Attribute>>,
     pub name: String,
     pub bounds: Vec<Spanned<Type>>,
 }
@@ -194,6 +224,8 @@ pub struct AssociatedTypeDecl {
 /// Protocol property requirement preserving `let`/`var` and accessor contract.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ProtocolPropertyRequirement {
+    pub docs: Vec<Spanned<DocComment>>,
+    pub attributes: Vec<Spanned<Attribute>>,
     pub modifiers: Vec<Modifier>,
     pub binding: BindingKind,
     pub name: String,
@@ -204,6 +236,7 @@ pub struct ProtocolPropertyRequirement {
 /// Protocol function requirement with optional default implementation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ProtocolFunctionMember {
+    pub docs: Vec<Spanned<DocComment>>,
     pub attributes: Vec<Spanned<Attribute>>,
     pub modifiers: Vec<Modifier>,
     pub name: String,
@@ -219,6 +252,7 @@ pub struct ProtocolFunctionMember {
 /// Protocol initializer requirement with optional default implementation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ProtocolInitMember {
+    pub docs: Vec<Spanned<DocComment>>,
     pub attributes: Vec<Spanned<Attribute>>,
     pub modifiers: Vec<Modifier>,
     pub kind: InitKind,
@@ -239,6 +273,7 @@ pub enum ProtocolMember {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ProtocolDecl {
+    pub docs: Vec<Spanned<DocComment>>,
     pub attributes: Vec<Spanned<Attribute>>,
     pub modifiers: Vec<Modifier>,
     pub name: String,
@@ -250,6 +285,7 @@ pub struct ProtocolDecl {
 /// Foreign import block with symbolic library name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ExternBlock {
+    pub docs: Vec<Spanned<DocComment>>,
     pub attributes: Vec<Spanned<Attribute>>,
     pub library_name: String,
     pub members: Vec<Spanned<ExternMember>>,
@@ -258,6 +294,7 @@ pub struct ExternBlock {
 /// Foreign function import declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ExternFunctionDecl {
+    pub docs: Vec<Spanned<DocComment>>,
     pub attributes: Vec<Spanned<Attribute>>,
     pub local_name: String,
     /// When present, this is the native symbol name used for resolution.

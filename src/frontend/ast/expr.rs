@@ -15,6 +15,7 @@ pub enum UnaryOp {
 pub enum BinaryOp {
     LogicalOr,
     LogicalAnd,
+    NullCoalescing,
     BitOr,
     BitXor,
     BitAnd,
@@ -159,9 +160,12 @@ pub enum Expr {
         ty: TypeExpr,
         fields: Vec<StructLiteralField>,
     },
+    Block(Block),
     If {
         clauses: ClauseList,
         then_branch: Block,
+        /// `else` branch expression; plain `else { ... }` is represented as
+        /// `Expr::Block`.
         else_branch: Option<Box<Spanned<Expr>>>,
     },
     Match {
@@ -181,18 +185,27 @@ pub enum Expr {
         op: UnaryOp,
         expr: Box<Spanned<Expr>>,
     },
+    Ternary {
+        condition: Box<Spanned<Expr>>,
+        then_expr: Box<Spanned<Expr>>,
+        else_expr: Box<Spanned<Expr>>,
+    },
     Binary {
         op: BinaryOp,
         lhs: Box<Spanned<Expr>>,
         rhs: Box<Spanned<Expr>>,
     },
     Assignment {
-        /// Assignment spelling (`=`, `+=`, `<<=`, ...).
+        /// Assignment spelling (`=`, `+=`, `<<=`, ...) preserved in source AST.
         op: AssignOp,
         target: Box<Spanned<Expr>>,
         value: Box<Spanned<Expr>>,
     },
     MemberAccess {
+        base: Box<Spanned<Expr>>,
+        member: String,
+    },
+    OptionalMemberAccess {
         base: Box<Spanned<Expr>>,
         member: String,
     },
@@ -209,6 +222,18 @@ pub enum Expr {
     Index {
         base: Box<Spanned<Expr>>,
         index: Box<Spanned<Expr>>,
+    },
+    OptionalIndex {
+        base: Box<Spanned<Expr>>,
+        index: Box<Spanned<Expr>>,
+    },
+    ForceUnwrap {
+        expr: Box<Spanned<Expr>>,
+    },
+    Cast {
+        expr: Box<Spanned<Expr>>,
+        ty: Spanned<Type>,
+        is_optional: bool,
     },
     /// Structural range expression (`..`, `..=`, open-ended forms).
     Range {

@@ -77,6 +77,7 @@ pub enum Keyword {
     Get,
     Set,
     Try,
+    As,
 }
 
 impl Keyword {
@@ -115,6 +116,7 @@ impl Keyword {
             Self::Get => TokenKind::KwGet,
             Self::Set => TokenKind::KwSet,
             Self::Try => TokenKind::KwTry,
+            Self::As => TokenKind::KwAs,
         }
     }
 }
@@ -158,6 +160,7 @@ pub fn classify_keyword(ident: &str) -> Option<Keyword> {
         "get" => Some(Keyword::Get),
         "set" => Some(Keyword::Set),
         "try" => Some(Keyword::Try),
+        "as" => Some(Keyword::As),
         _ => None,
     }
 }
@@ -230,6 +233,7 @@ pub enum TokenKind {
     KwGet,
     KwSet,
     KwTry,
+    KwAs,
 
     // Punctuation / operators
     LParen,
@@ -276,6 +280,8 @@ pub enum TokenKind {
     AmpEq,
     PipePipe,
     Question,
+    QuestionDot,
+    QuestionQuestion,
     At,
     /// `..`
     DotDot,

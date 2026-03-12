@@ -98,6 +98,7 @@ mod tests {
             ("self", TokenKind::KwSelfValue),
             ("Self", TokenKind::KwSelfType),
             ("try", TokenKind::KwTry),
+            ("as", TokenKind::KwAs),
             ("return", TokenKind::KwReturn),
         ];
 

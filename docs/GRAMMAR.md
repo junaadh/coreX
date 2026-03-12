@@ -95,6 +95,9 @@ comment                 = line_comment
 Comments are lexical trivia.
 Doc comments (`///`, `//!`, `/** */`, `/*! */`) are distinct comment forms, not general attributes.
 Block comments always close with `*/`.
+Outer doc comments (`///`, `/** */`) may attach to the following declaration.
+Inner doc comments (`//!`, `/*! */`) are classified distinctly but are not yet
+fully attached semantically in this frontend stage.
 
 ### 2.4 Statement Termination
 
@@ -103,7 +106,7 @@ terminated_stmt = stmt, ";" ;
 ```
 
 Simple statements require `;`.
-Final expression elision rules are semantic and not fully fixed here.
+Blocks may also end with a tail expression (final expression without `;`).
 
 ## 3. File Structure
 
@@ -333,7 +336,7 @@ Semantic notes:
 ### 9.1 Attributes
 
 ```ebnf
-attribute = "@", identifier, macro_args ;
+attribute = "@", identifier, [ macro_args ] ;
 ```
 
 ### 9.2 Macro Argument Forms
@@ -344,18 +347,31 @@ macro_args = "(", [ argument_list ], ")"
            ;
 ```
 
-### 9.3 Context-sensitive macro and attribute interpretation
+### 9.3 Attribute placement and macro interpretation
 
 ```ebnf
-macro_expr      = "@", identifier, macro_args ;
+macro_expr      = "@", identifier, [ macro_args ] ;
 macro_expr_stmt = macro_expr, ";" ;
 ```
 
 Context rules:
 
-- In attribute slots before declarations/items, `@name(...)` and `@name { ... }` are parsed as `attribute`.
+- Declaration prefixes use this order: outer doc comments first, then attributes,
+  then the declaration head.
+- Attribute placement currently includes:
+  - top-level items
+  - function and initializer declarations
+  - struct/enum/impl/protocol members that are declaration-shaped (`fn`, `init`)
+  - struct fields
+  - enum variants / enum cases
+  - extern members
+  - protocol members
+- Outer doc comments may precede and attach to the same declaration positions.
+- In attribute slots before declarations/items, `@name`, `@name(...)`, and `@name { ... }` are parsed as `attribute`.
 - In expression position, the same surface syntax is parsed as `macro_expr`.
 - In statement position, macro invocation is parsed through normal expression-statement rules and therefore requires `;`.
+- Attributes are not allowed on ordinary statements, patterns, or arbitrary non-macro expressions.
+- Ordinary comments remain trivia and are not attached as docs.
 
 ### 9.4 Context examples
 
@@ -371,6 +387,113 @@ let s = @format("value \(x)");
 @log("hello");
 ```
 
+## 10. Patterns
+
+```ebnf
+pattern                 = wildcard_pattern
+                        | identifier_pattern
+                        | literal_pattern
+                        | tuple_pattern
+                        | variant_pattern
+                        | struct_pattern
+                        | array_pattern
+                        ;
+
+wildcard_pattern        = "_" ;
+identifier_pattern      = identifier ;
+
+literal_pattern         = integer_literal
+                        | boolean_literal
+                        | char_literal
+                        | string_literal
+                        ;
+
+tuple_pattern           = "(", pattern, ",", [ pattern_list ], [ "," ], ")" ;
+pattern_list            = pattern, { ",", pattern } ;
+
+variant_pattern         = [ "." ], identifier, [ variant_pattern_payload ] ;
+variant_pattern_payload = "(", [ variant_pattern_arg_list ], ")" ;
+variant_pattern_arg_list = variant_pattern_arg, { ",", variant_pattern_arg } ;
+variant_pattern_arg     = pattern | ".." ;
+
+struct_pattern          = identifier, "{", [ struct_pattern_field_list ], [ "," ], "}" ;
+struct_pattern_field_list = struct_pattern_field, { ",", struct_pattern_field } ;
+struct_pattern_field    = identifier
+                        | identifier, ":", pattern
+                        | ".."
+                        ;
+
+array_pattern           = "[", [ array_pattern_entry_list ], "]" ;
+array_pattern_entry_list = array_pattern_entry, { ",", array_pattern_entry } ;
+array_pattern_entry     = pattern
+                        | ".."
+                        | "..", identifier
+                        ;
+```
+
+Pattern notes:
+
+- `_ => value` ignores matched input.
+- `x => x` binds the matched input to `x`.
+- Variant shorthand forms like `.none`, `.some(x)`, and `.some(..)` are part of source pattern surface.
+- Tuple patterns require at least one comma; `(x)` is not tuple-pattern syntax.
+- Array/variant/struct rest marker `..` is allowed at most once and must be final.
+
+## 11. Blocks and Statements
+
+```ebnf
+block             = "{", { stmt }, [ tail_expr ], "}" ;
+tail_expr         = expr ;
+
+stmt              = let_stmt
+                  | var_stmt
+                  | if_stmt
+                  | guard_stmt
+                  | while_stmt
+                  | for_stmt
+                  | return_stmt
+                  | break_stmt
+                  | continue_stmt
+                  | expr_stmt
+                  ;
+
+let_stmt          = "let", pattern, [ ":", type ], [ "=", expr ], ";" ;
+var_stmt          = "var", pattern, [ ":", type ], [ "=", expr ], ";" ;
+expr_stmt         = expr, ";" ;
+return_stmt       = "return", [ expr ], ";" ;
+break_stmt        = "break", ";" ;
+continue_stmt     = "continue", ";" ;
+```
+
+Block/statement notes:
+
+- A block may end with a tail expression (final expression without trailing `;`).
+- If an expression is followed by `;`, it is an expression statement, not a tail expression.
+- Clause bindings (`if let`, `guard let`, `while let`) still require `= expr`.
+
+## 12. Clause Lists and Control Statements
+
+```ebnf
+clause_list       = clause, { ";", clause } ;
+clause            = expr
+                  | "let", pattern, [ ":", type ], "=", expr
+                  | "var", pattern, [ ":", type ], "=", expr
+                  ;
+
+if_stmt           = "if", clause_list, block, [ if_stmt_else ] ;
+if_stmt_else      = "else", ( block | if_stmt ) ;
+
+guard_stmt        = "guard", clause_list, "else", block ;
+while_stmt        = "while", clause_list, block ;
+for_stmt          = "for", pattern, "in", expr, block ;
+```
+
+Statement-form notes:
+
+- Statement-form `if` does not require `else`.
+- `else if` chaining is supported through recursive `if_stmt_else`.
+- `guard` is statement-only and always requires `else` block.
+
 ## 13. Expressions
 
 ### 13.1 Expression precedence overview
@@ -379,103 +502,110 @@ From lowest precedence to highest precedence:
 
 | Level | Category | Associativity |
 |---|---|---|
-| 1 | Assignment | right |
-| 2 | Range (`..`, `..=`) | left |
-| 3 | Logical OR | left |
-| 4 | Logical AND | left |
-| 5 | Bitwise OR (`|`) | left |
-| 6 | Bitwise XOR (`^`) | left |
-| 7 | Bitwise AND (`&`) | left |
-| 8 | Equality | left |
-| 9 | Comparison | left |
-| 10 | Shift (`<<`, `>>`) | left |
-| 11 | Additive (`+`, `-`) | left |
-| 12 | Multiplicative (`*`, `/`, `%`) | left |
-| 13 | Prefix unary (`try`, `!`, `-`, future `&`) | right |
-| 14 | Postfix (`()`, `[]`, `.`, `::`, trailing closure) | left |
-| 15 | Primary | n/a |
+| 1 | Assignment (`=`, compound assignment forms) | right |
+| 2 | Ternary (`?:`) | right |
+| 3 | Range (`..`, `..=`) | single-op conservative |
+| 4 | Null coalescing (`??`) | right |
+| 5 | Logical OR (`||`) | left |
+| 6 | Logical AND (`&&`) | left |
+| 7 | Bitwise OR (`|`) | left |
+| 8 | Bitwise XOR (`^`) | left |
+| 9 | Bitwise AND (`&`) | left |
+| 10 | Equality (`==`, `!=`) | left |
+| 11 | Comparison (`<`, `<=`, `>`, `>=`) | left |
+| 12 | Shift (`<<`, `>>`) | left |
+| 13 | Additive (`+`, `-`) | left |
+| 14 | Multiplicative (`*`, `/`, `%`) | left |
+| 15 | Cast (`as`, `as?`) | left |
+| 16 | Prefix (`try`, `!`, `-`) | right |
+| 17 | Postfix (`()`, `[]`, `?[]`, `.`, `?.`, `::`, postfix `!`) | left |
+| 18 | Primary/control atoms | n/a |
 
-This table is a frontend parsing contract. Operator overloading is intentionally not part of this draft.
+This table is the parser contract for the currently implemented expression surface.
 
 ### 13.2 Operators currently assumed by the grammar
 
 ```ebnf
-assignment_op      = "="
-                   | "+="
-                   | "-="
-                   | "*="
-                   | "/="
-                   | "%="
-                   | "^="
-                   | "|="
-                   | "&="
-                   | "<<="
-                   | ">>="
-                   ;
-range_op           = ".." | "..=" ;
-logical_or_op      = "||" ;
-logical_and_op     = "&&" ;
-bitwise_or_op      = "|" ;
-bitwise_xor_op     = "^" ;
-bitwise_and_op     = "&" ;
-equality_op        = "==" | "!=" ;
-comparison_op      = "<" | "<=" | ">" | ">=" ;
-shift_op           = "<<" | ">>" ;
-additive_op        = "+" | "-" ;
-multiplicative_op  = "*" | "/" | "%" ;
-prefix_op          = "!" | "-" ;
+assignment_op       = "="
+                    | "+="
+                    | "-="
+                    | "*="
+                    | "/="
+                    | "%="
+                    | "^="
+                    | "|="
+                    | "&="
+                    | "<<="
+                    | ">>="
+                    ;
+ternary_op          = "?" , ":" ;
+range_op            = ".." | "..=" ;
+null_coalescing_op  = "??" ;
+logical_or_op       = "||" ;
+logical_and_op      = "&&" ;
+bitwise_or_op       = "|" ;
+bitwise_xor_op      = "^" ;
+bitwise_and_op      = "&" ;
+equality_op         = "==" | "!=" ;
+comparison_op       = "<" | "<=" | ">" | ">=" ;
+shift_op            = "<<" | ">>" ;
+additive_op         = "+" | "-" ;
+multiplicative_op   = "*" | "/" | "%" ;
+cast_op             = "as" | "as?" ;
+prefix_op           = "!" | "-" | "try" ;
 ```
 
-Additional operators may be added later, but parser precedence should be extended explicitly rather than inferred.
+Token and parser operator surface are aligned with the list above.
 
 ### 13.3 Grammar by precedence level
 
 ```ebnf
 expr                = assignment_expr ;
 
-assignment_expr     = range_expr
-                    | postfix_expr, assignment_op, assignment_expr
+assignment_expr     = ternary_expr
+                    | ternary_expr, assignment_op, assignment_expr
                     ;
 
-range_expr          = logical_or_expr
-                    | logical_or_expr, "..", logical_or_expr
-                    | logical_or_expr, "..=", logical_or_expr
-                    | logical_or_expr, ".."
-                    | "..", logical_or_expr
+ternary_expr        = range_expr
+                    | range_expr, "?", expr, ":", ternary_expr
                     ;
 
-logical_or_expr     = logical_and_expr,
-                      { logical_or_op, logical_and_expr } ;
+range_expr          = null_coalescing_expr
+                    | null_coalescing_expr, "..", [ null_coalescing_expr ]
+                    | null_coalescing_expr, "..=", null_coalescing_expr
+                    | "..", null_coalescing_expr
+                    | "..=", null_coalescing_expr
+                    ;
 
-logical_and_expr    = bitwise_or_expr,
-                      { logical_and_op, bitwise_or_expr } ;
+null_coalescing_expr = logical_or_expr
+                     | logical_or_expr, null_coalescing_op, null_coalescing_expr
+                     ;
 
-bitwise_or_expr     = bitwise_xor_expr,
-                      { bitwise_or_op, bitwise_xor_expr } ;
+logical_or_expr     = logical_and_expr, { logical_or_op, logical_and_expr } ;
 
-bitwise_xor_expr    = bitwise_and_expr,
-                      { bitwise_xor_op, bitwise_and_expr } ;
+logical_and_expr    = bitwise_or_expr, { logical_and_op, bitwise_or_expr } ;
 
-bitwise_and_expr    = equality_expr,
-                      { bitwise_and_op, equality_expr } ;
+bitwise_or_expr     = bitwise_xor_expr, { bitwise_or_op, bitwise_xor_expr } ;
 
-equality_expr       = comparison_expr,
-                      { equality_op, comparison_expr } ;
+bitwise_xor_expr    = bitwise_and_expr, { bitwise_xor_op, bitwise_and_expr } ;
 
-comparison_expr     = shift_expr,
-                      { comparison_op, shift_expr } ;
+bitwise_and_expr    = equality_expr, { bitwise_and_op, equality_expr } ;
 
-shift_expr          = additive_expr,
-                      { shift_op, additive_expr } ;
+equality_expr       = comparison_expr, { equality_op, comparison_expr } ;
 
-additive_expr       = multiplicative_expr,
-                      { additive_op, multiplicative_expr } ;
+comparison_expr     = shift_expr, { comparison_op, shift_expr } ;
 
-multiplicative_expr = unary_expr,
-                      { multiplicative_op, unary_expr } ;
+shift_expr          = additive_expr, { shift_op, additive_expr } ;
 
-unary_expr          = "try", unary_expr
-                    | prefix_op, unary_expr
+additive_expr       = multiplicative_expr, { additive_op, multiplicative_expr } ;
+
+multiplicative_expr = cast_expr, { multiplicative_op, cast_expr } ;
+
+cast_expr           = prefix_expr, { "as", [ "?" ], type } ;
+
+prefix_expr         = "try", prefix_expr
+                    | "!", prefix_expr
+                    | "-", prefix_expr
                     | postfix_expr
                     ;
 ```
@@ -499,17 +629,21 @@ Range operands are expressions, so both integer and float endpoints are valid.
 postfix_expr            = primary_expr, { postfix_suffix } ;
 
 postfix_suffix          = member_suffix
+                        | optional_member_suffix
                         | namespace_suffix
                         | call_suffix
                         | index_suffix
-                        | trailing_closure_suffix
+                        | optional_index_suffix
+                        | force_unwrap_suffix
                         ;
 
 member_suffix           = ".", identifier ;
+optional_member_suffix  = "?.", identifier ;
 namespace_suffix        = "::", identifier, [ turbofish_suffix ] ;
 call_suffix             = "(", [ argument_list ], ")" ;
 index_suffix            = "[", expr, "]" ;
-trailing_closure_suffix = closure_expr ;
+optional_index_suffix   = "?", "[", expr, "]" ;
+force_unwrap_suffix     = "!" ;
 
 argument_list           = argument, { ",", argument } ;
 argument                = expr
@@ -519,19 +653,20 @@ argument                = expr
 turbofish_suffix        = "<", type_list, ">" ;
 ```
 
-Semantic restriction:
+Postfix notes:
 
-- only one trailing closure is supported for now
-- trailing closure attaches to the immediately preceding callable postfix expression
-- `::` binds namespace/type/static lookup, while `.` binds value/member access and qualified enum-case syntax
+- `?.` and `?[]` are optional-chaining postfix forms.
+- postfix `!` is force unwrap and is distinct from prefix logical-not.
+- `::` binds namespace/type/static lookup, while `.`/`?.` bind value/member lookup.
 
 Examples:
 
 - `foo()`
 - `foo(x: 1, y: 2)`
-- `foo { $0 }`
-- `foo(bar) { $0 }`
 - `xs[0]`
+- `value?.member`
+- `value?[index]`
+- `value!.member`
 - `usize::from(x)`
 - `value.method()`
 - `Type::make::<T>(x)`
@@ -571,23 +706,19 @@ Notes:
 spread_expr = "..", expr ;
 ```
 
-`spread_expr` is only valid in literal contexts that explicitly allow spread entries.
+`spread_expr` is currently modeled in AST but not part of the parser's array/struct literal entry grammar in this parser stage.
 
 ### 13.7 Array literals
 
 ```ebnf
 array_literal      = "[", [ array_element_list ], "]" ;
-array_element_list = array_element, { ",", array_element } ;
-array_element      = expr | spread_expr ;
+array_element_list = expr, { ",", expr } ;
 ```
 
 Examples:
 
 - `[]`
 - `[1, 2, 3]`
-- `[1, 2, ..xs]`
-
-Empty array literals require contextual type inference if element type cannot be inferred locally.
 
 ### 13.8 Struct literals
 
@@ -599,7 +730,6 @@ type_expr              = identifier | "Self" ;
 struct_field_init_list = struct_field_init, { ",", struct_field_init } ;
 struct_field_init      = identifier
                        | identifier, ":", expr
-                       | spread_expr
                        ;
 ```
 
@@ -607,11 +737,32 @@ Examples:
 
 - `Self { inner }`
 - `Type { inner: 1, other }`
-- `Foo { x: 1, ..rest }`
 
 Shorthand form means field name and local variable name match.
 
-### 13.9 Closures
+Parser note:
+- Struct literal parsing is intentionally conservative and starts only from
+  type-like heads accepted by parser heuristics.
+
+### 13.9 If and match expressions
+
+```ebnf
+if_expr          = "if", clause_list, block, "else", if_expr_else ;
+if_expr_else     = if_expr | block | expr ;
+
+match_expr       = "match", expr, "{", [ match_arm_list ], [ "," ], "}" ;
+match_arm_list   = match_arm, { ",", match_arm } ;
+match_arm        = pattern, "=>", match_arm_body ;
+match_arm_body   = expr | block ;
+```
+
+Expression-form notes:
+
+- Expression-form `if` requires `else`.
+- `else if` chaining is supported via recursive `if_expr`.
+- `else { ... }` is represented as an actual else block expression branch.
+
+### 13.10 Closures
 
 ```ebnf
 closure_expr       = "{", [ closure_signature ], closure_body, "}" ;
@@ -622,7 +773,7 @@ closure_param      = identifier
                    | identifier, ":", type
                    ;
 
-closure_body       = { statement }, [ expr ] ;
+closure_body       = { stmt }, [ expr ] ;
 ```
 
 Examples:
@@ -634,6 +785,9 @@ Examples:
 Semantic rule:
 
 - `$0`, `$1`, etc. are only valid when there is no explicit closure parameter list
+- In expression position, `{ ... }` parses as closure syntax. Generic block
+  expressions are only produced in explicit grammar contexts (for example
+  `if ... else { ... }` branches).
 
 ## 14. Protocol declarations
 
