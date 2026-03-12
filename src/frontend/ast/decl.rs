@@ -7,8 +7,15 @@ use super::ty::Type;
 /// Item/member modifier set currently supported by source grammar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Modifier {
-    Pub,
     Async,
+}
+
+/// Source visibility surface captured by the parser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Visibility {
+    Public,
+    PublicSuper,
+    PublicProject,
 }
 
 /// Source-level attribute.
@@ -99,6 +106,7 @@ pub struct WherePredicate {
 pub struct FunctionDecl {
     pub docs: Vec<Spanned<DocComment>>,
     pub attributes: Vec<Spanned<Attribute>>,
+    pub visibility: Option<Visibility>,
     pub modifiers: Vec<Modifier>,
     pub name: String,
     pub generic_params: Vec<Spanned<GenericParam>>,
@@ -148,6 +156,7 @@ pub enum StructMember {
 pub struct StructDecl {
     pub docs: Vec<Spanned<DocComment>>,
     pub attributes: Vec<Spanned<Attribute>>,
+    pub visibility: Option<Visibility>,
     pub modifiers: Vec<Modifier>,
     pub name: String,
     pub generic_params: Vec<Spanned<GenericParam>>,
@@ -180,6 +189,7 @@ pub enum EnumMember {
 pub struct EnumDecl {
     pub docs: Vec<Spanned<DocComment>>,
     pub attributes: Vec<Spanned<Attribute>>,
+    pub visibility: Option<Visibility>,
     pub modifiers: Vec<Modifier>,
     pub name: String,
     pub generic_params: Vec<Spanned<GenericParam>>,
@@ -275,6 +285,7 @@ pub enum ProtocolMember {
 pub struct ProtocolDecl {
     pub docs: Vec<Spanned<DocComment>>,
     pub attributes: Vec<Spanned<Attribute>>,
+    pub visibility: Option<Visibility>,
     pub modifiers: Vec<Modifier>,
     pub name: String,
     pub generic_params: Vec<Spanned<GenericParam>>,
@@ -313,17 +324,39 @@ pub enum ExternMember {
 /// Source use declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UseItem {
+    pub visibility: Option<Visibility>,
     pub tree: Spanned<UseTree>,
+}
+
+/// Source scope declaration (`scope foo;`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ScopeDecl {
+    pub visibility: Option<Visibility>,
+    pub name: String,
+}
+
+/// Source use path representation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UsePath {
+    pub segments: Vec<String>,
 }
 
 /// Source use-tree representation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum UseTree {
-    Name(String),
-    SelfValue,
-    Group(Vec<Spanned<UseTree>>),
     Path {
-        head: String,
-        tail: Box<Spanned<UseTree>>,
+        path: UsePath,
     },
+    Glob {
+        path: UsePath,
+    },
+    Alias {
+        path: UsePath,
+        alias: String,
+    },
+    Group {
+        path: Option<UsePath>,
+        items: Vec<Spanned<UseTree>>,
+    },
+    SelfImport,
 }

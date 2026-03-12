@@ -46,6 +46,7 @@ pub enum CommentKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Keyword {
     Use,
+    Scope,
     Struct,
     Enum,
     Impl,
@@ -85,6 +86,7 @@ impl Keyword {
     pub const fn as_token_kind(self) -> TokenKind {
         match self {
             Self::Use => TokenKind::KwUse,
+            Self::Scope => TokenKind::KwScope,
             Self::Struct => TokenKind::KwStruct,
             Self::Enum => TokenKind::KwEnum,
             Self::Impl => TokenKind::KwImpl,
@@ -129,6 +131,7 @@ impl Keyword {
 pub fn classify_keyword(ident: &str) -> Option<Keyword> {
     match ident {
         "use" => Some(Keyword::Use),
+        "scope" => Some(Keyword::Scope),
         "struct" => Some(Keyword::Struct),
         "enum" => Some(Keyword::Enum),
         "impl" => Some(Keyword::Impl),
@@ -202,6 +205,7 @@ pub enum TokenKind {
 
     // Keywords
     KwUse,
+    KwScope,
     KwStruct,
     KwEnum,
     KwImpl,

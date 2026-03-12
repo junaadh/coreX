@@ -1,7 +1,5 @@
 /// Stable identifier for a source file stored in [`super::SourceDb`].
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FileId(u32);
 
 impl FileId {

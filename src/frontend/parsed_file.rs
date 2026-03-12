@@ -3,6 +3,7 @@
 pub struct ParsedFile {
     pub file_id: crate::frontend::source::FileId,
     pub ast: crate::frontend::ast::File,
+    pub diagnostics: crate::frontend::DiagnosticsBag,
 }
 
 /// File-aware parser failure wrapper preserving the source file id.

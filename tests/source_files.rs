@@ -1,6 +1,8 @@
 use core_x::frontend::ast::Span;
 use core_x::frontend::parser::parse_source_file_from_source_file;
-use core_x::frontend::source::{FileId, LineCol, LineIndex, SourceDb, SourceFile};
+use core_x::frontend::source::{
+    FileId, LineCol, LineIndex, SourceDb, SourceFile,
+};
 use std::path::PathBuf;
 
 #[test]

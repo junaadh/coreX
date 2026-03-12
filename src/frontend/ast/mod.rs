@@ -37,8 +37,8 @@ pub use decl::{
     GenericParam, ImplDecl, ImplMember, InitDecl, InitKind, Modifier,
     ParamDecl, ParamLabel, ProtocolDecl, ProtocolFunctionMember,
     ProtocolInitMember, ProtocolMember, ProtocolPropertyRequirement,
-    ReceiverKind, StructDecl, StructField, StructMember, UseItem, UseTree,
-    WhereClause, WherePredicate,
+    ReceiverKind, ScopeDecl, StructDecl, StructField, StructMember, UseItem,
+    UsePath, UseTree, Visibility, WhereClause, WherePredicate,
 };
 pub use expr::{
     ArrayElement, AssignOp, BinaryOp, CallArg, ClosureParam, Expr,

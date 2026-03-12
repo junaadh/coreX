@@ -46,7 +46,9 @@ fn parse_session_parse_file_reports_parse_error_with_file_id() {
 
     let err = session.parse_file(file_id).expect_err("parse should fail");
     match err {
-        ParseSessionError::Parse(FileParseError { file_id: err_id, .. }) => {
+        ParseSessionError::Parse(FileParseError {
+            file_id: err_id, ..
+        }) => {
             assert_eq!(err_id, file_id);
         }
         other => panic!("expected parse error, got {other:?}"),
@@ -58,11 +60,10 @@ fn parse_session_parse_file_reports_missing_file() {
     let session = ParseSession::new(SourceDb::new());
     let missing = FileId::new(99);
 
-    let err = session.parse_file(missing).expect_err("file should be missing");
-    assert_eq!(
-        err,
-        ParseSessionError::MissingFile { file_id: missing }
-    );
+    let err = session
+        .parse_file(missing)
+        .expect_err("file should be missing");
+    assert_eq!(err, ParseSessionError::MissingFile { file_id: missing });
 }
 
 #[test]
@@ -150,7 +151,9 @@ fn parse_session_parses_all_example_files() {
                 .db()
                 .file(err.file_id)
                 .map(|f| f.path().display().to_string())
-                .unwrap_or_else(|| format!("<missing file id {}>", err.file_id.raw()));
+                .unwrap_or_else(|| {
+                    format!("<missing file id {}>", err.file_id.raw())
+                });
             panic!("failed to parse example {}: {}", display_path, err.error);
         }
     }

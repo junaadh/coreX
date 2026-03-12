@@ -9,8 +9,9 @@ fn examples_dir() -> PathBuf {
 
 fn example_cx_files() -> Vec<PathBuf> {
     let dir = examples_dir();
-    let entries = fs::read_dir(&dir)
-        .unwrap_or_else(|err| panic!("failed to read examples dir {}: {err}", dir.display()));
+    let entries = fs::read_dir(&dir).unwrap_or_else(|err| {
+        panic!("failed to read examples dir {}: {err}", dir.display())
+    });
 
     let mut files = entries
         .filter_map(|entry| entry.ok().map(|e| e.path()))
@@ -32,12 +33,18 @@ fn all_examples_parse() {
     );
 
     for path in files {
-        let source = fs::read_to_string(&path)
-            .unwrap_or_else(|err| panic!("failed to read example {}: {err}", path.display()));
+        let source = fs::read_to_string(&path).unwrap_or_else(|err| {
+            panic!("failed to read example {}: {err}", path.display())
+        });
 
-        parse_source_file(&source).unwrap_or_else(|err| {
+        let parsed = parse_source_file(&source).unwrap_or_else(|err| {
             panic!("failed to parse example {}: {err}", path.display())
         });
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "strict parse returned diagnostics for {}",
+            path.display()
+        );
     }
 }
 
@@ -45,7 +52,9 @@ fn all_examples_parse() {
 fn examples_directory_contains_expected_files() {
     let present = example_cx_files()
         .into_iter()
-        .filter_map(|p| p.file_name().and_then(|s| s.to_str()).map(|s| s.to_owned()))
+        .filter_map(|p| {
+            p.file_name().and_then(|s| s.to_str()).map(|s| s.to_owned())
+        })
         .collect::<BTreeSet<_>>();
 
     let expected = [

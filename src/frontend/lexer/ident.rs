@@ -94,6 +94,7 @@ mod tests {
     fn classifies_reserved_keywords() {
         let cases = [
             ("fn", TokenKind::KwFn),
+            ("scope", TokenKind::KwScope),
             ("struct", TokenKind::KwStruct),
             ("self", TokenKind::KwSelfValue),
             ("Self", TokenKind::KwSelfType),

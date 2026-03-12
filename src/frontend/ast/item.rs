@@ -1,8 +1,8 @@
 //! File and top-level item nodes.
 
 use super::decl::{
-    EnumDecl, ExternBlock, FunctionDecl, ImplDecl, ProtocolDecl, StructDecl,
-    UseItem,
+    EnumDecl, ExternBlock, FunctionDecl, ImplDecl, ProtocolDecl, ScopeDecl,
+    StructDecl, UseItem,
 };
 use super::span::Spanned;
 
@@ -16,6 +16,7 @@ pub struct File {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Item {
     Use(Spanned<UseItem>),
+    Scope(Spanned<ScopeDecl>),
     Struct(Spanned<StructDecl>),
     Enum(Spanned<EnumDecl>),
     Impl(Spanned<ImplDecl>),

@@ -6,10 +6,10 @@ use crate::frontend::ast::{
     GenericParam, ImplDecl, ImplMember, InitDecl, InitKind, Item, LetStmt,
     MacroExprArgs, MatchArm, MatchArmBody, Modifier, ParamDecl, ParamLabel,
     Pattern, ProtocolDecl, ProtocolFunctionMember, ProtocolInitMember,
-    ProtocolMember, ProtocolPropertyRequirement, ReceiverKind, Spanned,
-    StringLiteral, StringPart, StructDecl, StructField, StructLiteralField,
-    StructMember, StructPatternField, Type, TypeExpr, UseItem, UseTree,
-    VarStmt, WhileStmt,
+    ProtocolMember, ProtocolPropertyRequirement, ReceiverKind, ScopeDecl,
+    Spanned, StringLiteral, StringPart, StructDecl, StructField,
+    StructLiteralField, StructMember, StructPatternField, Type, TypeExpr,
+    UseItem, UsePath, UseTree, VarStmt, Visibility, WhileStmt,
 };
 use crate::frontend::lexer::{
     CommentKind, Lexer, LexerError, Span, Token, TokenKind,
@@ -23,18 +23,21 @@ use super::error::ParseError;
 /// `Parser` owns the token buffer and a cursor index into that buffer. It is a
 /// source-oriented parser that runs before semantic analysis.
 #[derive(Debug, Clone)]
-pub struct Parser<'a> {
+pub(crate) struct Parser<'a> {
     source: &'a str,
     tokens: Vec<Token>,
     cursor: usize,
     doc_comments: Vec<Spanned<DocComment>>,
     doc_cursor: usize,
     last_token_end: usize,
+    pub(crate) diagnostics: crate::frontend::DiagnosticsBag,
+    recovery_enabled: bool,
+    recovery_file_id: Option<crate::frontend::source::FileId>,
 }
 
 impl<'a> Parser<'a> {
     /// Creates a parser by lexing the full source into a token buffer.
-    pub fn new(source: &'a str) -> Result<Self, ParseError> {
+    fn new(source: &'a str) -> Result<Self, ParseError> {
         let doc_comments = collect_doc_comments(source)
             .map_err(LexerError::from)?
             .into_iter()
@@ -75,11 +78,14 @@ impl<'a> Parser<'a> {
             doc_comments,
             doc_cursor: 0,
             last_token_end: 0,
+            diagnostics: crate::frontend::DiagnosticsBag::new(),
+            recovery_enabled: false,
+            recovery_file_id: None,
         })
     }
 
     /// Parses a full source file until EOF.
-    pub fn parse_file(&mut self) -> Result<ast::File, ParseError> {
+    fn parse_file(&mut self) -> Result<ast::File, ParseError> {
         let mut items = Vec::new();
         while !self.is_eof() {
             items.push(self.parse_item()?);
@@ -87,40 +93,109 @@ impl<'a> Parser<'a> {
         Ok(ast::File { items })
     }
 
-    fn parse_item(&mut self) -> Result<Spanned<Item>, ParseError> {
-        if self.at(TokenKind::KwUse) {
-            return self.parse_use_item();
+    /// Parses a full source file while collecting diagnostics and recovering at
+    /// conservative top-level boundaries.
+    fn parse_file_with_recovery(&mut self) -> ast::File {
+        let enabled_here = !self.recovery_enabled;
+        if enabled_here {
+            self.enable_recovery_with_file_id(
+                crate::frontend::source::FileId::new(0),
+            );
+        }
+        let mut items = Vec::new();
+
+        while !self.is_eof() {
+            let checkpoint = self.cursor;
+            if let Some(item) = self.parse_item_recovering() {
+                items.push(item);
+            }
+
+            if self.is_eof() {
+                break;
+            }
+            if self.cursor == checkpoint {
+                let _ = self.bump();
+            }
         }
 
+        if enabled_here {
+            self.recovery_enabled = false;
+            self.recovery_file_id = None;
+        }
+        ast::File { items }
+    }
+
+    fn current_recovery_file_id(&self) -> crate::frontend::source::FileId {
+        self.recovery_file_id
+            .unwrap_or(crate::frontend::source::FileId::new(0))
+    }
+
+    pub(crate) fn enable_recovery_with_file_id(
+        &mut self,
+        file_id: crate::frontend::source::FileId,
+    ) {
+        self.recovery_enabled = true;
+        self.recovery_file_id = Some(file_id);
+        self.diagnostics = crate::frontend::DiagnosticsBag::new();
+    }
+
+    fn parse_item(&mut self) -> Result<Spanned<Item>, ParseError> {
         let start = self.peek().span.start;
         let docs = self.parse_outer_doc_comments();
         let attributes = self.parse_attributes()?;
+        let visibility = self.parse_optional_visibility()?;
         let modifiers = self.parse_modifiers();
         let token = *self.peek();
         match token.kind {
+            TokenKind::KwUse => {
+                if !docs.is_empty()
+                    || !attributes.is_empty()
+                    || !modifiers.is_empty()
+                {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "'use' declaration prefix",
+                        found: token.kind,
+                        span: token.span,
+                    });
+                }
+                self.parse_use_item_with_visibility(start, visibility)
+            }
+            TokenKind::KwScope => {
+                if !docs.is_empty()
+                    || !attributes.is_empty()
+                    || !modifiers.is_empty()
+                {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "'scope' declaration prefix",
+                        found: token.kind,
+                        span: token.span,
+                    });
+                }
+                self.parse_scope_item_with_visibility(start, visibility)
+            }
             TokenKind::KwFn => {
                 let function = self.parse_function_decl_with_prefix(
-                    start, docs, attributes, modifiers,
+                    start, docs, attributes, visibility, modifiers,
                 )?;
                 let span = function.span;
                 Ok(Spanned::new(Item::Function(function), span))
             }
             TokenKind::KwStruct => {
                 let decl = self.parse_struct_decl_with_prefix(
-                    start, docs, attributes, modifiers,
+                    start, docs, attributes, visibility, modifiers,
                 )?;
                 let span = decl.span;
                 Ok(Spanned::new(Item::Struct(decl), span))
             }
             TokenKind::KwEnum => {
                 let decl = self.parse_enum_decl_with_prefix(
-                    start, docs, attributes, modifiers,
+                    start, docs, attributes, visibility, modifiers,
                 )?;
                 let span = decl.span;
                 Ok(Spanned::new(Item::Enum(decl), span))
             }
             TokenKind::KwImpl => {
-                if !modifiers.is_empty() {
+                if !modifiers.is_empty() || visibility.is_some() {
                     return Err(ParseError::UnexpectedToken {
                         expected: "'impl'",
                         found: token.kind,
@@ -134,13 +209,13 @@ impl<'a> Parser<'a> {
             }
             TokenKind::KwProtocol => {
                 let decl = self.parse_protocol_decl_with_prefix(
-                    start, docs, attributes, modifiers,
+                    start, docs, attributes, visibility, modifiers,
                 )?;
                 let span = decl.span;
                 Ok(Spanned::new(Item::Protocol(decl), span))
             }
             TokenKind::KwExtern => {
-                if !modifiers.is_empty() {
+                if !modifiers.is_empty() || visibility.is_some() {
                     return Err(ParseError::UnexpectedToken {
                         expected: "'extern'",
                         found: token.kind,
@@ -165,57 +240,288 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_use_item(&mut self) -> Result<Spanned<Item>, ParseError> {
+    fn parse_item_recovering(&mut self) -> Option<Spanned<Item>> {
+        match self.parse_item() {
+            Ok(item) => Some(item),
+            Err(error) => {
+                self.record_parse_error(&error);
+                let checkpoint = self.cursor;
+                self.synchronize_to_top_level_item();
+                if self.cursor == checkpoint && !self.is_eof() {
+                    let _ = self.bump();
+                }
+                None
+            }
+        }
+    }
+
+    fn parse_stmt_recovering(&mut self) -> Option<Spanned<ast::Stmt>> {
+        match self.parse_stmt() {
+            Ok(stmt) => Some(stmt),
+            Err(error) => {
+                self.record_parse_error(&error);
+                let checkpoint = self.cursor;
+                self.synchronize_to_statement_boundary();
+                if self.cursor == checkpoint && !self.is_eof() {
+                    let _ = self.bump();
+                }
+                None
+            }
+        }
+    }
+
+    fn record_parse_error(&mut self, error: &ParseError) {
+        let diagnostic = crate::frontend::diagnostic_from_parse_error(
+            self.current_recovery_file_id(),
+            error,
+        );
+        self.diagnostics.push(diagnostic);
+    }
+
+    fn synchronize_to_top_level_item(&mut self) {
+        loop {
+            if self.is_eof() {
+                return;
+            }
+
+            let kind = self.peek().kind;
+            if kind == TokenKind::Semi {
+                let _ = self.bump();
+                return;
+            }
+            if self.can_start_top_level_item(kind) {
+                return;
+            }
+            if kind == TokenKind::RBrace {
+                while self.at(TokenKind::RBrace) && !self.is_eof() {
+                    let _ = self.bump();
+                }
+                continue;
+            }
+
+            let _ = self.bump();
+        }
+    }
+
+    fn synchronize_to_statement_boundary(&mut self) {
+        loop {
+            if self.is_eof() {
+                return;
+            }
+
+            let kind = self.peek().kind;
+            if kind == TokenKind::Semi {
+                let _ = self.bump();
+                return;
+            }
+            if kind == TokenKind::RBrace {
+                return;
+            }
+            if self.can_start_stmt(kind) || self.can_start_expr_statement(kind)
+            {
+                return;
+            }
+
+            let _ = self.bump();
+        }
+    }
+
+    fn parse_use_item_with_visibility(
+        &mut self,
+        start: usize,
+        visibility: Option<Visibility>,
+    ) -> Result<Spanned<Item>, ParseError> {
         let use_kw = self.expect(TokenKind::KwUse)?;
         let tree = self.parse_use_tree()?;
         let semi = self.expect(TokenKind::Semi)?;
-        let span = Span::new(use_kw.span.start, semi.span.end);
-        let use_item = Spanned::new(UseItem { tree }, span);
+        let span_start = if visibility.is_some() {
+            start
+        } else {
+            use_kw.span.start
+        };
+        let span = Span::new(span_start, semi.span.end);
+        let use_item = Spanned::new(UseItem { visibility, tree }, span);
         Ok(Spanned::new(Item::Use(use_item), span))
     }
 
-    fn parse_use_tree(&mut self) -> Result<Spanned<UseTree>, ParseError> {
-        if self.at(TokenKind::LBrace) {
-            let start = self.bump().span.start;
-            let mut entries = Vec::new();
+    fn parse_scope_item_with_visibility(
+        &mut self,
+        start: usize,
+        visibility: Option<Visibility>,
+    ) -> Result<Spanned<Item>, ParseError> {
+        let scope_kw = self.expect(TokenKind::KwScope)?;
+        let (name, _) = self.expect_identifier_text()?;
+        let semi = self.expect(TokenKind::Semi)?;
+        let span_start = if visibility.is_some() {
+            start
+        } else {
+            scope_kw.span.start
+        };
+        let span = Span::new(span_start, semi.span.end);
+        let scope_decl = Spanned::new(ScopeDecl { visibility, name }, span);
+        Ok(Spanned::new(Item::Scope(scope_decl), span))
+    }
 
-            if !self.at(TokenKind::RBrace) {
-                loop {
-                    entries.push(self.parse_use_tree()?);
-                    if self.eat(TokenKind::Comma).is_some() {
-                        if self.at(TokenKind::RBrace) {
-                            break;
-                        }
-                        continue;
-                    }
+    fn parse_use_tree(&mut self) -> Result<Spanned<UseTree>, ParseError> {
+        self.parse_use_tree_with_self(false)
+    }
+
+    fn parse_use_tree_with_self(
+        &mut self,
+        allow_self_import: bool,
+    ) -> Result<Spanned<UseTree>, ParseError> {
+        if allow_self_import && self.at(TokenKind::KwSelfValue) {
+            let tok = self.bump();
+            return Ok(Spanned::new(UseTree::SelfImport, tok.span));
+        }
+
+        let (path, path_span) = self.parse_use_path()?;
+
+        if self.eat(TokenKind::KwAs).is_some() {
+            let (alias, alias_span) = self.expect_identifier_text()?;
+            let span = Span::new(path_span.start, alias_span.end);
+            return Ok(Spanned::new(UseTree::Alias { path, alias }, span));
+        }
+
+        if self.eat(TokenKind::ColonColon).is_some() {
+            if self.eat(TokenKind::Star).is_some() {
+                let end = self.last_token_end;
+                return Ok(Spanned::new(
+                    UseTree::Glob { path },
+                    Span::new(path_span.start, end),
+                ));
+            }
+            if self.at(TokenKind::LBrace) {
+                return self.parse_use_group_with_prefix(path, path_span.start);
+            }
+            return Err(ParseError::UnexpectedToken {
+                expected: "'*' or '{'",
+                found: self.peek().kind,
+                span: self.peek().span,
+            });
+        }
+
+        Ok(Spanned::new(UseTree::Path { path }, path_span))
+    }
+
+    fn parse_use_group_with_prefix(
+        &mut self,
+        path: UsePath,
+        span_start: usize,
+    ) -> Result<Spanned<UseTree>, ParseError> {
+        self.expect(TokenKind::LBrace)?;
+        let items = self.parse_use_group_items()?;
+        let rbrace = self.expect(TokenKind::RBrace)?;
+        Ok(Spanned::new(
+            UseTree::Group {
+                path: Some(path),
+                items,
+            },
+            Span::new(span_start, rbrace.span.end),
+        ))
+    }
+
+    fn parse_use_group_items(
+        &mut self,
+    ) -> Result<Vec<Spanned<UseTree>>, ParseError> {
+        let mut items = Vec::new();
+
+        if self.at(TokenKind::RBrace) {
+            return Ok(items);
+        }
+
+        loop {
+            items.push(self.parse_use_tree_with_self(true)?);
+            if self.eat(TokenKind::Comma).is_some() {
+                if self.at(TokenKind::RBrace) {
                     break;
                 }
+                continue;
             }
-
-            let end = self.expect(TokenKind::RBrace)?.span.end;
-            let span = Span::new(start, end);
-            return Ok(Spanned::new(UseTree::Group(entries), span));
+            break;
         }
 
-        if self.at(TokenKind::KwSelfValue) {
-            let tok = self.bump();
-            return Ok(Spanned::new(UseTree::SelfValue, tok.span));
+        Ok(items)
+    }
+
+    fn parse_use_path(&mut self) -> Result<(UsePath, Span), ParseError> {
+        let start = self.peek().span.start;
+        let mut segments = Vec::new();
+        segments.push(self.parse_use_path_segment(true)?);
+
+        while self.at(TokenKind::ColonColon)
+            && self.can_start_use_path_segment(self.peek_nth(1).kind)
+        {
+            let _ = self.bump();
+            segments.push(self.parse_use_path_segment(false)?);
         }
 
-        let (head, head_span) = self.expect_identifier_text()?;
-        if self.eat(TokenKind::ColonColon).is_some() {
-            let tail = self.parse_use_tree()?;
-            let span = Span::new(head_span.start, tail.span.end);
-            return Ok(Spanned::new(
-                UseTree::Path {
-                    head,
-                    tail: Box::new(tail),
-                },
-                span,
-            ));
+        let end = self.last_token_end;
+        Ok((UsePath { segments }, Span::new(start, end)))
+    }
+
+    fn can_start_use_path_segment(&self, kind: TokenKind) -> bool {
+        matches!(
+            kind,
+            TokenKind::Ident | TokenKind::KwSelfValue | TokenKind::KwScope
+        )
+    }
+
+    fn parse_use_path_segment(
+        &mut self,
+        _is_root: bool,
+    ) -> Result<String, ParseError> {
+        match self.peek().kind {
+            TokenKind::Ident => {
+                self.expect_identifier_text().map(|(text, _)| text)
+            }
+            TokenKind::KwSelfValue | TokenKind::KwScope => {
+                let tok = self.bump();
+                Ok(self.source[tok.span.start..tok.span.end].to_owned())
+            }
+            _ => Err(ParseError::UnexpectedToken {
+                expected: "path segment",
+                found: self.peek().kind,
+                span: self.peek().span,
+            }),
+        }
+    }
+
+    fn parse_optional_visibility(
+        &mut self,
+    ) -> Result<Option<Visibility>, ParseError> {
+        if !self.at(TokenKind::KwPub) {
+            return Ok(None);
+        }
+        let pub_tok = self.bump();
+
+        if self.eat(TokenKind::LParen).is_none() {
+            return Ok(Some(Visibility::Public));
         }
 
-        Ok(Spanned::new(UseTree::Name(head), head_span))
+        let vis = if self.at(TokenKind::Ident) {
+            let (segment, _) = self.expect_identifier_text()?;
+            match segment.as_str() {
+                "super" => Visibility::PublicSuper,
+                "project" => Visibility::PublicProject,
+                _ => {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "'super' or 'project'",
+                        found: TokenKind::Ident,
+                        span: Span::new(pub_tok.span.end, self.last_token_end),
+                    });
+                }
+            }
+        } else {
+            return Err(ParseError::UnexpectedToken {
+                expected: "'super' or 'project'",
+                found: self.peek().kind,
+                span: self.peek().span,
+            });
+        };
+
+        self.expect(TokenKind::RParen)?;
+        Ok(Some(vis))
     }
 
     fn parse_attributes(
@@ -317,7 +623,6 @@ impl<'a> Parser<'a> {
         let mut modifiers = Vec::new();
         loop {
             let modifier = match self.peek().kind {
-                TokenKind::KwPub => Some(Modifier::Pub),
                 TokenKind::KwAsync => Some(Modifier::Async),
                 _ => None,
             };
@@ -359,14 +664,18 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a `struct` declaration and its member container.
-    pub fn parse_struct_decl(
+    #[cfg(test)]
+    pub(crate) fn parse_struct_decl(
         &mut self,
     ) -> Result<Spanned<StructDecl>, ParseError> {
         let start = self.peek().span.start;
         let docs = self.parse_outer_doc_comments();
         let attributes = self.parse_attributes()?;
+        let visibility = self.parse_optional_visibility()?;
         let modifiers = self.parse_modifiers();
-        self.parse_struct_decl_with_prefix(start, docs, attributes, modifiers)
+        self.parse_struct_decl_with_prefix(
+            start, docs, attributes, visibility, modifiers,
+        )
     }
 
     fn parse_struct_decl_with_prefix(
@@ -374,6 +683,7 @@ impl<'a> Parser<'a> {
         start: usize,
         docs: Vec<Spanned<DocComment>>,
         attributes: Vec<Spanned<Attribute>>,
+        visibility: Option<Visibility>,
         modifiers: Vec<Modifier>,
     ) -> Result<Spanned<StructDecl>, ParseError> {
         self.expect(TokenKind::KwStruct)?;
@@ -397,6 +707,7 @@ impl<'a> Parser<'a> {
             StructDecl {
                 docs,
                 attributes,
+                visibility,
                 modifiers,
                 name,
                 generic_params,
@@ -412,10 +723,18 @@ impl<'a> Parser<'a> {
         let start = self.peek().span.start;
         let docs = self.parse_outer_doc_comments();
         let attributes = self.parse_attributes()?;
+        let visibility = self.parse_optional_visibility()?;
         let modifiers = self.parse_modifiers();
 
         let member = match self.peek().kind {
             TokenKind::KwInit => {
+                if visibility.is_some() {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "struct initializer; visibility is not allowed",
+                        found: TokenKind::KwInit,
+                        span: self.peek().span,
+                    });
+                }
                 let init = self.parse_init_decl_with_prefix(
                     start, docs, attributes, modifiers,
                 )?;
@@ -424,13 +743,13 @@ impl<'a> Parser<'a> {
             }
             TokenKind::KwFn => {
                 let function = self.parse_function_decl_with_prefix(
-                    start, docs, attributes, modifiers,
+                    start, docs, attributes, visibility, modifiers,
                 )?;
                 let span = function.span;
                 Spanned::new(StructMember::Function(function), span)
             }
             TokenKind::Ident => {
-                if !modifiers.is_empty() {
+                if visibility.is_some() || !modifiers.is_empty() {
                     return Err(ParseError::UnexpectedToken {
                         expected: "struct field; modifiers are not allowed on fields",
                         found: self.peek().kind,
@@ -496,12 +815,18 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses an `enum` declaration and its member container.
-    pub fn parse_enum_decl(&mut self) -> Result<Spanned<EnumDecl>, ParseError> {
+    #[cfg(test)]
+    pub(crate) fn parse_enum_decl(
+        &mut self,
+    ) -> Result<Spanned<EnumDecl>, ParseError> {
         let start = self.peek().span.start;
         let docs = self.parse_outer_doc_comments();
         let attributes = self.parse_attributes()?;
+        let visibility = self.parse_optional_visibility()?;
         let modifiers = self.parse_modifiers();
-        self.parse_enum_decl_with_prefix(start, docs, attributes, modifiers)
+        self.parse_enum_decl_with_prefix(
+            start, docs, attributes, visibility, modifiers,
+        )
     }
 
     fn parse_enum_decl_with_prefix(
@@ -509,6 +834,7 @@ impl<'a> Parser<'a> {
         start: usize,
         docs: Vec<Spanned<DocComment>>,
         attributes: Vec<Spanned<Attribute>>,
+        visibility: Option<Visibility>,
         modifiers: Vec<Modifier>,
     ) -> Result<Spanned<EnumDecl>, ParseError> {
         self.expect(TokenKind::KwEnum)?;
@@ -532,6 +858,7 @@ impl<'a> Parser<'a> {
             EnumDecl {
                 docs,
                 attributes,
+                visibility,
                 modifiers,
                 name,
                 generic_params,
@@ -545,10 +872,18 @@ impl<'a> Parser<'a> {
         let start = self.peek().span.start;
         let docs = self.parse_outer_doc_comments();
         let attributes = self.parse_attributes()?;
+        let visibility = self.parse_optional_visibility()?;
         let modifiers = self.parse_modifiers();
 
         let member = match self.peek().kind {
             TokenKind::KwInit => {
+                if visibility.is_some() {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "enum initializer; visibility is not allowed",
+                        found: TokenKind::KwInit,
+                        span: self.peek().span,
+                    });
+                }
                 let init = self.parse_init_decl_with_prefix(
                     start, docs, attributes, modifiers,
                 )?;
@@ -557,13 +892,13 @@ impl<'a> Parser<'a> {
             }
             TokenKind::KwFn => {
                 let function = self.parse_function_decl_with_prefix(
-                    start, docs, attributes, modifiers,
+                    start, docs, attributes, visibility, modifiers,
                 )?;
                 let span = function.span;
                 Spanned::new(EnumMember::Function(function), span)
             }
             TokenKind::Ident => {
-                if !modifiers.is_empty() {
+                if visibility.is_some() || !modifiers.is_empty() {
                     return Err(ParseError::UnexpectedToken {
                         expected: "enum case; modifiers are not allowed on cases",
                         found: self.peek().kind,
@@ -667,7 +1002,10 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses an `impl` declaration container.
-    pub fn parse_impl_decl(&mut self) -> Result<Spanned<ImplDecl>, ParseError> {
+    #[cfg(test)]
+    pub(crate) fn parse_impl_decl(
+        &mut self,
+    ) -> Result<Spanned<ImplDecl>, ParseError> {
         let start = self.peek().span.start;
         let docs = self.parse_outer_doc_comments();
         let attributes = self.parse_attributes()?;
@@ -717,10 +1055,18 @@ impl<'a> Parser<'a> {
         let start = self.peek().span.start;
         let docs = self.parse_outer_doc_comments();
         let attributes = self.parse_attributes()?;
+        let visibility = self.parse_optional_visibility()?;
         let modifiers = self.parse_modifiers();
 
         match self.peek().kind {
             TokenKind::KwInit => {
+                if visibility.is_some() {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "impl initializer; visibility is not allowed",
+                        found: TokenKind::KwInit,
+                        span: self.peek().span,
+                    });
+                }
                 let init = self.parse_init_decl_with_prefix(
                     start, docs, attributes, modifiers,
                 )?;
@@ -729,7 +1075,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::KwFn => {
                 let function = self.parse_function_decl_with_prefix(
-                    start, docs, attributes, modifiers,
+                    start, docs, attributes, visibility, modifiers,
                 )?;
                 let span = function.span;
                 Ok(Spanned::new(ImplMember::Function(function), span))
@@ -743,14 +1089,18 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a `protocol` declaration and member container.
-    pub fn parse_protocol_decl(
+    #[cfg(test)]
+    pub(crate) fn parse_protocol_decl(
         &mut self,
     ) -> Result<Spanned<ProtocolDecl>, ParseError> {
         let start = self.peek().span.start;
         let docs = self.parse_outer_doc_comments();
         let attributes = self.parse_attributes()?;
+        let visibility = self.parse_optional_visibility()?;
         let modifiers = self.parse_modifiers();
-        self.parse_protocol_decl_with_prefix(start, docs, attributes, modifiers)
+        self.parse_protocol_decl_with_prefix(
+            start, docs, attributes, visibility, modifiers,
+        )
     }
 
     fn parse_protocol_decl_with_prefix(
@@ -758,6 +1108,7 @@ impl<'a> Parser<'a> {
         start: usize,
         docs: Vec<Spanned<DocComment>>,
         attributes: Vec<Spanned<Attribute>>,
+        visibility: Option<Visibility>,
         modifiers: Vec<Modifier>,
     ) -> Result<Spanned<ProtocolDecl>, ParseError> {
         self.expect(TokenKind::KwProtocol)?;
@@ -786,6 +1137,7 @@ impl<'a> Parser<'a> {
             ProtocolDecl {
                 docs,
                 attributes,
+                visibility,
                 modifiers,
                 name,
                 generic_params,
@@ -1041,14 +1393,18 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a function declaration header and body block.
-    pub fn parse_function_decl(
+    #[cfg(test)]
+    pub(crate) fn parse_function_decl(
         &mut self,
     ) -> Result<Spanned<FunctionDecl>, ParseError> {
         let start = self.peek().span.start;
         let docs = self.parse_outer_doc_comments();
         let attributes = self.parse_attributes()?;
+        let visibility = self.parse_optional_visibility()?;
         let modifiers = self.parse_modifiers();
-        self.parse_function_decl_with_prefix(start, docs, attributes, modifiers)
+        self.parse_function_decl_with_prefix(
+            start, docs, attributes, visibility, modifiers,
+        )
     }
 
     fn parse_function_decl_with_prefix(
@@ -1056,6 +1412,7 @@ impl<'a> Parser<'a> {
         start: usize,
         docs: Vec<Spanned<DocComment>>,
         attributes: Vec<Spanned<Attribute>>,
+        visibility: Option<Visibility>,
         modifiers: Vec<Modifier>,
     ) -> Result<Spanned<FunctionDecl>, ParseError> {
         let _fn_kw = self.expect(TokenKind::KwFn)?;
@@ -1074,6 +1431,7 @@ impl<'a> Parser<'a> {
             FunctionDecl {
                 docs,
                 attributes,
+                visibility,
                 modifiers,
                 name,
                 generic_params: Vec::new(),
@@ -1089,7 +1447,10 @@ impl<'a> Parser<'a> {
 
     /// Parses an initializer declaration signature (`init`, `init?`, `init!`)
     /// and body block.
-    pub fn parse_init_decl(&mut self) -> Result<Spanned<InitDecl>, ParseError> {
+    #[cfg(test)]
+    pub(crate) fn parse_init_decl(
+        &mut self,
+    ) -> Result<Spanned<InitDecl>, ParseError> {
         let start = self.peek().span.start;
         let docs = self.parse_outer_doc_comments();
         let attributes = self.parse_attributes()?;
@@ -1211,7 +1572,8 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses an `extern` block and its foreign function members.
-    pub fn parse_extern_block(
+    #[cfg(test)]
+    pub(crate) fn parse_extern_block(
         &mut self,
     ) -> Result<Spanned<ExternBlock>, ParseError> {
         let start = self.peek().span.start;
@@ -1295,13 +1657,17 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a real statement block with optional tail expression.
-    pub fn parse_block(&mut self) -> Result<ast::Block, ParseError> {
+    fn parse_block(&mut self) -> Result<ast::Block, ParseError> {
         self.parse_block_with_end().map(|(block, _)| block)
     }
 
     fn parse_block_with_end(
         &mut self,
     ) -> Result<(ast::Block, usize), ParseError> {
+        if self.recovery_enabled && self.at(TokenKind::LBrace) {
+            return Ok(self.parse_block_with_end_recovering());
+        }
+
         self.expect(TokenKind::LBrace)?;
         let (statements, tail_expr, end) =
             self.parse_block_contents_until_rbrace()?;
@@ -1406,8 +1772,150 @@ impl<'a> Parser<'a> {
         Ok((statements, tail_expr, rbrace.span.end))
     }
 
+    fn parse_block_with_end_recovering(&mut self) -> (ast::Block, usize) {
+        let _ = self.bump();
+        let (statements, tail_expr, end) =
+            self.parse_block_contents_until_rbrace_recovering();
+        (
+            ast::Block {
+                statements,
+                tail_expr,
+            },
+            end,
+        )
+    }
+
+    fn parse_block_contents_until_rbrace_recovering(
+        &mut self,
+    ) -> (Vec<Spanned<ast::Stmt>>, Option<Box<Spanned<Expr>>>, usize) {
+        let mut statements = Vec::new();
+        let mut tail_expr = None;
+
+        loop {
+            if self.at(TokenKind::RBrace) {
+                let rbrace = self.bump();
+                return (statements, tail_expr, rbrace.span.end);
+            }
+
+            if self.is_eof() {
+                let error = ParseError::UnexpectedEof {
+                    expected: "'}'",
+                    span: self.peek().span,
+                };
+                self.record_parse_error(&error);
+                return (statements, tail_expr, self.peek().span.end);
+            }
+
+            let kind = self.peek().kind;
+            if kind == TokenKind::KwIf {
+                let checkpoint = self.cursor;
+                if let Ok(expr) = self.parse_if_expr() {
+                    if let Some(semi) = self.eat(TokenKind::Semi) {
+                        let span = Span::new(expr.span.start, semi.span.end);
+                        statements.push(Spanned::new(
+                            ast::Stmt::Expr {
+                                expr: Box::new(expr),
+                                has_semi: true,
+                            },
+                            span,
+                        ));
+                        continue;
+                    }
+                    if self.at(TokenKind::RBrace) {
+                        tail_expr = Some(Box::new(expr));
+                        continue;
+                    }
+                }
+                self.cursor = checkpoint;
+                if let Some(stmt) = self.parse_stmt_recovering() {
+                    statements.push(stmt);
+                }
+                continue;
+            }
+
+            if self.can_start_stmt(kind) {
+                if let Some(stmt) = self.parse_stmt_recovering() {
+                    statements.push(stmt);
+                }
+                continue;
+            }
+
+            if self.attribute_prefix_before_statement() {
+                let error = ParseError::UnexpectedToken {
+                    expected: "statement (attributes are only allowed on declarations)",
+                    found: self.peek().kind,
+                    span: self.peek().span,
+                };
+                self.record_parse_error(&error);
+                let checkpoint = self.cursor;
+                self.synchronize_to_statement_boundary();
+                if self.cursor == checkpoint && !self.is_eof() {
+                    let _ = self.bump();
+                }
+                continue;
+            }
+
+            if self.can_start_expr_statement(kind) {
+                let checkpoint = self.cursor;
+                match self.parse_expr() {
+                    Ok(expr) => {
+                        if let Some(semi) = self.eat(TokenKind::Semi) {
+                            let span =
+                                Span::new(expr.span.start, semi.span.end);
+                            statements.push(Spanned::new(
+                                ast::Stmt::Expr {
+                                    expr: Box::new(expr),
+                                    has_semi: true,
+                                },
+                                span,
+                            ));
+                            continue;
+                        }
+
+                        if self.at(TokenKind::RBrace) {
+                            tail_expr = Some(Box::new(expr));
+                            continue;
+                        }
+
+                        let error = ParseError::UnexpectedToken {
+                            expected: "';' or '}'",
+                            found: self.peek().kind,
+                            span: self.peek().span,
+                        };
+                        self.record_parse_error(&error);
+                        let sync_checkpoint = self.cursor;
+                        self.synchronize_to_statement_boundary();
+                        if self.cursor == sync_checkpoint && !self.is_eof() {
+                            let _ = self.bump();
+                        }
+                    }
+                    Err(error) => {
+                        self.record_parse_error(&error);
+                        self.synchronize_to_statement_boundary();
+                        if self.cursor == checkpoint && !self.is_eof() {
+                            let _ = self.bump();
+                        }
+                    }
+                }
+                continue;
+            }
+
+            let error = ParseError::UnexpectedToken {
+                expected: "statement or expression",
+                found: kind,
+                span: self.peek().span,
+            };
+            self.record_parse_error(&error);
+            let checkpoint = self.cursor;
+            self.synchronize_to_statement_boundary();
+            if self.cursor == checkpoint && !self.is_eof() {
+                let _ = self.bump();
+            }
+        }
+    }
+
     /// Parses one statement.
-    pub fn parse_stmt(&mut self) -> Result<Spanned<ast::Stmt>, ParseError> {
+    fn parse_stmt(&mut self) -> Result<Spanned<ast::Stmt>, ParseError> {
         if self.attribute_prefix_before_statement() {
             return Err(ParseError::UnexpectedToken {
                 expected: "statement (attributes are only allowed on declarations)",
@@ -1504,9 +2012,7 @@ impl<'a> Parser<'a> {
         ))
     }
 
-    pub fn parse_let_stmt(
-        &mut self,
-    ) -> Result<Spanned<ast::LetStmt>, ParseError> {
+    fn parse_let_stmt(&mut self) -> Result<Spanned<ast::LetStmt>, ParseError> {
         let let_kw = self.expect(TokenKind::KwLet)?;
         let pattern = self.parse_pattern()?;
         let ty = if self.eat(TokenKind::Colon).is_some() {
@@ -1526,9 +2032,7 @@ impl<'a> Parser<'a> {
         ))
     }
 
-    pub fn parse_var_stmt(
-        &mut self,
-    ) -> Result<Spanned<ast::VarStmt>, ParseError> {
+    fn parse_var_stmt(&mut self) -> Result<Spanned<ast::VarStmt>, ParseError> {
         let var_kw = self.expect(TokenKind::KwVar)?;
         let pattern = self.parse_pattern()?;
         let ty = if self.eat(TokenKind::Colon).is_some() {
@@ -1549,7 +2053,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a `guard` statement with shared clause-list syntax.
-    pub fn parse_guard_stmt(
+    fn parse_guard_stmt(
         &mut self,
     ) -> Result<Spanned<ast::GuardStmt>, ParseError> {
         let guard_kw = self.expect(TokenKind::KwGuard)?;
@@ -1566,7 +2070,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a `while` statement with shared clause-list syntax.
-    pub fn parse_while_stmt(
+    fn parse_while_stmt(
         &mut self,
     ) -> Result<Spanned<ast::WhileStmt>, ParseError> {
         let while_kw = self.expect(TokenKind::KwWhile)?;
@@ -1579,9 +2083,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a `for <pattern> in <expr> <block>` statement.
-    pub fn parse_for_stmt(
-        &mut self,
-    ) -> Result<Spanned<ast::ForStmt>, ParseError> {
+    fn parse_for_stmt(&mut self) -> Result<Spanned<ast::ForStmt>, ParseError> {
         let for_kw = self.expect(TokenKind::KwFor)?;
         let pattern = self.parse_pattern()?;
         self.expect(TokenKind::KwIn)?;
@@ -1598,7 +2100,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a semicolon-delimited clause list used by `guard` and `while`.
-    pub fn parse_clause_list(&mut self) -> Result<ast::ClauseList, ParseError> {
+    fn parse_clause_list(&mut self) -> Result<ast::ClauseList, ParseError> {
         let mut clauses = Vec::new();
         clauses.push(self.parse_clause()?);
         while self.eat(TokenKind::Semi).is_some() {
@@ -1607,7 +2109,7 @@ impl<'a> Parser<'a> {
         Ok(ast::ClauseList { clauses })
     }
 
-    pub fn parse_clause(&mut self) -> Result<Spanned<ast::Clause>, ParseError> {
+    fn parse_clause(&mut self) -> Result<Spanned<ast::Clause>, ParseError> {
         match self.peek().kind {
             TokenKind::KwLet => self.parse_binding_clause(BindingKind::Let),
             TokenKind::KwVar => self.parse_binding_clause(BindingKind::Var),
@@ -1687,6 +2189,22 @@ impl<'a> Parser<'a> {
             ast::Stmt::Continue,
             Span::new(continue_kw.span.start, semi.span.end),
         ))
+    }
+
+    fn can_start_top_level_item(&self, kind: TokenKind) -> bool {
+        matches!(
+            kind,
+            TokenKind::KwUse
+                | TokenKind::KwScope
+                | TokenKind::KwFn
+                | TokenKind::KwStruct
+                | TokenKind::KwEnum
+                | TokenKind::KwImpl
+                | TokenKind::KwProtocol
+                | TokenKind::KwExtern
+                | TokenKind::KwPub
+                | TokenKind::At
+        )
     }
 
     fn can_start_stmt(&self, kind: TokenKind) -> bool {
@@ -1957,7 +2475,8 @@ impl<'a> Parser<'a> {
     ///
     /// Supports empty lists and comma-separated declarations with optional
     /// trailing comma.
-    pub fn parse_param_list(
+    #[cfg(test)]
+    pub(crate) fn parse_param_list(
         &mut self,
     ) -> Result<Vec<Spanned<ParamDecl>>, ParseError> {
         self.expect(TokenKind::LParen)?;
@@ -1984,14 +2503,12 @@ impl<'a> Parser<'a> {
     ///
     /// This entry point handles assignment, range, logical/binary operators,
     /// prefix operators, and postfix/primary forms.
-    pub fn parse_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
+    fn parse_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
         self.parse_assignment_expr()
     }
 
     /// Parses assignment expressions as right-associative forms.
-    pub fn parse_assignment_expr(
-        &mut self,
-    ) -> Result<Spanned<Expr>, ParseError> {
+    fn parse_assignment_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
         let lhs = self.parse_ternary_expr()?;
         let op = match self.peek().kind {
             TokenKind::Eq => Some(ast::AssignOp::Assign),
@@ -2045,7 +2562,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses range expressions (`..`, `..=`) around null-coalescing expressions.
-    pub fn parse_range_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
+    fn parse_range_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
         if let Some(op) = self.eat(TokenKind::DotDotEq) {
             if !self.can_start_expr(self.peek().kind) {
                 return Err(ParseError::UnexpectedToken {
@@ -2371,7 +2888,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses prefix unary operators before postfix/primary forms.
-    pub fn parse_prefix_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
+    fn parse_prefix_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
         if let Some(op) = self.eat(TokenKind::Minus) {
             let expr = self.parse_prefix_expr()?;
             return Ok(Spanned::new(
@@ -2439,7 +2956,7 @@ impl<'a> Parser<'a> {
     /// arrays, shorthand members, macros, basic struct literals, control
     /// expressions (`if`, `match`, closures), and segmented strings with
     /// interpolation assembly.
-    pub fn parse_primary_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
+    fn parse_primary_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
         let token = *self.peek();
         match token.kind {
             TokenKind::KwIf => self.parse_if_expr(),
@@ -2681,7 +3198,7 @@ impl<'a> Parser<'a> {
     ///
     /// Supported suffixes are member access, namespace/static access, calls,
     /// and indexing.
-    pub fn parse_postfix_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
+    fn parse_postfix_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
         let mut expr = self.parse_primary_expr()?;
 
         loop {
@@ -3013,7 +3530,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses source patterns for bindings and match arms.
-    pub fn parse_pattern(&mut self) -> Result<Spanned<Pattern>, ParseError> {
+    fn parse_pattern(&mut self) -> Result<Spanned<Pattern>, ParseError> {
         let token = *self.peek();
         match token.kind {
             TokenKind::Ident => {
@@ -3457,14 +3974,65 @@ impl<'a> Parser<'a> {
 }
 
 /// Parses a whole source file using default parser construction.
-pub fn parse_source_file(source: &str) -> Result<ast::File, ParseError> {
+pub fn parse_source_file(
+    source: &str,
+) -> Result<crate::frontend::ParsedFile, ParseError> {
     let mut parser = Parser::new(source)?;
-    parser.parse_file()
+    let ast = parser.parse_file()?;
+    Ok(crate::frontend::ParsedFile {
+        file_id: crate::frontend::source::FileId::new(0),
+        ast,
+        diagnostics: crate::frontend::DiagnosticsBag::new(),
+    })
+}
+
+/// Parses a whole source file with conservative recovery and diagnostics.
+pub fn parse_source_file_with_recovery(
+    source: &str,
+) -> Result<crate::frontend::ParsedFile, ParseError> {
+    let mut parser = Parser::new(source)?;
+    let ast = parser.parse_file_with_recovery();
+    Ok(crate::frontend::ParsedFile {
+        file_id: crate::frontend::source::FileId::new(0),
+        ast,
+        diagnostics: parser.diagnostics,
+    })
+}
+
+/// Parses a whole source file using an explicit file id.
+pub(crate) fn parse_source_file_with_file_id(
+    source: &str,
+    file_id: crate::frontend::source::FileId,
+) -> Result<crate::frontend::ParsedFile, ParseError> {
+    let mut parser = Parser::new(source)?;
+    let ast = parser.parse_file()?;
+    Ok(crate::frontend::ParsedFile {
+        file_id,
+        ast,
+        diagnostics: crate::frontend::DiagnosticsBag::new(),
+    })
+}
+
+/// Parses a whole source file with recovery using an explicit file id for
+/// diagnostics.
+pub(crate) fn parse_source_file_with_recovery_and_file_id(
+    source: &str,
+    file_id: crate::frontend::source::FileId,
+) -> Result<crate::frontend::ParsedFile, ParseError> {
+    let mut parser = Parser::new(source)?;
+    parser.enable_recovery_with_file_id(file_id);
+    let ast = parser.parse_file_with_recovery();
+    Ok(crate::frontend::ParsedFile {
+        file_id,
+        ast,
+        diagnostics: parser.diagnostics,
+    })
 }
 
 fn expected_for_token(kind: TokenKind) -> &'static str {
     match kind {
         TokenKind::KwUse => "'use'",
+        TokenKind::KwScope => "'scope'",
         TokenKind::KwFn => "'fn'",
         TokenKind::KwStruct => "'struct'",
         TokenKind::KwEnum => "'enum'",
@@ -3570,7 +4138,9 @@ mod tests {
         assert_eq!(file.items.len(), 1);
         match &file.items[0].node {
             Item::Use(use_item) => match &use_item.node.tree.node {
-                UseTree::Path { head, .. } => assert_eq!(head, "core"),
+                UseTree::Path { path } => {
+                    assert_eq!(path.segments, vec!["core", "fmt"]);
+                }
                 _ => panic!("expected path use tree"),
             },
             _ => panic!("expected use item"),
@@ -3630,7 +4200,8 @@ mod tests {
     fn parse_function_with_modifiers_and_return_type() {
         let function =
             parse_function_decl_from_source("pub async fn f(x: i32) -> i32 {}");
-        assert_eq!(function.node.modifiers.len(), 2);
+        assert!(matches!(function.node.visibility, Some(Visibility::Public)));
+        assert_eq!(function.node.modifiers.len(), 1);
         assert_eq!(function.node.params.len(), 1);
         assert!(function.node.return_type.is_some());
     }
