@@ -5,11 +5,17 @@
 //! layers.
 
 pub mod ast;
+pub mod diagnostics;
 pub mod lexer;
 pub mod parse_session;
-pub mod parser;
 pub mod parsed_file;
+pub mod parser;
 pub mod source;
 
-pub use parsed_file::{FileParseError, ParseSessionError, ParsedFile};
+pub use diagnostics::{
+    Diagnostic, DiagnosticLabel, DiagnosticLabelKind, DiagnosticRenderer,
+    DiagnosticSeverity, DiagnosticsBag, FileSpan,
+    diagnostic_from_file_parse_error, diagnostic_from_parse_error,
+};
 pub use parse_session::ParseSession;
+pub use parsed_file::{FileParseError, ParseSessionError, ParsedFile};
