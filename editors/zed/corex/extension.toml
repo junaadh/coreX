@@ -1,0 +1,11 @@
+id = "corex"
+name = "CoreX"
+version = "0.0.1"
+schema_version = 1
+authors = ["Junaadh <junaadh.02@gmail.com>"]
+description = "CoreX language support for Zed using Tree-sitter."
+repository = "file:///Users/junaadh/Developer/rust/core_x/editors/zed/corex"
+
+[grammars.corex]
+repository = "file:///Users/junaadh/Developer/rust/core_x/tree-sitter"
+rev = "63c4661e2efdbcdc99f88eaa2522dac336114af3"

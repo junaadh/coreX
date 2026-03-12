@@ -1,0 +1,10 @@
+name = "CoreX"
+grammar = "corex"
+path_suffixes = ["cx"]
+line_comments = ["// "]
+
+brackets = [
+  { start = "{", end = "}", close = true, newline = true },
+  { start = "[", end = "]", close = true, newline = false },
+  { start = "(", end = ")", close = true, newline = false },
+]
