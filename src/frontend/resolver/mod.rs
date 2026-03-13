@@ -1,3 +1,4 @@
+mod declaration_resolution;
 mod error;
 mod import_error;
 mod import_resolver;
@@ -7,6 +8,15 @@ mod model;
 mod scope_resolver;
 mod symbols;
 
+pub use declaration_resolution::{
+    DeclarationOwner, ResolvedDeclaration, ResolvedDeclarationTable,
+    ResolvedEnumCaseType, ResolvedEnumDeclaration, ResolvedEnumPayloadType,
+    ResolvedFunctionSignature, ResolvedImplDeclaration, ResolvedItemRef,
+    ResolvedNamedFunctionSignature, ResolvedParamType,
+    ResolvedProtocolDeclaration, ResolvedStructDeclaration,
+    ResolvedStructFieldType, ResolvedTypeRef, UnresolvedDeclarationPath,
+    resolve_declaration_types,
+};
 pub use error::ResolveError;
 pub use import_error::ImportResolveError;
 pub use import_resolver::{
