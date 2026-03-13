@@ -9,13 +9,19 @@ project's existing Tree-sitter grammar.
 - Tree-sitter parsing (`source.corex`)
 - syntax highlighting
 - code folding
+- indentation queries
 - locals query support (where available from the grammar queries)
+- textobject queries
+- minimal doc-comment injections
 
 ## Current status
 
 - syntax highlighting: yes
 - folding: yes
+- indents: yes
 - locals: yes
+- textobjects: yes
+- injections: minimal (doc comments)
 - semantic tooling: not yet
 
 ## Grammar wiring
@@ -32,7 +38,10 @@ Query files are placed under `languages/corex/` for Zed consumption:
 
 - `highlights.scm`
 - `folds.scm`
+- `indents.scm`
 - `locals.scm`
+- `textobjects.scm`
+- `injections.scm`
 
 ## Local development install (Zed)
 

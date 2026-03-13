@@ -1,6 +1,6 @@
 (comment) @comment
-(doc_comment) @comment.doc
-(inner_doc_comment) @comment.doc
+(doc_comment) @comment.documentation
+(inner_doc_comment) @comment.documentation
 
 (attribute
   "@" @punctuation.special
@@ -91,16 +91,43 @@
 (extern_block
   library: (identifier) @namespace)
 
-(path_prefix
+(scope_declaration
+  name: (identifier) @namespace)
+
+(use_path_segment
   (identifier) @namespace)
 
-(use_tree
-  (identifier) @namespace)
+(use_name) @namespace
+
+(use_alias
+  alias: (identifier) @namespace)
+
+(visibility
+  "pub" @keyword.modifier)
+
+(visibility
+  [
+    "super"
+    "project"
+  ] @keyword.modifier)
+
+(use_alias
+  "as" @keyword.operator)
+
+(self_import) @variable.builtin
+
+(use_path_segment
+  [
+    "root"
+    "self"
+    "super"
+  ] @keyword)
 
 (modifier) @keyword.modifier
 
 [
   "fn"
+  "scope"
   "struct"
   "enum"
   "impl"

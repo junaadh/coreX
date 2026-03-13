@@ -7,3 +7,4 @@
 (attribute_block) @fold
 (closure_expression) @fold
 (match_expression) @fold
+(use_group) @fold
