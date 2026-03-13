@@ -30,21 +30,19 @@ pub fn diagnostic_from_parse_error(
         }
         ParseError::Lex(lex_error) => {
             let mut diagnostic = Diagnostic::error("lexing failed");
-            if let Some(span) = span_from_lexer_error(lex_error) {
-                diagnostic = diagnostic.with_label(
-                    DiagnosticLabel::primary_span(FileSpan::new(file_id, span)),
-                );
-            }
+            let span = span_from_lexer_error(lex_error);
+            diagnostic = diagnostic.with_label(DiagnosticLabel::primary_span(
+                FileSpan::new(file_id, span),
+            ));
             diagnostic.with_note(format!("{lex_error}"))
         }
-        other => {
+        other @ ParseError::UnsupportedItemStart { .. } => {
             let mut diagnostic =
                 Diagnostic::error("parse failed").with_note(format!("{other}"));
-            if let Some(span) = span_from_parse_error(other) {
-                diagnostic = diagnostic.with_label(
-                    DiagnosticLabel::primary_span(FileSpan::new(file_id, span)),
-                );
-            }
+            let span = span_from_parse_error(other);
+            diagnostic = diagnostic.with_label(DiagnosticLabel::primary_span(
+                FileSpan::new(file_id, span),
+            ));
             diagnostic
         }
     }
@@ -58,18 +56,18 @@ pub fn diagnostic_from_file_parse_error(
     diagnostic_from_parse_error(error.file_id, &error.error)
 }
 
-fn span_from_parse_error(error: &ParseError) -> Option<Span> {
+fn span_from_parse_error(error: &ParseError) -> Span {
     match error {
         ParseError::UnexpectedToken { span, .. }
         | ParseError::UnexpectedEof { span, .. }
-        | ParseError::UnsupportedItemStart { span, .. } => Some(*span),
+        | ParseError::UnsupportedItemStart { span, .. } => *span,
         ParseError::Lex(lex_error) => span_from_lexer_error(lex_error),
     }
 }
 
-fn span_from_lexer_error(error: &LexerError) -> Option<Span> {
+fn span_from_lexer_error(error: &LexerError) -> Span {
     match error {
-        LexerError::UnexpectedCharacter { span, .. } => Some(*span),
+        LexerError::UnexpectedCharacter { span, .. } => *span,
         LexerError::Comment(comment_error) => {
             span_from_comment_error(comment_error)
         }
@@ -79,18 +77,18 @@ fn span_from_lexer_error(error: &LexerError) -> Option<Span> {
     }
 }
 
-fn span_from_comment_error(error: &CommentError) -> Option<Span> {
+fn span_from_comment_error(error: &CommentError) -> Span {
     match error {
-        CommentError::UnterminatedBlockComment { span } => Some(*span),
+        CommentError::UnterminatedBlockComment { span } => *span,
     }
 }
 
-fn span_from_string_error(error: &StringLexError) -> Option<Span> {
+fn span_from_string_error(error: &StringLexError) -> Span {
     match error {
         StringLexError::UnterminatedChar { span }
         | StringLexError::UnterminatedString { span }
         | StringLexError::UnterminatedEscape { span }
         | StringLexError::EmptyCharLiteral { span }
-        | StringLexError::MultiCharLiteral { span } => Some(*span),
+        | StringLexError::MultiCharLiteral { span } => *span,
     }
 }

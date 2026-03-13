@@ -13,6 +13,12 @@ use std::path::{Component, Path, PathBuf};
 pub struct ProjectLoader;
 
 impl ProjectLoader {
+    /// Loads and validates a workspace manifest from `dir/corex.toml`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProjectLoadError` if the manifest is missing, unreadable,
+    /// invalid, or does not declare the workspace role.
     pub fn load_workspace_manifest(
         dir: &Path,
     ) -> Result<WorkspaceManifest, ProjectLoadError> {
@@ -30,6 +36,12 @@ impl ProjectLoader {
         }
     }
 
+    /// Loads and normalizes a project manifest from `dir/corex.toml`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProjectLoadError` if the manifest cannot be read/parsed,
+    /// declares the wrong role, or target validation fails.
     pub fn load_project_manifest(
         dir: &Path,
     ) -> Result<ProjectManifest, ProjectLoadError> {
@@ -49,6 +61,12 @@ impl ProjectLoader {
         }
     }
 
+    /// Loads a project manifest and returns a normalized project model.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProjectLoadError` for missing/invalid manifests, wrong role,
+    /// or failed target normalization and validation.
     pub fn load_project(dir: &Path) -> Result<LoadedProject, ProjectLoadError> {
         let (project_dir, manifest_path, role) = load_manifest_for_dir(dir)?;
         let manifest = match role {
@@ -73,6 +91,12 @@ impl ProjectLoader {
     }
 }
 
+/// Convenience wrapper around [`ProjectLoader::load_project`].
+///
+/// # Errors
+///
+/// Returns `ProjectLoadError` for the same reasons as
+/// [`ProjectLoader::load_project`].
 pub fn load_project_from_dir(
     dir: &Path,
 ) -> Result<LoadedProject, ProjectLoadError> {
@@ -142,7 +166,7 @@ fn normalize_project_manifest(
     for bin in raw.binaries {
         let bin_root = join_or_normalize(project_dir, &bin.path);
         ensure_target_file_exists(manifest_path, &bin.name, &bin_root)?;
-        if bin_root == main_path || bin.name == project_name {
+        if bin_root == main_path {
             explicit_covers_default_main = true;
         }
         binaries.push(BinaryTarget {

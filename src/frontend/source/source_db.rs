@@ -15,12 +15,18 @@ impl SourceDb {
     }
 
     /// Adds a file and returns its stable id.
+    ///
+    /// # Panics
+    /// Panics if the database grows beyond `u32::MAX` files.
     pub fn add_file(
         &mut self,
         path: impl Into<PathBuf>,
         source: impl Into<String>,
     ) -> FileId {
-        let id = FileId::new(self.files.len() as u32);
+        let id = FileId::new(
+            u32::try_from(self.files.len())
+                .expect("source db file id overflow"),
+        );
         let file = SourceFile::new(id, path.into(), source.into());
         self.files.push(file);
         id
@@ -29,7 +35,9 @@ impl SourceDb {
     /// Returns a file by id.
     #[must_use]
     pub fn file(&self, id: FileId) -> Option<&SourceFile> {
-        self.files.get(id.raw() as usize)
+        usize::try_from(id.raw())
+            .ok()
+            .and_then(|index| self.files.get(index))
     }
 
     /// Returns all files in insertion order.

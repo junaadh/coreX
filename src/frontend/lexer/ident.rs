@@ -44,9 +44,7 @@ fn lex_closure_shorthand_param(cursor: &mut SourceCursor<'_>) -> Option<Token> {
     if cursor.peek() != Some('$') {
         return None;
     }
-    let Some(next) = cursor.peek_next() else {
-        return None;
-    };
+    let next = cursor.peek_next()?;
     if !next.is_ascii_digit() {
         return None;
     }

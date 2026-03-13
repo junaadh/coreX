@@ -10,6 +10,9 @@ use crate::frontend::source::{FileId, SourceDb, SourceFile};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+type ResolvedChildMetadata = Vec<(String, FileId, ResolvedScopeKind)>;
+type ResolvedChildrenBundle = (Vec<FileId>, ResolvedChildMetadata);
+
 pub struct ScopeResolver<'a> {
     db: &'a SourceDb,
     parsed_files: &'a [ParsedFile],
@@ -21,6 +24,12 @@ impl<'a> ScopeResolver<'a> {
         Self { db, parsed_files }
     }
 
+    /// Resolves scopes for a library root file.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResolveError` when the root or declared child scopes cannot be
+    /// resolved.
     pub fn resolve_library_root(
         &self,
         root_file_id: FileId,
@@ -28,6 +37,12 @@ impl<'a> ScopeResolver<'a> {
         self.resolve_with_root_kind(root_file_id, ResolvedScopeKind::Root)
     }
 
+    /// Resolves scopes for a binary root file.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResolveError` when the root or declared child scopes cannot be
+    /// resolved.
     pub fn resolve_binary_root(
         &self,
         root_file_id: FileId,
@@ -35,6 +50,8 @@ impl<'a> ScopeResolver<'a> {
         self.resolve_with_root_kind(root_file_id, ResolvedScopeKind::BinaryRoot)
     }
 
+    /// Resolves a library scope graph while accumulating diagnostics.
+    #[must_use]
     pub fn resolve_library_root_with_diagnostics(
         &self,
         root_file_id: FileId,
@@ -47,6 +64,8 @@ impl<'a> ScopeResolver<'a> {
         )
     }
 
+    /// Resolves a binary scope graph while accumulating diagnostics.
+    #[must_use]
     pub fn resolve_binary_root_with_diagnostics(
         &self,
         root_file_id: FileId,
@@ -95,7 +114,7 @@ impl<'a> ScopeResolver<'a> {
             root_file_id,
             root_kind,
             root_name.to_string(),
-            Vec::new(),
+            &[],
         )?;
 
         Ok(ScopeGraph {
@@ -111,20 +130,14 @@ impl<'a> ScopeResolver<'a> {
         render_db: &SourceDb,
     ) -> (Option<ScopeGraph>, DiagnosticsBag) {
         let mut diagnostics = DiagnosticsBag::new();
-        let source_file = match self.db.file(root_file_id) {
-            Some(source_file) => source_file,
-            None => {
-                let expected_path = match root_kind {
-                    ResolvedScopeKind::BinaryRoot => {
-                        PathBuf::from("src/main.cx")
-                    }
-                    _ => PathBuf::from("src/root.cx"),
-                };
-                let error = ResolveError::MissingRootFile { expected_path };
-                diagnostics
-                    .push(diagnostic_from_resolve_error(render_db, &error));
-                return (None, diagnostics);
-            }
+        let Some(source_file) = self.db.file(root_file_id) else {
+            let expected_path = match root_kind {
+                ResolvedScopeKind::BinaryRoot => PathBuf::from("src/main.cx"),
+                _ => PathBuf::from("src/root.cx"),
+            };
+            let error = ResolveError::MissingRootFile { expected_path };
+            diagnostics.push(diagnostic_from_resolve_error(render_db, &error));
+            return (None, diagnostics);
         };
         if self.parsed_file_by_id(root_file_id).is_none() {
             let error = ResolveError::MissingRootFile {
@@ -147,14 +160,17 @@ impl<'a> ScopeResolver<'a> {
             ResolvedScopeKind::BinaryRoot => "main",
             _ => "root",
         };
+        let mut diag_ctx = ResolveDiagnostics {
+            render_db,
+            diagnostics: &mut diagnostics,
+        };
         let resolve_result = self.resolve_scope_recursive_with_diagnostics(
             &mut ctx,
             root_file_id,
             root_kind,
             root_name.to_string(),
-            Vec::new(),
-            render_db,
-            &mut diagnostics,
+            &[],
+            &mut diag_ctx,
         );
         if let Err(error) = resolve_result {
             diagnostics.push(diagnostic_from_resolve_error(render_db, &error));
@@ -201,7 +217,7 @@ impl<'a> ScopeResolver<'a> {
         file_id: FileId,
         kind: ResolvedScopeKind,
         name: String,
-        scope_path: Vec<String>,
+        scope_path: &[String],
     ) -> Result<(), ResolveError> {
         if let Some(pos) = ctx.visiting_pos.get(&file_id).copied() {
             let mut cycle = ctx.visiting_stack[pos..].to_vec();
@@ -227,18 +243,18 @@ impl<'a> ScopeResolver<'a> {
         ctx.visiting_pos.insert(file_id, ctx.visiting_stack.len());
         ctx.visiting_stack.push(file_id);
 
-        let declared_children = self.collect_declared_child_scopes(parsed);
+        let declared_children = Self::collect_declared_child_scopes(parsed);
         let child_base_dir =
-            self.child_base_dir_for(source_file.path(), kind)?;
+            Self::child_base_dir_for(source_file.path(), kind)?;
 
         let mut resolved_children = Vec::with_capacity(declared_children.len());
         let mut child_meta = Vec::with_capacity(declared_children.len());
 
         for declared_name in declared_children {
-            let resolved_child = self.probe_declared_child_scope(
+            let resolved_child = Self::probe_declared_child_scope(
                 ctx,
                 file_id,
-                &scope_path,
+                scope_path,
                 &child_base_dir,
                 &declared_name,
             )?;
@@ -254,20 +270,20 @@ impl<'a> ScopeResolver<'a> {
             file_id,
             kind,
             name,
-            scope_path: scope_path.clone(),
+            scope_path: scope_path.to_owned(),
             child_scope_ids: resolved_children,
         };
         ctx.scopes.insert(file_id, scope);
 
         for (child_name, child_file_id, child_kind) in child_meta {
-            let mut child_scope_path = scope_path.clone();
+            let mut child_scope_path = scope_path.to_owned();
             child_scope_path.push(child_name.clone());
             self.resolve_scope_recursive(
                 ctx,
                 child_file_id,
                 child_kind,
                 child_name,
-                child_scope_path,
+                &child_scope_path,
             )?;
         }
 
@@ -283,9 +299,8 @@ impl<'a> ScopeResolver<'a> {
         file_id: FileId,
         kind: ResolvedScopeKind,
         name: String,
-        scope_path: Vec<String>,
-        render_db: &SourceDb,
-        diagnostics: &mut DiagnosticsBag,
+        scope_path: &[String],
+        diag_ctx: &mut ResolveDiagnostics<'_>,
     ) -> Result<(), ResolveError> {
         if let Some(pos) = ctx.visiting_pos.get(&file_id).copied() {
             let mut cycle = ctx.visiting_stack[pos..].to_vec();
@@ -311,108 +326,129 @@ impl<'a> ScopeResolver<'a> {
         ctx.visiting_pos.insert(file_id, ctx.visiting_stack.len());
         ctx.visiting_stack.push(file_id);
 
-        let mut fatal_error = None;
-        let declared_children = self.collect_declared_child_scopes(parsed);
-        let child_base_dir =
-            match self.child_base_dir_for(source_file.path(), kind) {
-                Ok(base_dir) => base_dir,
-                Err(error) => {
-                    fatal_error = Some(error);
-                    PathBuf::new()
-                }
-            };
-
-        let mut resolved_children = Vec::with_capacity(declared_children.len());
-        let mut child_meta = Vec::with_capacity(declared_children.len());
-        if fatal_error.is_none() {
-            for declared_name in declared_children {
-                match self.probe_declared_child_scope(
-                    ctx,
-                    file_id,
-                    &scope_path,
-                    &child_base_dir,
-                    &declared_name,
-                ) {
-                    Ok(resolved_child) => {
-                        resolved_children.push(resolved_child.file_id);
-                        child_meta.push((
-                            declared_name,
-                            resolved_child.file_id,
-                            resolved_child.kind,
-                        ));
-                    }
-                    Err(
-                        error @ ResolveError::MissingDeclaredScope { .. }
-                        | error @ ResolveError::AmbiguousDeclaredScope { .. },
-                    ) => {
-                        diagnostics.push(diagnostic_from_resolve_error(
-                            render_db, &error,
-                        ));
-                    }
-                    Err(error) => {
-                        fatal_error = Some(error);
-                        break;
-                    }
-                }
-            }
-        }
-
-        if fatal_error.is_none() {
-            let scope = ResolvedScope {
+        let (resolved_children, child_meta) =
+            match Self::resolve_child_metadata_with_diagnostics(
+                ctx,
                 file_id,
                 kind,
-                name,
-                scope_path: scope_path.clone(),
-                child_scope_ids: resolved_children,
-            };
-            ctx.scopes.insert(file_id, scope);
-        }
-
-        if fatal_error.is_none() {
-            for (child_name, child_file_id, child_kind) in child_meta {
-                let mut child_scope_path = scope_path.clone();
-                child_scope_path.push(child_name.clone());
-                match self.resolve_scope_recursive_with_diagnostics(
-                    ctx,
-                    child_file_id,
-                    child_kind,
-                    child_name,
-                    child_scope_path,
-                    render_db,
-                    diagnostics,
-                ) {
-                    Ok(()) => {}
-                    Err(
-                        error @ ResolveError::MissingDeclaredScope { .. }
-                        | error @ ResolveError::AmbiguousDeclaredScope { .. },
-                    ) => {
-                        diagnostics.push(diagnostic_from_resolve_error(
-                            render_db, &error,
-                        ));
-                    }
-                    Err(error) => {
-                        fatal_error = Some(error);
-                        break;
-                    }
+                source_file,
+                parsed,
+                scope_path,
+                diag_ctx,
+            ) {
+                Ok(children) => children,
+                Err(error) => {
+                    ctx.visiting_pos.remove(&file_id);
+                    let _ = ctx.visiting_stack.pop();
+                    return Err(error);
                 }
-            }
-        }
+            };
+
+        let scope = ResolvedScope {
+            file_id,
+            kind,
+            name,
+            scope_path: scope_path.to_owned(),
+            child_scope_ids: resolved_children,
+        };
+        ctx.scopes.insert(file_id, scope);
+
+        self.resolve_child_scopes_with_diagnostics(
+            ctx,
+            &child_meta,
+            scope_path,
+            diag_ctx,
+        )?;
 
         ctx.visiting_pos.remove(&file_id);
         let _ = ctx.visiting_stack.pop();
-
-        if let Some(error) = fatal_error {
-            return Err(error);
-        }
 
         ctx.resolved.insert(file_id);
         Ok(())
     }
 
-    fn collect_declared_child_scopes(
-        &self,
+    fn resolve_child_metadata_with_diagnostics(
+        ctx: &ResolveContext<'a>,
+        file_id: FileId,
+        kind: ResolvedScopeKind,
+        source_file: &SourceFile,
         parsed: &ParsedFile,
-    ) -> Vec<String> {
+        scope_path: &[String],
+        diag_ctx: &mut ResolveDiagnostics<'_>,
+    ) -> Result<ResolvedChildrenBundle, ResolveError> {
+        let declared_children = Self::collect_declared_child_scopes(parsed);
+        let child_base_dir =
+            Self::child_base_dir_for(source_file.path(), kind)?;
+        let mut resolved_children = Vec::with_capacity(declared_children.len());
+        let mut child_meta = Vec::with_capacity(declared_children.len());
+
+        for declared_name in declared_children {
+            match Self::probe_declared_child_scope(
+                ctx,
+                file_id,
+                scope_path,
+                &child_base_dir,
+                &declared_name,
+            ) {
+                Ok(resolved_child) => {
+                    resolved_children.push(resolved_child.file_id);
+                    child_meta.push((
+                        declared_name,
+                        resolved_child.file_id,
+                        resolved_child.kind,
+                    ));
+                }
+                Err(
+                    error @ (ResolveError::MissingDeclaredScope { .. }
+                    | ResolveError::AmbiguousDeclaredScope { .. }),
+                ) => {
+                    diag_ctx.diagnostics.push(diagnostic_from_resolve_error(
+                        diag_ctx.render_db,
+                        &error,
+                    ));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        Ok((resolved_children, child_meta))
+    }
+
+    fn resolve_child_scopes_with_diagnostics(
+        &self,
+        ctx: &mut ResolveContext<'a>,
+        child_meta: &[(String, FileId, ResolvedScopeKind)],
+        scope_path: &[String],
+        diag_ctx: &mut ResolveDiagnostics<'_>,
+    ) -> Result<(), ResolveError> {
+        for (child_name, child_file_id, child_kind) in child_meta {
+            let mut child_scope_path = scope_path.to_owned();
+            child_scope_path.push(child_name.clone());
+            match self.resolve_scope_recursive_with_diagnostics(
+                ctx,
+                *child_file_id,
+                *child_kind,
+                child_name.clone(),
+                &child_scope_path,
+                diag_ctx,
+            ) {
+                Ok(()) => {}
+                Err(
+                    error @ (ResolveError::MissingDeclaredScope { .. }
+                    | ResolveError::AmbiguousDeclaredScope { .. }),
+                ) => {
+                    diag_ctx.diagnostics.push(diagnostic_from_resolve_error(
+                        diag_ctx.render_db,
+                        &error,
+                    ));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
+    fn collect_declared_child_scopes(parsed: &ParsedFile) -> Vec<String> {
         parsed
             .ast
             .items
@@ -425,7 +461,6 @@ impl<'a> ScopeResolver<'a> {
     }
 
     fn child_base_dir_for(
-        &self,
         file_path: &Path,
         kind: ResolvedScopeKind,
     ) -> Result<PathBuf, ResolveError> {
@@ -451,7 +486,6 @@ impl<'a> ScopeResolver<'a> {
     }
 
     fn probe_declared_child_scope(
-        &self,
         ctx: &ResolveContext<'a>,
         parent_file_id: FileId,
         parent_scope_path: &[String],
@@ -494,6 +528,12 @@ impl<'a> ScopeResolver<'a> {
     }
 }
 
+/// Resolves scopes for a project root file and root kind.
+///
+/// # Errors
+///
+/// Returns `ResolveError` when the root file is missing, child scope probing
+/// fails, or a scope cycle is detected.
 pub fn resolve_project_scopes(
     db: &SourceDb,
     parsed_files: &[ParsedFile],
@@ -522,4 +562,9 @@ struct ResolveContext<'a> {
 struct ResolvedChild {
     file_id: FileId,
     kind: ResolvedScopeKind,
+}
+
+struct ResolveDiagnostics<'a> {
+    render_db: &'a SourceDb,
+    diagnostics: &'a mut DiagnosticsBag,
 }

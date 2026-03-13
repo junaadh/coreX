@@ -226,9 +226,9 @@ pub fn consume_outer_doc_comment<'a>(
 ///
 /// # Errors
 /// Returns [`CommentError`] for malformed block comment forms.
-pub fn collect_doc_comments<'a>(
-    source: &'a str,
-) -> Result<Vec<Comment<'a>>, CommentError> {
+pub fn collect_doc_comments(
+    source: &str,
+) -> Result<Vec<Comment<'_>>, CommentError> {
     let mut cursor = SourceCursor::new(source);
     let mut docs = Vec::new();
 

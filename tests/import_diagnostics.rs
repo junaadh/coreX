@@ -43,7 +43,7 @@ fn unknown_root_converts_to_structured_diagnostic() {
         diagnostic
             .notes
             .iter()
-            .any(|note| note.contains("root, self, super"))
+            .any(|note| note.contains("root, super"))
     );
 }
 

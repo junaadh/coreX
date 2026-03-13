@@ -88,6 +88,10 @@ impl std::error::Error for StringLexError {}
 /// start with `'`.
 ///
 /// Returns `Err(StringLexError)` for malformed char literal spellings.
+///
+/// # Errors
+///
+/// Returns `StringLexError` for unterminated, empty, or invalid char literals.
 pub fn lex_char_literal(
     cursor: &mut SourceCursor<'_>,
 ) -> Result<Option<Token>, StringLexError> {
@@ -164,6 +168,11 @@ pub fn lex_string_start(cursor: &mut SourceCursor<'_>) -> Option<Token> {
 ///
 /// Returns `Err(StringLexError::UnterminatedString)` when EOF is reached before
 /// a closing quote boundary can be emitted.
+///
+/// # Errors
+///
+/// Returns `StringLexError` when encountering unterminated string or escape
+/// sequences while scanning the segment.
 pub fn lex_string_segment(
     cursor: &mut SourceCursor<'_>,
 ) -> Result<Option<Token>, StringLexError> {

@@ -94,6 +94,11 @@ impl<'a> Lexer<'a> {
     /// - `InString`: emits `StringText` / `InterpolationStart` / `StringEnd`
     /// - `InInterpolation`: skips trivia, tracks nested parentheses, emits
     ///   `InterpolationEnd` when depth reaches close boundary
+    ///
+    /// # Errors
+    ///
+    /// Returns `LexerError` when comment or string lexing fails, or when an
+    /// unexpected character is encountered in the current mode.
     pub fn next_token(&mut self) -> Result<Token, LexerError> {
         match self.mode {
             StringLexMode::Normal => self.next_token_normal(),
@@ -105,6 +110,11 @@ impl<'a> Lexer<'a> {
     }
 
     /// Lexes all tokens through the first emitted `Eof`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LexerError` from [`Self::next_token`] if lexing fails before
+    /// reaching EOF.
     pub fn lex_all(mut self) -> Result<Vec<Token>, LexerError> {
         let mut tokens = Vec::new();
         loop {

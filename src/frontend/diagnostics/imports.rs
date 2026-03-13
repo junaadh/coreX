@@ -23,7 +23,7 @@ pub fn diagnostic_from_import_resolve_error(
                 ));
             }
             diagnostic.with_note(
-                "only root, self, super, and configured target/dependency roots are valid here",
+                "valid import roots are root, super, and configured target/dependency roots",
             )
         }
         ImportResolveError::UnloadedDependencyRoot { from_file_id, root } => {
@@ -123,13 +123,12 @@ fn use_item_span(
 
         first_use_span.get_or_insert(item.span);
 
-        if let Some(needle) = needle {
-            if file
+        if let Some(needle) = needle
+            && file
                 .slice(item.span)
                 .is_some_and(|snippet| snippet.contains(needle))
-            {
-                return Some(FileSpan::new(file_id, item.span));
-            }
+        {
+            return Some(FileSpan::new(file_id, item.span));
         }
     }
 
@@ -138,6 +137,6 @@ fn use_item_span(
 
 fn file_start_span(db: &SourceDb, file_id: FileId) -> Option<FileSpan> {
     let file = db.file(file_id)?;
-    let end = if file.is_empty() { 0 } else { 1 };
+    let end = usize::from(!file.is_empty());
     Some(FileSpan::new(file_id, Span::new(0, end)))
 }

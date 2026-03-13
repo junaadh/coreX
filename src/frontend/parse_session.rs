@@ -24,6 +24,11 @@ impl ParseSession {
     }
 
     /// Parses a single file by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ParseSessionError::MissingFile` when `file_id` is unknown, or
+    /// `ParseSessionError::Parse` when lexing/parsing fails.
     pub fn parse_file(
         &self,
         file_id: crate::frontend::source::FileId,
@@ -42,6 +47,11 @@ impl ParseSession {
     }
 
     /// Parses a single file by id with conservative recovery and diagnostics.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ParseSessionError::MissingFile` when `file_id` is unknown, or
+    /// `ParseSessionError::Parse` when lexing fails before recovery parsing.
     pub fn parse_file_with_recovery(
         &self,
         file_id: crate::frontend::source::FileId,

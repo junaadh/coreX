@@ -124,7 +124,7 @@ fn consume_exponent(cursor: &mut SourceCursor<'_>) -> bool {
     }
     let _ = probe.bump();
 
-    if matches!(probe.peek(), Some('+') | Some('-')) {
+    if matches!(probe.peek(), Some('+' | '-')) {
         let _ = probe.bump();
     }
 

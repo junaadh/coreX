@@ -20,6 +20,12 @@ struct ParsedProject {
     file_id_by_abs_path: BTreeMap<PathBuf, FileId>,
 }
 
+type BinaryImportResolution = (
+    BTreeMap<FileId, core_x::frontend::ScopeSymbols>,
+    BTreeMap<FileId, core_x::frontend::ResolvedImports>,
+    ParsedProject,
+);
+
 fn unique_temp_dir(name: &str) -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -57,7 +63,7 @@ fn collect_cx_files_recursive(dir: &Path, out: &mut BTreeSet<PathBuf>) {
         .expect("read directory")
         .collect::<Result<Vec<_>, _>>()
         .expect("read entries");
-    entries.sort_by_key(|entry| entry.path());
+    entries.sort_by_key(std::fs::DirEntry::path);
 
     for entry in entries {
         let path = entry.path();
@@ -88,7 +94,7 @@ fn parse_project(project_dir: &Path) -> ParsedProject {
     for abs_path in files {
         let display_path = abs_path
             .strip_prefix(project_dir)
-            .map_or_else(|_| abs_path.to_path_buf(), Path::to_path_buf);
+            .map_or_else(|_| abs_path.clone(), Path::to_path_buf);
         let source = fs::read_to_string(&abs_path).expect("read source");
         let file_id = db.add_file(display_path, source);
         let file = db.file(file_id).expect("file should exist");
@@ -111,14 +117,7 @@ fn parse_project(project_dir: &Path) -> ParsedProject {
 
 fn resolve_binary_imports_with_library_bridge(
     project_dir: &Path,
-) -> Result<
-    (
-        BTreeMap<FileId, core_x::frontend::ScopeSymbols>,
-        BTreeMap<FileId, core_x::frontend::ResolvedImports>,
-        ParsedProject,
-    ),
-    ImportResolveError,
-> {
+) -> Result<BinaryImportResolution, ImportResolveError> {
     let project =
         ProjectLoader::load_project(project_dir).expect("load project");
     let parsed = parse_project(project_dir);

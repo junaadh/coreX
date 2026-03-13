@@ -359,4 +359,7 @@ pub enum UseTree {
         items: Vec<Spanned<UseTree>>,
     },
     SelfImport,
+    SelfAlias {
+        alias: String,
+    },
 }

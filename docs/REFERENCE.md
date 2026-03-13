@@ -32,7 +32,7 @@ Project root files:
 | File | Meaning |
 |---|---|
 | `corex.toml` | project manifest |
-| `build.cx` | project build script |
+| `build.cx` | project build script (not loaded by current frontend analysis pipeline) |
 | `src/root.cx` | root scope of the project |
 | `src/main.cx` | optional executable entry |
 
@@ -63,6 +63,16 @@ configuration.
 
 These are distinct manifests with different roles, even though they use the
 same filename.
+
+A manifest must declare exactly one role section:
+
+- `[project]` (project manifest), or
+- `[workspace]` (workspace manifest)
+
+Invalid manifest shapes:
+
+- both `[project]` and `[workspace]` present
+- neither `[project]` nor `[workspace]` present
 
 Example workspace manifest:
 
@@ -127,7 +137,7 @@ Git dependency:
 http = { git = "https://github.com/example/http.git" }
 ```
 
-Additional keys such as `rev`, `tag`, or `branch` may be supported later.
+Dependency source and graph behavior are specified in Section 2.6.
 
 Rules:
 
@@ -144,20 +154,34 @@ Project name, library target name, and binary target names are distinct.
 Library target:
 
 - A project may define at most one library target.
-- If `src/root.cx` exists and no explicit library target name is configured,
-  the library target name defaults to the project name.
+- If `src/root.cx` exists, the project has a library target rooted at
+  `src/root.cx`.
+- If no explicit `[lib]` target is declared, the library target name defaults
+  to the project name.
 
 Binary targets:
 
 - A project may define one or more binary targets.
-- If `src/main.cx` exists and no explicit binary target name is configured, the
-  default binary target name is the project name.
-- Additional binary targets may be defined explicitly by manifest
-  configuration.
+- If `src/main.cx` exists, the project has a default binary target rooted at
+  `src/main.cx`.
+- If no explicit `[[bin]]` target uses `path = "src/main.cx"`, the default
+  binary target name is the project name.
+- Additional `[[bin]]` targets may coexist with the default binary target.
+
+Target validation rules:
+
+- Explicit `[lib]` and `[[bin]]` targets must point to existing root files.
+- Duplicate binary target names are rejected.
+- Duplicate target root file paths are rejected.
+- At most one library target is permitted.
+- An implicit library target from `src/root.cx` coexists with explicit bins.
+- The implicit default bin from `src/main.cx` is suppressed only when an
+  explicit `[[bin]]` already owns `src/main.cx`.
 
 Import roots:
 
-- Dependency import roots come from target names.
+- Dependency import roots come from dependency binding names declared in the
+  current project's `[dependencies]` table.
 - Library code is imported using the library target name.
 - Binary targets do not create dependency import roots unless the language
   defines that explicitly.
@@ -177,6 +201,201 @@ use mylib::net::http;
 In a binary target, `root::` refers to that binary target's own root scope, not
 the library target.
 
+### 2.6 Project Dependencies
+
+Projects may depend on other CoreX projects through the `[dependencies]`
+section of `corex.toml`.
+
+Dependencies are resolved at the project level and form a deduplicated package
+graph.
+
+#### 2.6.1 Dependency declaration
+
+Dependencies are declared in `corex.toml` using a dependency key and a source
+specification.
+
+Example:
+
+```toml
+[dependencies]
+serde = { git = "https://github.com/serde-cx/serde.git" }
+util  = { path = "../util" }
+core  = { path = "/Users/home/core" }
+```
+
+The dependency key (`serde`, `util`, `core`) is the import root used within the
+project.
+
+Example:
+
+```text
+use serde::json::Value;
+use util::math::Vector;
+```
+
+The dependency key does not need to match the upstream project name.
+
+#### 2.6.2 Supported dependency sources
+
+CoreX currently supports two dependency source kinds:
+
+| Source | Description |
+|---|---|
+| `path` | Local filesystem project |
+| `git` | Remote Git repository |
+
+Examples:
+
+```toml
+[dependencies]
+serde = { git = "https://github.com/serde-cx/serde.git" }
+
+serde = { git = "https://github.com/serde-cx/serde.git", rev = "abc123" }
+
+serde = { git = "https://github.com/serde-cx/serde.git", tag = "v1.0.0" }
+
+serde = { git = "https://github.com/serde-cx/serde.git", branch = "main" }
+```
+
+Revision selection precedence is:
+
+`rev > tag > branch > repository default branch`
+
+#### 2.6.3 Dependency resolution
+
+Dependency resolution proceeds as follows:
+
+1. The root project's manifest is loaded.
+2. Each dependency is resolved to a package instance.
+3. Each dependency's `corex.toml` is loaded.
+4. The dependency graph is expanded recursively.
+5. Package instances are deduplicated using their resolved source identity.
+
+Two dependencies referring to the same source and revision resolve to a single
+package instance in the dependency graph.
+
+This prevents exponential dependency expansion.
+
+#### 2.6.4 Dependency import roots
+
+Within source code, dependency names act as import roots.
+
+Example:
+
+```text
+use serde::json::Value;
+```
+
+Resolution of this path begins at the library target root of the `serde`
+dependency.
+
+Dependency keys defined in `[dependencies]` determine the import root visible
+to the consuming project.
+
+#### 2.6.5 Global dependency source cache
+
+Git dependencies are fetched into a global source cache.
+
+Typical location:
+
+```text
+~/.cache/corex/src/
+```
+
+The cache stores:
+
+- bare repository mirrors
+- revision checkouts used by projects
+
+Example structure:
+
+```text
+~/.cache/corex/src/git/
+  db/
+    <repo-hash>.git
+  checkouts/
+    <repo-hash>/
+      <revision>/
+```
+
+This allows:
+
+- deduplicated downloads
+- reuse of dependency source across projects
+- stable filesystem paths for tools such as LSP
+
+#### 2.6.6 Dependency source for language tooling
+
+Language tooling such as LSP servers resolves dependency source code directly
+from the global source cache.
+
+This allows features such as:
+
+- jump-to-definition
+- hover documentation
+- symbol navigation
+
+across dependency boundaries.
+
+#### 2.6.7 Build artifacts
+
+Build artifacts are stored within the project repository.
+
+Typical location:
+
+```text
+build/
+```
+
+This directory contains:
+
+- compiled dependency artifacts used by the project
+- intermediate object files
+- final binaries and libraries
+- build metadata
+
+Example structure:
+
+```text
+build/
+  debug/
+    deps/
+    objects/
+    lib/
+    bin/
+  release/
+    deps/
+    objects/
+    lib/
+    bin/
+```
+
+Build artifacts are not stored in the global dependency cache.
+
+This allows:
+
+- simple project cleanup
+- predictable artifact locations
+- straightforward inspection of build outputs
+
+#### 2.6.8 Cleaning build artifacts
+
+The command:
+
+```text
+cxc clean
+```
+
+removes the project's local `build/` directory.
+
+The global dependency source cache is not removed by this command.
+
+Global dependency cache maintenance may be handled by separate tooling.
+
+```text
+cxc clean --cache
+```
+
 ## 3. Scope Paths and Visibility
 
 ### 3.1 Path roots
@@ -185,10 +404,9 @@ CoreX path resolution roots:
 
 | Root | Meaning |
 |---|---|
-| `root::` | current project root |
-| `self::` | current scope |
+| `root::` | current target root |
 | `super::` | parent scope |
-| `name::` | dependency project root |
+| `name::` | dependency import root, or the current project's library target name when analyzing a binary target |
 
 Examples:
 
@@ -197,7 +415,11 @@ use root::net::http;
 use serde::json;
 ```
 
-For `name::...` imports, `name` is resolved from dependency target names.
+For `name::...` imports, `name` is resolved as either:
+
+- a dependency binding name from the current project's `[dependencies]` table,
+  or
+- the current project's library target name during binary-target analysis.
 
 ### 3.2 Scope declarations
 
@@ -284,6 +506,10 @@ identifier      = ident_start, { ident_continue } ;
 ident_start     = "_" | letter ;
 ident_continue  = "_" | letter | digit ;
 ```
+
+Current frontend implementation note:
+
+- Identifiers are ASCII-only (`_`, `A-Z`, `a-z`, `0-9`).
 
 ### 4.2 Literals
 
@@ -405,19 +631,21 @@ use_tree = use_path
 
 use_group = "{", use_group_item, { ",", use_group_item }, [ "," ], "}" ;
 
-use_group_item = "self"
-               | identifier
-               | identifier, "as", identifier
-               | identifier, "::", "*"
-               | identifier, "::", use_group
+use_group_item = use_tree
+               | "self"
+               | "self", "as", identifier
                ;
 
-use_path = use_root, "::", identifier, { "::", identifier } ;
+use_path = use_root, { "::", use_path_segment } ;
+
+use_path_segment = identifier
+                 | "scope"
+                 ;
 
 use_root = "root"
-         | "self"
          | "super"
          | identifier
+         | "scope"
          ;
 ```
 
@@ -426,7 +654,6 @@ Supported forms:
 ```text
 use root::scope::Thing;
 use scope::Thing;
-use self::Thing;
 use super::Thing;
 use depname::Thing;
 
@@ -435,6 +662,7 @@ use scope::*;
 
 use root::scope::{A, B, C};
 use root::scope::{scope::*, scope::{self, SomeThing}};
+use root::net::{self as net_root, http};
 
 use root::scope::scope as SomethingElse;
 
@@ -443,21 +671,33 @@ pub(project) use root::internal::helper;
 pub use root::fmt::Writer as OutWriter;
 
 use root::scope::{self, SomeThing};
+use root::scope::{a::b, c::d as E, f::*};
+pub(project) use root::internal::{helpers::*, model::{self, Id}};
 ```
+
+Grouped `self` rules:
+
+- `self` and `self as <alias>` are valid inside grouped imports.
+- grouped `self` refers to the current group base path.
+- `self` is not a general `use_path` segment outside grouped entries.
+- empty groups such as `use root::foo::{};` are invalid.
 
 ## 7. Modifiers
 
 ```ebnf
-modifier      = visibility | "async" ;
+modifier      = "async" ;
 modifier_list = { modifier } ;
 ```
+
+Visibility is a separate declaration prefix category and is not part of
+`modifier_list`.
 
 ## 8. Functions and Initializers
 
 ### 8.1 Function Declarations
 
 ```ebnf
-fn_decl      = modifier_list, "fn", identifier, [ generic_params ],
+fn_decl      = [ visibility ], modifier_list, "fn", identifier, [ generic_params ],
                "(", [ param_list ], ")", [ return_type ],
                [ where_clause ], block ;
 
@@ -472,6 +712,10 @@ init_decl    = modifier_list, "init", [ init_kind ],
 
 init_kind    = "?" | "!" ;
 ```
+
+Current parser behavior:
+- `init` declarations do not accept visibility prefixes in struct/enum/impl
+  member contexts.
 
 ### 8.3 Parameter Forms
 
@@ -519,7 +763,7 @@ type_bound_list     = type, { "+", type } ;
 ### 9.1 Structs
 
 ```ebnf
-struct_decl   = modifier_list, "struct", identifier, [ generic_params ],
+struct_decl   = [ visibility ], modifier_list, "struct", identifier, [ generic_params ],
                 struct_body ;
 
 struct_body   = "{", { struct_member }, "}" ;
@@ -535,7 +779,7 @@ field_decl    = identifier, ":", type, "," ;
 ### 9.2 Enums
 
 ```ebnf
-enum_decl           = modifier_list, "enum", identifier, [ generic_params ],
+enum_decl           = [ visibility ], modifier_list, "enum", identifier, [ generic_params ],
                       enum_body ;
 
 enum_body           = "{", { enum_member }, "}" ;
@@ -604,12 +848,15 @@ extern_param       = labeled_param ;
 
 ### 10.4 Supported Foreign Type Surface (Current Parser)
 
+Foreign declarations currently reuse the frontend `type` parser surface. The
+common FFI subset used by examples includes:
+
 ```ebnf
-type         = "void"
-             | "i32"
-             | "usize"
-             | pointer_type
-             ;
+ffi_common_type = "void"
+                | "i32"
+                | "usize"
+                | pointer_type
+                ;
 
 pointer_type = "*", [ "mut" ], "void" ;
 ```
@@ -660,7 +907,7 @@ Context rules:
 - Declaration prefixes use this order: outer doc comments first, then attributes,
   then the declaration head.
 - Attribute placement currently includes:
-  - top-level items
+  - top-level declaration items except `use` and `scope` in the current parser stage
   - function and initializer declarations
   - struct/enum/impl/protocol members that are declaration-shaped (`fn`, `init`)
   - struct fields
@@ -1095,7 +1342,7 @@ Semantic rule:
 Protocols combine trait-like requirements with protocol-oriented surface syntax.
 
 ```ebnf
-protocol_decl        = modifier_list, "protocol", identifier, [ generic_params ],
+protocol_decl        = [ visibility ], modifier_list, "protocol", identifier, [ generic_params ],
                        [ protocol_inheritance ], protocol_body ;
 
 protocol_inheritance = ":", type_list ;
@@ -1148,7 +1395,7 @@ Semantic notes:
 1. A protocol member ending with `;` is a requirement only.
 2. A protocol member with a block is a default implementation.
 3. Receiver syntax in protocol methods follows the same rules as ordinary methods.
-4. `impl Protocol for Type { ... }` is the intended conformance form, even if the exact impl-conformance grammar may be refined later.
+4. `impl Protocol for Type { ... }` is the conformance form.
 5. Property requirements are declaration-only contracts; storage is not part of protocol syntax.
 
 ## 17. Semantic Notes (Non-EBNF)

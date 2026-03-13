@@ -63,6 +63,10 @@ fn create_project_fixture(name: &str) -> TestProject {
 
 fn create_project_fixture_with_parse_error(name: &str) -> TestProject {
     let project = create_project_fixture(name);
+    write_file(
+        &project.root.join("src/root.cx"),
+        "scope net;\nscope app;\nscope broken;\nfn top() {}\nstruct RootType {}\n",
+    );
     write_file(&project.root.join("src/broken.cx"), "fn bad( { return; }\n");
     project
 }

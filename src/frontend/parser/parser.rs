@@ -18,6 +18,11 @@ use crate::frontend::lexer::{
 
 use super::error::ParseError;
 
+type ReceiverAndParams =
+    (Option<Spanned<ReceiverKind>>, Vec<Spanned<ParamDecl>>);
+type BlockContentsParse =
+    (Vec<Spanned<ast::Stmt>>, Option<Box<Spanned<Expr>>>, usize);
+
 /// Handwritten parser over a buffered lexer token stream.
 ///
 /// `Parser` owns the token buffer and a cursor index into that buffer. It is a
@@ -289,7 +294,7 @@ impl<'a> Parser<'a> {
                 let _ = self.bump();
                 return;
             }
-            if self.can_start_top_level_item(kind) {
+            if Self::can_start_top_level_item(kind) {
                 return;
             }
             if kind == TokenKind::RBrace {
@@ -317,7 +322,8 @@ impl<'a> Parser<'a> {
             if kind == TokenKind::RBrace {
                 return;
             }
-            if self.can_start_stmt(kind) || self.can_start_expr_statement(kind)
+            if Self::can_start_stmt(kind)
+                || Self::can_start_expr_statement(kind)
             {
                 return;
             }
@@ -371,8 +377,15 @@ impl<'a> Parser<'a> {
         allow_self_import: bool,
     ) -> Result<Spanned<UseTree>, ParseError> {
         if allow_self_import && self.at(TokenKind::KwSelfValue) {
-            let tok = self.bump();
-            return Ok(Spanned::new(UseTree::SelfImport, tok.span));
+            let self_tok = self.bump();
+            if self.eat(TokenKind::KwAs).is_some() {
+                let (alias, alias_span) = self.expect_identifier_text()?;
+                return Ok(Spanned::new(
+                    UseTree::SelfAlias { alias },
+                    Span::new(self_tok.span.start, alias_span.end),
+                ));
+            }
+            return Ok(Spanned::new(UseTree::SelfImport, self_tok.span));
         }
 
         let (path, path_span) = self.parse_use_path()?;
@@ -424,12 +437,15 @@ impl<'a> Parser<'a> {
     fn parse_use_group_items(
         &mut self,
     ) -> Result<Vec<Spanned<UseTree>>, ParseError> {
-        let mut items = Vec::new();
-
         if self.at(TokenKind::RBrace) {
-            return Ok(items);
+            return Err(ParseError::UnexpectedToken {
+                expected: "use group item",
+                found: self.peek().kind,
+                span: self.peek().span,
+            });
         }
 
+        let mut items = Vec::new();
         loop {
             items.push(self.parse_use_tree_with_self(true)?);
             if self.eat(TokenKind::Comma).is_some() {
@@ -450,7 +466,7 @@ impl<'a> Parser<'a> {
         segments.push(self.parse_use_path_segment(true)?);
 
         while self.at(TokenKind::ColonColon)
-            && self.can_start_use_path_segment(self.peek_nth(1).kind)
+            && Self::can_start_use_path_segment(self.peek_nth(1).kind)
         {
             let _ = self.bump();
             segments.push(self.parse_use_path_segment(false)?);
@@ -460,11 +476,8 @@ impl<'a> Parser<'a> {
         Ok((UsePath { segments }, Span::new(start, end)))
     }
 
-    fn can_start_use_path_segment(&self, kind: TokenKind) -> bool {
-        matches!(
-            kind,
-            TokenKind::Ident | TokenKind::KwSelfValue | TokenKind::KwScope
-        )
+    fn can_start_use_path_segment(kind: TokenKind) -> bool {
+        matches!(kind, TokenKind::Ident | TokenKind::KwScope)
     }
 
     fn parse_use_path_segment(
@@ -475,7 +488,7 @@ impl<'a> Parser<'a> {
             TokenKind::Ident => {
                 self.expect_identifier_text().map(|(text, _)| text)
             }
-            TokenKind::KwSelfValue | TokenKind::KwScope => {
+            TokenKind::KwScope => {
                 let tok = self.bump();
                 Ok(self.source[tok.span.start..tok.span.end].to_owned())
             }
@@ -1019,11 +1032,12 @@ impl<'a> Parser<'a> {
         attributes: Vec<Spanned<Attribute>>,
     ) -> Result<Spanned<ImplDecl>, ParseError> {
         self.expect(TokenKind::KwImpl)?;
-        let target = self.parse_type()?;
-        let conformance = if self.eat(TokenKind::Colon).is_some() {
-            Some(self.parse_type()?)
+        let first_type = self.parse_type()?;
+        let (target, conformance) = if self.eat(TokenKind::KwFor).is_some() {
+            let implementing_type = self.parse_type()?;
+            (implementing_type, Some(first_type))
         } else {
-            None
+            (first_type, None)
         };
         self.expect(TokenKind::LBrace)?;
         let mut members = Vec::new();
@@ -1498,10 +1512,7 @@ impl<'a> Parser<'a> {
     fn parse_receiver_or_param_list(
         &mut self,
         allow_receiver: bool,
-    ) -> Result<
-        (Option<Spanned<ReceiverKind>>, Vec<Spanned<ParamDecl>>),
-        ParseError,
-    > {
+    ) -> Result<ReceiverAndParams, ParseError> {
         self.expect(TokenKind::LParen)?;
 
         if self.at(TokenKind::RParen) {
@@ -1682,10 +1693,7 @@ impl<'a> Parser<'a> {
 
     fn parse_block_contents_until_rbrace(
         &mut self,
-    ) -> Result<
-        (Vec<Spanned<ast::Stmt>>, Option<Box<Spanned<Expr>>>, usize),
-        ParseError,
-    > {
+    ) -> Result<BlockContentsParse, ParseError> {
         let mut statements = Vec::new();
         let mut tail_expr = None;
 
@@ -1722,7 +1730,7 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            if self.can_start_stmt(kind) {
+            if Self::can_start_stmt(kind) {
                 statements.push(self.parse_stmt()?);
                 continue;
             }
@@ -1735,7 +1743,7 @@ impl<'a> Parser<'a> {
                 });
             }
 
-            if self.can_start_expr_statement(kind) {
+            if Self::can_start_expr_statement(kind) {
                 let expr = self.parse_expr()?;
                 if let Some(semi) = self.eat(TokenKind::Semi) {
                     let span = Span::new(expr.span.start, semi.span.end);
@@ -1787,7 +1795,7 @@ impl<'a> Parser<'a> {
 
     fn parse_block_contents_until_rbrace_recovering(
         &mut self,
-    ) -> (Vec<Spanned<ast::Stmt>>, Option<Box<Spanned<Expr>>>, usize) {
+    ) -> BlockContentsParse {
         let mut statements = Vec::new();
         let mut tail_expr = None;
 
@@ -1808,32 +1816,14 @@ impl<'a> Parser<'a> {
 
             let kind = self.peek().kind;
             if kind == TokenKind::KwIf {
-                let checkpoint = self.cursor;
-                if let Ok(expr) = self.parse_if_expr() {
-                    if let Some(semi) = self.eat(TokenKind::Semi) {
-                        let span = Span::new(expr.span.start, semi.span.end);
-                        statements.push(Spanned::new(
-                            ast::Stmt::Expr {
-                                expr: Box::new(expr),
-                                has_semi: true,
-                            },
-                            span,
-                        ));
-                        continue;
-                    }
-                    if self.at(TokenKind::RBrace) {
-                        tail_expr = Some(Box::new(expr));
-                        continue;
-                    }
-                }
-                self.cursor = checkpoint;
-                if let Some(stmt) = self.parse_stmt_recovering() {
-                    statements.push(stmt);
-                }
+                self.parse_if_or_stmt_recovering(
+                    &mut statements,
+                    &mut tail_expr,
+                );
                 continue;
             }
 
-            if self.can_start_stmt(kind) {
+            if Self::can_start_stmt(kind) {
                 if let Some(stmt) = self.parse_stmt_recovering() {
                     statements.push(stmt);
                 }
@@ -1848,55 +1838,15 @@ impl<'a> Parser<'a> {
                 };
                 self.record_parse_error(&error);
                 let checkpoint = self.cursor;
-                self.synchronize_to_statement_boundary();
-                if self.cursor == checkpoint && !self.is_eof() {
-                    let _ = self.bump();
-                }
+                self.recover_to_statement_boundary_from(checkpoint);
                 continue;
             }
 
-            if self.can_start_expr_statement(kind) {
-                let checkpoint = self.cursor;
-                match self.parse_expr() {
-                    Ok(expr) => {
-                        if let Some(semi) = self.eat(TokenKind::Semi) {
-                            let span =
-                                Span::new(expr.span.start, semi.span.end);
-                            statements.push(Spanned::new(
-                                ast::Stmt::Expr {
-                                    expr: Box::new(expr),
-                                    has_semi: true,
-                                },
-                                span,
-                            ));
-                            continue;
-                        }
-
-                        if self.at(TokenKind::RBrace) {
-                            tail_expr = Some(Box::new(expr));
-                            continue;
-                        }
-
-                        let error = ParseError::UnexpectedToken {
-                            expected: "';' or '}'",
-                            found: self.peek().kind,
-                            span: self.peek().span,
-                        };
-                        self.record_parse_error(&error);
-                        let sync_checkpoint = self.cursor;
-                        self.synchronize_to_statement_boundary();
-                        if self.cursor == sync_checkpoint && !self.is_eof() {
-                            let _ = self.bump();
-                        }
-                    }
-                    Err(error) => {
-                        self.record_parse_error(&error);
-                        self.synchronize_to_statement_boundary();
-                        if self.cursor == checkpoint && !self.is_eof() {
-                            let _ = self.bump();
-                        }
-                    }
-                }
+            if Self::can_start_expr_statement(kind) {
+                self.parse_expr_stmt_or_tail_recovering(
+                    &mut statements,
+                    &mut tail_expr,
+                );
                 continue;
             }
 
@@ -1907,10 +1857,84 @@ impl<'a> Parser<'a> {
             };
             self.record_parse_error(&error);
             let checkpoint = self.cursor;
-            self.synchronize_to_statement_boundary();
-            if self.cursor == checkpoint && !self.is_eof() {
-                let _ = self.bump();
+            self.recover_to_statement_boundary_from(checkpoint);
+        }
+    }
+
+    fn parse_if_or_stmt_recovering(
+        &mut self,
+        statements: &mut Vec<Spanned<ast::Stmt>>,
+        tail_expr: &mut Option<Box<Spanned<Expr>>>,
+    ) {
+        let checkpoint = self.cursor;
+        if let Ok(expr) = self.parse_if_expr() {
+            if let Some(semi) = self.eat(TokenKind::Semi) {
+                let span = Span::new(expr.span.start, semi.span.end);
+                statements.push(Spanned::new(
+                    ast::Stmt::Expr {
+                        expr: Box::new(expr),
+                        has_semi: true,
+                    },
+                    span,
+                ));
+                return;
             }
+            if self.at(TokenKind::RBrace) {
+                *tail_expr = Some(Box::new(expr));
+                return;
+            }
+        }
+
+        self.cursor = checkpoint;
+        if let Some(stmt) = self.parse_stmt_recovering() {
+            statements.push(stmt);
+        }
+    }
+
+    fn parse_expr_stmt_or_tail_recovering(
+        &mut self,
+        statements: &mut Vec<Spanned<ast::Stmt>>,
+        tail_expr: &mut Option<Box<Spanned<Expr>>>,
+    ) {
+        let checkpoint = self.cursor;
+        match self.parse_expr() {
+            Ok(expr) => {
+                if let Some(semi) = self.eat(TokenKind::Semi) {
+                    let span = Span::new(expr.span.start, semi.span.end);
+                    statements.push(Spanned::new(
+                        ast::Stmt::Expr {
+                            expr: Box::new(expr),
+                            has_semi: true,
+                        },
+                        span,
+                    ));
+                    return;
+                }
+
+                if self.at(TokenKind::RBrace) {
+                    *tail_expr = Some(Box::new(expr));
+                    return;
+                }
+
+                let error = ParseError::UnexpectedToken {
+                    expected: "';' or '}'",
+                    found: self.peek().kind,
+                    span: self.peek().span,
+                };
+                self.record_parse_error(&error);
+                self.recover_to_statement_boundary_from(self.cursor);
+            }
+            Err(error) => {
+                self.record_parse_error(&error);
+                self.recover_to_statement_boundary_from(checkpoint);
+            }
+        }
+    }
+
+    fn recover_to_statement_boundary_from(&mut self, checkpoint: usize) {
+        self.synchronize_to_statement_boundary();
+        if self.cursor == checkpoint && !self.is_eof() {
+            let _ = self.bump();
         }
     }
 
@@ -1958,7 +1982,7 @@ impl<'a> Parser<'a> {
             TokenKind::KwReturn => self.parse_return_stmt(),
             TokenKind::KwBreak => self.parse_break_stmt(),
             TokenKind::KwContinue => self.parse_continue_stmt(),
-            kind if self.can_start_expr_statement(kind) => {
+            kind if Self::can_start_expr_statement(kind) => {
                 let expr = self.parse_expr()?;
                 let semi = self.expect(TokenKind::Semi)?;
                 let span = Span::new(expr.span.start, semi.span.end);
@@ -2191,7 +2215,7 @@ impl<'a> Parser<'a> {
         ))
     }
 
-    fn can_start_top_level_item(&self, kind: TokenKind) -> bool {
+    fn can_start_top_level_item(kind: TokenKind) -> bool {
         matches!(
             kind,
             TokenKind::KwUse
@@ -2207,7 +2231,7 @@ impl<'a> Parser<'a> {
         )
     }
 
-    fn can_start_stmt(&self, kind: TokenKind) -> bool {
+    fn can_start_stmt(kind: TokenKind) -> bool {
         matches!(
             kind,
             TokenKind::KwIf
@@ -2222,8 +2246,8 @@ impl<'a> Parser<'a> {
         )
     }
 
-    fn can_start_expr_statement(&self, kind: TokenKind) -> bool {
-        self.can_start_expr(kind)
+    fn can_start_expr_statement(kind: TokenKind) -> bool {
+        Self::can_start_expr(kind)
     }
 
     fn attribute_prefix_before_statement(&self) -> bool {
@@ -2564,7 +2588,7 @@ impl<'a> Parser<'a> {
     /// Parses range expressions (`..`, `..=`) around null-coalescing expressions.
     fn parse_range_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
         if let Some(op) = self.eat(TokenKind::DotDotEq) {
-            if !self.can_start_expr(self.peek().kind) {
+            if !Self::can_start_expr(self.peek().kind) {
                 return Err(ParseError::UnexpectedToken {
                     expected: "expression",
                     found: self.peek().kind,
@@ -2583,7 +2607,7 @@ impl<'a> Parser<'a> {
         }
 
         if let Some(op) = self.eat(TokenKind::DotDot) {
-            if !self.can_start_expr(self.peek().kind) {
+            if !Self::can_start_expr(self.peek().kind) {
                 return Err(ParseError::UnexpectedToken {
                     expected: "expression",
                     found: self.peek().kind,
@@ -2615,7 +2639,7 @@ impl<'a> Parser<'a> {
         }
 
         if let Some(op) = self.eat(TokenKind::DotDot) {
-            if self.can_start_expr(self.peek().kind) {
+            if Self::can_start_expr(self.peek().kind) {
                 let end = self.parse_null_coalescing_expr()?;
                 return Ok(Spanned::new(
                     Expr::Range {
@@ -2924,7 +2948,7 @@ impl<'a> Parser<'a> {
         self.parse_postfix_expr()
     }
 
-    fn can_start_expr(&self, kind: TokenKind) -> bool {
+    fn can_start_expr(kind: TokenKind) -> bool {
         matches!(
             kind,
             TokenKind::KwIf
@@ -3202,116 +3226,160 @@ impl<'a> Parser<'a> {
         let mut expr = self.parse_primary_expr()?;
 
         loop {
-            match self.peek().kind {
-                TokenKind::QuestionDot => {
-                    self.bump();
-                    let (member, member_span) =
-                        self.expect_identifier_text()?;
-                    let span = Span::new(expr.span.start, member_span.end);
-                    expr = Spanned::new(
-                        Expr::OptionalMemberAccess {
-                            base: Box::new(expr),
-                            member,
-                        },
-                        span,
-                    );
-                }
-                TokenKind::Dot => {
-                    let _dot = self.bump();
-                    let (member, member_span) =
-                        self.expect_identifier_text()?;
-                    let span = Span::new(expr.span.start, member_span.end);
-                    expr = Spanned::new(
-                        Expr::MemberAccess {
-                            base: Box::new(expr),
-                            member,
-                        },
-                        span,
-                    );
-                }
-                TokenKind::ColonColon => {
-                    self.bump();
-                    let (member, member_span) =
-                        self.expect_identifier_text()?;
-                    let mut turbofish = Vec::new();
-                    let mut end = member_span.end;
-                    if self.at(TokenKind::ColonColon)
-                        && self.peek_nth(1).kind == TokenKind::Lt
-                    {
-                        self.bump();
-                        let (args, generic_end) =
-                            self.parse_generic_arg_list()?;
-                        turbofish = args;
-                        end = generic_end;
-                    }
-                    let span = Span::new(expr.span.start, end);
-                    expr = Spanned::new(
-                        Expr::NamespaceAccess {
-                            base: Box::new(expr),
-                            member,
-                            turbofish,
-                        },
-                        span,
-                    );
-                }
-                TokenKind::LParen => {
-                    let (args, end) = self.parse_call_arg_list()?;
-                    let span = Span::new(expr.span.start, end);
-                    expr = Spanned::new(
-                        Expr::Call {
-                            callee: Box::new(expr),
-                            args,
-                            trailing_closure: None,
-                        },
-                        span,
-                    );
-                }
-                TokenKind::LBracket => {
-                    let lbracket = self.bump();
-                    let index = self.parse_expr()?;
-                    let rbracket = self.expect(TokenKind::RBracket)?;
-                    let span = Span::new(expr.span.start, rbracket.span.end);
-                    let _ = lbracket;
-                    expr = Spanned::new(
-                        Expr::Index {
-                            base: Box::new(expr),
-                            index: Box::new(index),
-                        },
-                        span,
-                    );
-                }
-                TokenKind::Question => {
-                    if self.peek_nth(1).kind != TokenKind::LBracket {
-                        break;
-                    }
-                    self.bump();
-                    self.expect(TokenKind::LBracket)?;
-                    let index = self.parse_expr()?;
-                    let rbracket = self.expect(TokenKind::RBracket)?;
-                    let span = Span::new(expr.span.start, rbracket.span.end);
-                    expr = Spanned::new(
-                        Expr::OptionalIndex {
-                            base: Box::new(expr),
-                            index: Box::new(index),
-                        },
-                        span,
-                    );
-                }
-                TokenKind::Bang => {
-                    let bang = self.bump();
-                    let start = expr.span.start;
-                    expr = Spanned::new(
-                        Expr::ForceUnwrap {
-                            expr: Box::new(expr),
-                        },
-                        Span::new(start, bang.span.end),
-                    );
-                }
-                _ => break,
+            if !self.try_parse_postfix_suffix(&mut expr)? {
+                break;
             }
         }
 
         Ok(expr)
+    }
+
+    fn try_parse_postfix_suffix(
+        &mut self,
+        expr: &mut Spanned<Expr>,
+    ) -> Result<bool, ParseError> {
+        let next = match self.peek().kind {
+            TokenKind::QuestionDot => {
+                self.parse_optional_member_access(expr)?
+            }
+            TokenKind::Dot => self.parse_member_access(expr)?,
+            TokenKind::ColonColon => self.parse_namespace_access(expr)?,
+            TokenKind::LParen => self.parse_call_expr(expr)?,
+            TokenKind::LBracket => self.parse_index_expr(expr)?,
+            TokenKind::Question
+                if self.peek_nth(1).kind == TokenKind::LBracket =>
+            {
+                self.parse_optional_index_expr(expr)?
+            }
+            TokenKind::Bang => self.parse_force_unwrap_expr(expr),
+            _ => return Ok(false),
+        };
+        *expr = next;
+        Ok(true)
+    }
+
+    fn parse_optional_member_access(
+        &mut self,
+        expr: &Spanned<Expr>,
+    ) -> Result<Spanned<Expr>, ParseError> {
+        self.bump();
+        let (member, member_span) = self.expect_identifier_text()?;
+        let span = Span::new(expr.span.start, member_span.end);
+        Ok(Spanned::new(
+            Expr::OptionalMemberAccess {
+                base: Box::new(expr.clone()),
+                member,
+            },
+            span,
+        ))
+    }
+
+    fn parse_member_access(
+        &mut self,
+        expr: &Spanned<Expr>,
+    ) -> Result<Spanned<Expr>, ParseError> {
+        let _dot = self.bump();
+        let (member, member_span) = self.expect_identifier_text()?;
+        let span = Span::new(expr.span.start, member_span.end);
+        Ok(Spanned::new(
+            Expr::MemberAccess {
+                base: Box::new(expr.clone()),
+                member,
+            },
+            span,
+        ))
+    }
+
+    fn parse_namespace_access(
+        &mut self,
+        expr: &Spanned<Expr>,
+    ) -> Result<Spanned<Expr>, ParseError> {
+        self.bump();
+        let (member, member_span) = self.expect_identifier_text()?;
+        let mut turbofish = Vec::new();
+        let mut end = member_span.end;
+        if self.at(TokenKind::ColonColon)
+            && self.peek_nth(1).kind == TokenKind::Lt
+        {
+            self.bump();
+            let (args, generic_end) = self.parse_generic_arg_list()?;
+            turbofish = args;
+            end = generic_end;
+        }
+        let span = Span::new(expr.span.start, end);
+        Ok(Spanned::new(
+            Expr::NamespaceAccess {
+                base: Box::new(expr.clone()),
+                member,
+                turbofish,
+            },
+            span,
+        ))
+    }
+
+    fn parse_call_expr(
+        &mut self,
+        expr: &Spanned<Expr>,
+    ) -> Result<Spanned<Expr>, ParseError> {
+        let (args, end) = self.parse_call_arg_list()?;
+        let span = Span::new(expr.span.start, end);
+        Ok(Spanned::new(
+            Expr::Call {
+                callee: Box::new(expr.clone()),
+                args,
+                trailing_closure: None,
+            },
+            span,
+        ))
+    }
+
+    fn parse_index_expr(
+        &mut self,
+        expr: &Spanned<Expr>,
+    ) -> Result<Spanned<Expr>, ParseError> {
+        let _ = self.bump();
+        let index = self.parse_expr()?;
+        let rbracket = self.expect(TokenKind::RBracket)?;
+        let span = Span::new(expr.span.start, rbracket.span.end);
+        Ok(Spanned::new(
+            Expr::Index {
+                base: Box::new(expr.clone()),
+                index: Box::new(index),
+            },
+            span,
+        ))
+    }
+
+    fn parse_optional_index_expr(
+        &mut self,
+        expr: &Spanned<Expr>,
+    ) -> Result<Spanned<Expr>, ParseError> {
+        self.bump();
+        self.expect(TokenKind::LBracket)?;
+        let index = self.parse_expr()?;
+        let rbracket = self.expect(TokenKind::RBracket)?;
+        let span = Span::new(expr.span.start, rbracket.span.end);
+        Ok(Spanned::new(
+            Expr::OptionalIndex {
+                base: Box::new(expr.clone()),
+                index: Box::new(index),
+            },
+            span,
+        ))
+    }
+
+    fn parse_force_unwrap_expr(
+        &mut self,
+        expr: &Spanned<Expr>,
+    ) -> Spanned<Expr> {
+        let bang = self.bump();
+        let start = expr.span.start;
+        Spanned::new(
+            Expr::ForceUnwrap {
+                expr: Box::new(expr.clone()),
+            },
+            Span::new(start, bang.span.end),
+        )
     }
 
     fn parse_grouped_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
@@ -3667,16 +3735,15 @@ impl<'a> Parser<'a> {
                             });
                         }
                         break;
-                    } else {
-                        if has_rest {
-                            return Err(ParseError::UnexpectedToken {
-                                expected: "`..` rest marker must be final in variant pattern payload",
-                                found: self.peek().kind,
-                                span: self.peek().span,
-                            });
-                        }
-                        args.push(self.parse_pattern()?);
                     }
+                    if has_rest {
+                        return Err(ParseError::UnexpectedToken {
+                            expected: "`..` rest marker must be final in variant pattern payload",
+                            found: self.peek().kind,
+                            span: self.peek().span,
+                        });
+                    }
+                    args.push(self.parse_pattern()?);
 
                     if self.eat(TokenKind::Comma).is_some() {
                         if self.at(TokenKind::RParen) {
@@ -3736,25 +3803,24 @@ impl<'a> Parser<'a> {
                         });
                     }
                     break;
-                } else {
-                    if has_rest {
-                        return Err(ParseError::UnexpectedToken {
-                            expected: "`..` rest marker must be final in struct pattern",
-                            found: self.peek().kind,
-                            span: self.peek().span,
-                        });
-                    }
-                    let (field, _) = self.expect_identifier_text()?;
-                    let pattern = if self.eat(TokenKind::Colon).is_some() {
-                        Some(self.parse_pattern()?)
-                    } else {
-                        None
-                    };
-                    fields.push(StructPatternField {
-                        name: field,
-                        pattern,
+                }
+                if has_rest {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "`..` rest marker must be final in struct pattern",
+                        found: self.peek().kind,
+                        span: self.peek().span,
                     });
                 }
+                let (field, _) = self.expect_identifier_text()?;
+                let pattern = if self.eat(TokenKind::Colon).is_some() {
+                    Some(self.parse_pattern()?)
+                } else {
+                    None
+                };
+                fields.push(StructPatternField {
+                    name: field,
+                    pattern,
+                });
 
                 if self.eat(TokenKind::Comma).is_some() {
                     if self.at(TokenKind::RBrace) {
@@ -3814,16 +3880,15 @@ impl<'a> Parser<'a> {
                         });
                     }
                     break;
-                } else {
-                    if rest.is_some() {
-                        return Err(ParseError::UnexpectedToken {
-                            expected: "`..` rest marker must be final in array pattern",
-                            found: self.peek().kind,
-                            span: self.peek().span,
-                        });
-                    }
-                    elements.push(self.parse_pattern()?);
                 }
+                if rest.is_some() {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "`..` rest marker must be final in array pattern",
+                        found: self.peek().kind,
+                        span: self.peek().span,
+                    });
+                }
+                elements.push(self.parse_pattern()?);
 
                 if self.eat(TokenKind::Comma).is_some() {
                     if self.at(TokenKind::RBracket) {
@@ -3974,6 +4039,10 @@ impl<'a> Parser<'a> {
 }
 
 /// Parses a whole source file using default parser construction.
+///
+/// # Errors
+///
+/// Returns `ParseError` if lexing fails or parsing cannot continue.
 pub fn parse_source_file(
     source: &str,
 ) -> Result<crate::frontend::ParsedFile, ParseError> {
@@ -3987,6 +4056,10 @@ pub fn parse_source_file(
 }
 
 /// Parses a whole source file with conservative recovery and diagnostics.
+///
+/// # Errors
+///
+/// Returns `ParseError` if lexing fails before parsing with recovery starts.
 pub fn parse_source_file_with_recovery(
     source: &str,
 ) -> Result<crate::frontend::ParsedFile, ParseError> {
@@ -4600,7 +4673,7 @@ mod tests {
 
     #[test]
     fn parse_impl_with_conformance() {
-        let decl = parse_impl_decl_from_source("impl Foo: Display {}");
+        let decl = parse_impl_decl_from_source("impl Display for Foo {}");
         assert!(decl.node.conformance.is_some());
     }
 
@@ -4937,7 +5010,7 @@ mod tests {
         let bind_rest = parse_pattern_from_source("[a, b, ..rest]");
         match bind_rest.node {
             Pattern::Array { rest, .. } => {
-                assert!(matches!(rest, Some(ArrayPatternRest::Bind(_))))
+                assert!(matches!(rest, Some(ArrayPatternRest::Bind(_))));
             }
             _ => panic!("expected array pattern"),
         }
@@ -4945,7 +5018,7 @@ mod tests {
         let ignore_rest = parse_pattern_from_source("[1, 2, ..]");
         match ignore_rest.node {
             Pattern::Array { rest, .. } => {
-                assert!(matches!(rest, Some(ArrayPatternRest::Ignore)))
+                assert!(matches!(rest, Some(ArrayPatternRest::Ignore)));
             }
             _ => panic!("expected array pattern"),
         }
@@ -5337,7 +5410,7 @@ mod tests {
                     assert_eq!(block.statements.len(), 1);
                     assert!(block.tail_expr.is_some());
                 }
-                _ => panic!("expected braced macro args"),
+                MacroExprArgs::Paren(_) => panic!("expected braced macro args"),
             },
             _ => panic!("expected macro expr"),
         }
@@ -5525,7 +5598,7 @@ mod tests {
         match expr.node {
             Expr::Macro { args, .. } => match args {
                 MacroExprArgs::Paren(values) => assert_eq!(values.len(), 1),
-                _ => panic!("expected paren macro args"),
+                MacroExprArgs::Braced(_) => panic!("expected paren macro args"),
             },
             _ => panic!("expected macro expr"),
         }
@@ -5537,7 +5610,7 @@ mod tests {
         match expr.node {
             Expr::Macro { args, .. } => match args {
                 MacroExprArgs::Braced(_) => {}
-                _ => panic!("expected braced macro args"),
+                MacroExprArgs::Paren(_) => panic!("expected braced macro args"),
             },
             _ => panic!("expected macro expr"),
         }
@@ -6819,7 +6892,7 @@ mod tests {
         let ty = parse_type_from_source("core::fmt::Formatter");
         match ty.node {
             Type::Named { segments } => {
-                assert_eq!(segments, vec!["core", "fmt", "Formatter"])
+                assert_eq!(segments, vec!["core", "fmt", "Formatter"]);
             }
             _ => panic!("expected path type"),
         }

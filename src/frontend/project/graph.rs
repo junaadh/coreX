@@ -15,6 +15,12 @@ pub struct ProjectGraph {
     pub local_dependencies: Vec<LoadedDependencyProject>,
 }
 
+/// Loads a one-level local dependency graph for a root project.
+///
+/// # Errors
+///
+/// Returns `ProjectLoadError` if any immediate path dependency cannot be
+/// loaded as a valid project.
 pub fn load_local_dependency_project_graph(
     root_project: LoadedProject,
 ) -> Result<ProjectGraph, ProjectLoadError> {

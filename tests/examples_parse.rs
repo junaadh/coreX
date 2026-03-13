@@ -53,7 +53,9 @@ fn examples_directory_contains_expected_files() {
     let present = example_cx_files()
         .into_iter()
         .filter_map(|p| {
-            p.file_name().and_then(|s| s.to_str()).map(|s| s.to_owned())
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .map(std::borrow::ToOwned::to_owned)
         })
         .collect::<BTreeSet<_>>();
 

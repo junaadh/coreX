@@ -26,7 +26,7 @@ impl<'a> DiagnosticRenderer<'a> {
         ));
 
         if let Some((path, line, column)) = self.primary_location(diagnostic) {
-            lines.push(format!(" --> {}:{}:{}", path, line, column));
+            lines.push(format!(" --> {path}:{line}:{column}"));
         }
 
         for label in ordered_labels(diagnostic) {
@@ -36,11 +36,11 @@ impl<'a> DiagnosticRenderer<'a> {
         }
 
         for note in &diagnostic.notes {
-            lines.push(format!("note: {}", note));
+            lines.push(format!("note: {note}"));
         }
 
         if let Some(help) = &diagnostic.help {
-            lines.push(format!("help: {}", help));
+            lines.push(format!("help: {help}"));
         }
 
         lines.join("\n")

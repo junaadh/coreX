@@ -182,6 +182,71 @@ fn resolve_nested_group_import_with_self() {
 }
 
 #[test]
+fn resolve_group_import_with_self_alias() {
+    let mut db = SourceDb::new();
+    let root =
+        add_and_parse(&mut db, "src/root.cx", "scope net; scope importer;");
+    let net = add_and_parse(&mut db, "src/net.cx", "scope http;");
+    let http = add_and_parse(&mut db, "src/net/http.cx", "");
+    let importer = add_and_parse(
+        &mut db,
+        "src/importer.cx",
+        "use root::net::{self as net_root, http};",
+    );
+    let parsed_files =
+        vec![root.clone(), net.clone(), http.clone(), importer.clone()];
+
+    let graph = resolve_library_graph(&db, &parsed_files, root.file_id);
+    let (_, imports) =
+        resolve_project_imports(&graph, &parsed_files).expect("imports");
+    let importer_imports = imports
+        .get(&importer.file_id)
+        .expect("importer imports should exist");
+
+    let net_binding =
+        importer_imports.get("net_root").expect("net_root binding");
+    let http_binding = importer_imports.get("http").expect("http binding");
+    assert_eq!(net_binding.kind, ImportBindingKind::Scope);
+    assert_eq!(http_binding.kind, ImportBindingKind::Scope);
+    assert_eq!(net_binding.target_path, vec!["net".to_string()]);
+    assert_eq!(
+        http_binding.target_path,
+        vec!["net".to_string(), "http".to_string()]
+    );
+}
+
+#[test]
+fn resolve_duplicate_binding_from_self_alias_reports_error() {
+    let mut db = SourceDb::new();
+    let root =
+        add_and_parse(&mut db, "src/root.cx", "scope net; scope importer;");
+    let net = add_and_parse(&mut db, "src/net.cx", "scope http;");
+    let http = add_and_parse(&mut db, "src/net/http.cx", "");
+    let importer = add_and_parse(
+        &mut db,
+        "src/importer.cx",
+        "use root::net::{self as http, http};",
+    );
+    let parsed_files =
+        vec![root.clone(), net.clone(), http.clone(), importer.clone()];
+
+    let graph = resolve_library_graph(&db, &parsed_files, root.file_id);
+    let error = resolve_project_imports(&graph, &parsed_files)
+        .expect_err("resolution should fail");
+
+    match error {
+        ImportResolveError::DuplicateBinding {
+            file_id,
+            binding_name,
+        } => {
+            assert_eq!(file_id, importer.file_id);
+            assert_eq!(binding_name, "http");
+        }
+        other => panic!("expected DuplicateBinding error, got {other:?}"),
+    }
+}
+
+#[test]
 fn resolve_glob_import() {
     let mut db = SourceDb::new();
     let root =
@@ -226,11 +291,14 @@ fn resolve_glob_import() {
 }
 
 #[test]
-fn resolve_self_import_from_current_scope() {
+fn resolve_grouped_self_import_from_group_base() {
     let mut db = SourceDb::new();
     let root = add_and_parse(&mut db, "src/root.cx", "scope app;");
-    let app =
-        add_and_parse(&mut db, "src/app.cx", "scope http; use self::http;");
+    let app = add_and_parse(
+        &mut db,
+        "src/app.cx",
+        "scope http; use root::app::{self, http};",
+    );
     let http = add_and_parse(&mut db, "src/app/http.cx", "");
     let parsed_files = vec![root.clone(), app.clone(), http.clone()];
 
@@ -238,9 +306,12 @@ fn resolve_self_import_from_current_scope() {
     let (_, imports) =
         resolve_project_imports(&graph, &parsed_files).expect("imports");
     let app_imports = imports.get(&app.file_id).expect("app imports");
+    let app_binding = app_imports.get("app").expect("app binding");
     let http_binding = app_imports.get("http").expect("http binding");
 
+    assert_eq!(app_binding.kind, ImportBindingKind::Scope);
     assert_eq!(http_binding.kind, ImportBindingKind::Scope);
+    assert_eq!(app_binding.target_path, vec!["app".to_string()]);
     assert_eq!(
         http_binding.target_path,
         vec!["app".to_string(), "http".to_string()]
@@ -396,5 +467,124 @@ fn resolve_binary_root_imports_separately_from_library_root() {
             assert_eq!(path, vec!["root", "net", "Client"]);
         }
         other => panic!("expected UnresolvedPath error, got {other:?}"),
+    }
+}
+
+#[test]
+fn resolve_recursive_group_import_with_alias_and_glob() {
+    let mut db = SourceDb::new();
+    let root =
+        add_and_parse(&mut db, "src/root.cx", "scope api; scope importer;");
+    let _api =
+        add_and_parse(&mut db, "src/api.cx", "scope client; scope server;");
+    let _client = add_and_parse(
+        &mut db,
+        "src/api/client.cx",
+        "struct Client {} struct Request {}",
+    );
+    let server =
+        add_and_parse(&mut db, "src/api/server.cx", "struct HttpServer {}");
+    let importer = add_and_parse(
+        &mut db,
+        "src/importer.cx",
+        "use root::api::{client::*, server::{self, HttpServer as ServerType}};",
+    );
+    let parsed_files = db
+        .files()
+        .iter()
+        .map(|file| {
+            parse_source_file_from_source_file(file)
+                .expect("parse should succeed")
+        })
+        .collect::<Vec<_>>();
+
+    let graph = resolve_library_graph(&db, &parsed_files, root.file_id);
+    let (_, imports) =
+        resolve_project_imports(&graph, &parsed_files).expect("imports");
+    let importer_imports = imports
+        .get(&importer.file_id)
+        .expect("importer imports should exist");
+
+    assert_eq!(
+        importer_imports.get("Client").map(|binding| &binding.kind),
+        Some(&ImportBindingKind::Symbol(SymbolKind::Struct))
+    );
+    assert_eq!(
+        importer_imports.get("Request").map(|binding| &binding.kind),
+        Some(&ImportBindingKind::Symbol(SymbolKind::Struct))
+    );
+    let server_binding =
+        importer_imports.get("server").expect("server binding");
+    assert_eq!(server_binding.kind, ImportBindingKind::Scope);
+    assert_eq!(
+        server_binding.target_path,
+        vec!["api".to_string(), "server".to_string()]
+    );
+    let alias_binding = importer_imports
+        .get("ServerType")
+        .expect("aliased server binding");
+    assert_eq!(
+        alias_binding.kind,
+        ImportBindingKind::Symbol(SymbolKind::Struct)
+    );
+    assert_eq!(alias_binding.target_file_id, server.file_id);
+}
+
+#[test]
+fn resolve_duplicate_binding_from_recursive_group_reports_error() {
+    let mut db = SourceDb::new();
+    let root =
+        add_and_parse(&mut db, "src/root.cx", "scope api; scope importer;");
+    let _api = add_and_parse(&mut db, "src/api.cx", "scope server;");
+    let _server =
+        add_and_parse(&mut db, "src/api/server.cx", "struct HttpServer {}");
+    let importer = add_and_parse(
+        &mut db,
+        "src/importer.cx",
+        "use root::api::{server::{HttpServer}, server::HttpServer};",
+    );
+    let parsed_files = db
+        .files()
+        .iter()
+        .map(|file| {
+            parse_source_file_from_source_file(file)
+                .expect("parse should succeed")
+        })
+        .collect::<Vec<_>>();
+
+    let graph = resolve_library_graph(&db, &parsed_files, root.file_id);
+    let error = resolve_project_imports(&graph, &parsed_files)
+        .expect_err("resolution should fail");
+
+    match error {
+        ImportResolveError::DuplicateBinding {
+            file_id,
+            binding_name,
+        } => {
+            assert_eq!(file_id, importer.file_id);
+            assert_eq!(binding_name, "HttpServer");
+        }
+        other => panic!("expected DuplicateBinding error, got {other:?}"),
+    }
+}
+
+#[test]
+fn resolve_scope_keyword_root_segment_reports_unknown_root_when_unbound() {
+    let mut db = SourceDb::new();
+    let root = add_and_parse(&mut db, "src/root.cx", "scope importer;");
+    let importer =
+        add_and_parse(&mut db, "src/importer.cx", "use scope::Thing;");
+    let parsed_files = vec![root.clone(), importer.clone()];
+
+    let graph = resolve_library_graph(&db, &parsed_files, root.file_id);
+    let error = resolve_project_imports(&graph, &parsed_files)
+        .expect_err("resolution should fail");
+
+    match error {
+        ImportResolveError::UnknownRoot { from_file_id, root } => {
+            assert_eq!(from_file_id, importer.file_id);
+            assert_eq!(root, "scope");
+        }
+        other => panic!("expected UnknownRoot error, got {other:?}"),
     }
 }

@@ -8,6 +8,11 @@ use crate::frontend::resolver::{ResolvedScope, ScopeGraph};
 use crate::frontend::source::{FileId, SourceDb};
 use std::collections::BTreeMap;
 
+type ProjectImportTables = (
+    BTreeMap<FileId, ScopeSymbols>,
+    BTreeMap<FileId, ResolvedImports>,
+);
+
 /// Imported binding category.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportBindingKind {
@@ -86,13 +91,14 @@ impl<'a> ImportResolver<'a> {
     }
 
     /// Collects top-level scope symbols for all scopes in the graph.
+    #[must_use]
     pub fn collect_scope_symbols(&self) -> BTreeMap<FileId, ScopeSymbols> {
         let parsed_by_id = self.parsed_file_by_id();
         let mut tables = BTreeMap::new();
 
         for file_id in self.graph.scopes.keys().copied() {
             let symbols = match parsed_by_id.get(&file_id) {
-                Some(parsed) => self.collect_symbols_for_file(parsed),
+                Some(parsed) => Self::collect_symbols_for_file(parsed),
                 None => ScopeSymbols {
                     file_id,
                     symbols: BTreeMap::new(),
@@ -105,6 +111,11 @@ impl<'a> ImportResolver<'a> {
     }
 
     /// Resolves all `use` trees for each scope in the graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ImportResolveError` when any `use` tree cannot be structurally
+    /// resolved.
     pub fn resolve_imports(
         &self,
     ) -> Result<BTreeMap<FileId, ResolvedImports>, ImportResolveError> {
@@ -136,6 +147,7 @@ impl<'a> ImportResolver<'a> {
         Ok(all)
     }
 
+    #[must_use]
     pub fn resolve_imports_with_diagnostics(
         &self,
         db: &SourceDb,
@@ -150,21 +162,19 @@ impl<'a> ImportResolver<'a> {
 
             if let Some(parsed) = parsed_by_id.get(&file_id) {
                 for item in &parsed.ast.items {
-                    if let Item::Use(use_item) = &item.node {
-                        if let Err(error) = self.resolve_use_tree_into(
+                    if let Item::Use(use_item) = &item.node
+                        && let Err(error) = self.resolve_use_tree_into(
                             file_id,
                             file_id,
                             &[],
                             &use_item.node.tree.node,
                             &parent_map,
                             &mut bindings,
-                        ) {
-                            diagnostics.push(
-                                diagnostic_from_import_resolve_error(
-                                    db, &error,
-                                ),
-                            );
-                        }
+                        )
+                    {
+                        diagnostics.push(diagnostic_from_import_resolve_error(
+                            db, &error,
+                        ));
                     }
                 }
             }
@@ -202,7 +212,7 @@ impl<'a> ImportResolver<'a> {
             .collect()
     }
 
-    fn collect_symbols_for_file(&self, parsed: &ParsedFile) -> ScopeSymbols {
+    fn collect_symbols_for_file(parsed: &ParsedFile) -> ScopeSymbols {
         let mut symbols = BTreeMap::new();
 
         for item in &parsed.ast.items {
@@ -259,7 +269,7 @@ impl<'a> ImportResolver<'a> {
     ) -> Result<(), ImportResolveError> {
         match tree {
             UseTree::Path { path } => {
-                let path = self.prefixed_path(prefix, &path.segments);
+                let path = Self::prefixed_path(prefix, &path.segments);
                 self.resolve_and_bind_path(
                     from_file_id,
                     current_scope_id,
@@ -270,7 +280,7 @@ impl<'a> ImportResolver<'a> {
                 )
             }
             UseTree::Alias { path, alias } => {
-                let path = self.prefixed_path(prefix, &path.segments);
+                let path = Self::prefixed_path(prefix, &path.segments);
                 self.resolve_and_bind_path(
                     from_file_id,
                     current_scope_id,
@@ -281,7 +291,7 @@ impl<'a> ImportResolver<'a> {
                 )
             }
             UseTree::Glob { path } => {
-                let path = self.prefixed_path(prefix, &path.segments);
+                let path = Self::prefixed_path(prefix, &path.segments);
                 self.resolve_glob(
                     from_file_id,
                     current_scope_id,
@@ -323,10 +333,26 @@ impl<'a> ImportResolver<'a> {
                     bindings,
                 )
             }
+            UseTree::SelfAlias { alias } => {
+                if prefix.is_empty() {
+                    return Err(ImportResolveError::InvalidSelfImport {
+                        from_file_id,
+                    });
+                }
+                let resolved = self.resolve_use_path(
+                    from_file_id,
+                    current_scope_id,
+                    prefix,
+                    parent_map,
+                )?;
+                let binding =
+                    Self::binding_from_target(alias.clone(), resolved);
+                Self::insert_binding_checked(from_file_id, bindings, binding)
+            }
         }
     }
 
-    fn prefixed_path(&self, prefix: &[String], path: &[String]) -> Vec<String> {
+    fn prefixed_path(prefix: &[String], path: &[String]) -> Vec<String> {
         let mut combined = Vec::with_capacity(prefix.len() + path.len());
         combined.extend(prefix.iter().cloned());
         combined.extend(path.iter().cloned());
@@ -357,8 +383,8 @@ impl<'a> ImportResolver<'a> {
                 },
             )?,
         };
-        let binding = self.binding_from_target(local_name, resolved);
-        self.insert_binding_checked(from_file_id, bindings, binding)
+        let binding = Self::binding_from_target(local_name, resolved);
+        Self::insert_binding_checked(from_file_id, bindings, binding)
     }
 
     fn resolve_glob(
@@ -397,17 +423,16 @@ impl<'a> ImportResolver<'a> {
                     path: path.to_vec(),
                 }
             })?;
-        let target_scope = self
-            .scope_by_id(context.graph, target_scope_id)
+        let target_scope = Self::scope_by_id(context.graph, target_scope_id)
             .ok_or_else(|| ImportResolveError::UnresolvedPath {
                 from_file_id,
                 path: path.to_vec(),
             })?;
 
-        let mut child_scopes = BTreeMap::new();
+        let mut child_scopes: BTreeMap<String, FileId> = BTreeMap::new();
         for child_file_id in &target_scope.child_scope_ids {
             if let Some(child_scope) =
-                self.scope_by_id(context.graph, *child_file_id)
+                Self::scope_by_id(context.graph, *child_file_id)
             {
                 child_scopes
                     .entry(child_scope.name.clone())
@@ -416,13 +441,14 @@ impl<'a> ImportResolver<'a> {
         }
 
         for (child_name, child_file_id) in child_scopes {
-            let child_scope = self
-                .scope_by_id(context.graph, child_file_id)
-                .ok_or_else(|| ImportResolveError::UnresolvedPath {
+            let child_scope = Self::scope_by_id(context.graph, child_file_id)
+                .ok_or_else(|| {
+                ImportResolveError::UnresolvedPath {
                     from_file_id,
                     path: path.to_vec(),
-                })?;
-            self.insert_binding_checked(
+                }
+            })?;
+            Self::insert_binding_checked(
                 from_file_id,
                 bindings,
                 ResolvedImportBinding {
@@ -443,7 +469,7 @@ impl<'a> ImportResolver<'a> {
 
                 let mut target_path = target_scope.scope_path.clone();
                 target_path.push(name.clone());
-                self.insert_binding_checked(
+                Self::insert_binding_checked(
                     from_file_id,
                     bindings,
                     ResolvedImportBinding {
@@ -467,29 +493,59 @@ impl<'a> ImportResolver<'a> {
         parent_map: &BTreeMap<FileId, FileId>,
     ) -> Result<ResolvedPathTarget, ImportResolveError> {
         if path.is_empty() {
-            return Err(ImportResolveError::UnresolvedPath {
-                from_file_id,
-                path: path.to_vec(),
-            });
+            return Err(Self::unresolved_path(from_file_id, path));
         }
 
         if path.len() > 1 && path[1..].iter().any(|segment| segment == "self") {
             return Err(ImportResolveError::InvalidSelfImport { from_file_id });
         }
 
+        let (root_source, mut current_scope_id) = self.resolve_import_root(
+            from_file_id,
+            current_scope_id,
+            path,
+            parent_map,
+        )?;
+        let context = self
+            .context_for_root_source(&root_source)
+            .ok_or_else(|| Self::unresolved_path(from_file_id, path))?;
+
+        if path.len() == 1 {
+            let scope = Self::scope_by_id(context.graph, current_scope_id)
+                .ok_or_else(|| Self::unresolved_path(from_file_id, path))?;
+            return Ok(ResolvedPathTarget::Scope {
+                file_id: scope.file_id,
+                target_path: scope.scope_path.clone(),
+                root_source,
+            });
+        }
+
+        Self::resolve_path_tail(
+            from_file_id,
+            path,
+            &root_source,
+            &context,
+            &mut current_scope_id,
+        )
+    }
+
+    fn resolve_import_root(
+        &self,
+        from_file_id: FileId,
+        current_scope_id: FileId,
+        path: &[String],
+        parent_map: &BTreeMap<FileId, FileId>,
+    ) -> Result<(ResolvedRootSource, FileId), ImportResolveError> {
         let first = &path[0];
-        let mut root_source = ResolvedRootSource::Current;
-        let mut current_scope_id = match first.as_str() {
-            "root" => self.graph.root_file_id,
-            "self" => current_scope_id,
-            "super" => {
-                parent_map.get(&current_scope_id).copied().ok_or_else(|| {
-                    ImportResolveError::UnresolvedPath {
-                        from_file_id,
-                        path: path.to_vec(),
-                    }
-                })?
+        match first.as_str() {
+            "root" => {
+                Ok((ResolvedRootSource::Current, self.graph.root_file_id))
             }
+            "super" => parent_map
+                .get(&current_scope_id)
+                .copied()
+                .map(|scope_id| (ResolvedRootSource::Current, scope_id))
+                .ok_or_else(|| Self::unresolved_path(from_file_id, path)),
             other => {
                 let named_root =
                     self.named_roots.get(other).ok_or_else(|| {
@@ -499,105 +555,100 @@ impl<'a> ImportResolver<'a> {
                         }
                     })?;
                 match named_root {
-                    RegisteredNamedRoot::Loaded { graph, .. } => {
-                        root_source =
-                            ResolvedRootSource::Named(other.to_string());
-                        graph.root_file_id
-                    }
+                    RegisteredNamedRoot::Loaded { graph, .. } => Ok((
+                        ResolvedRootSource::Named(other.to_string()),
+                        graph.root_file_id,
+                    )),
                     RegisteredNamedRoot::UnloadedDependency => {
-                        return Err(
-                            ImportResolveError::UnloadedDependencyRoot {
-                                from_file_id,
-                                root: other.to_string(),
-                            },
-                        );
+                        Err(ImportResolveError::UnloadedDependencyRoot {
+                            from_file_id,
+                            root: other.to_string(),
+                        })
                     }
                 }
             }
-        };
-        let context =
-            self.context_for_root_source(&root_source).ok_or_else(|| {
-                ImportResolveError::UnresolvedPath {
-                    from_file_id,
-                    path: path.to_vec(),
-                }
-            })?;
-
-        if path.len() == 1 {
-            let scope = self
-                .scope_by_id(context.graph, current_scope_id)
-                .ok_or_else(|| ImportResolveError::UnresolvedPath {
-                    from_file_id,
-                    path: path.to_vec(),
-                })?;
-            return Ok(ResolvedPathTarget::Scope {
-                file_id: scope.file_id,
-                target_path: scope.scope_path.clone(),
-                root_source,
-            });
         }
+    }
 
+    fn resolve_path_tail(
+        from_file_id: FileId,
+        path: &[String],
+        root_source: &ResolvedRootSource,
+        context: &ResolutionContext<'_>,
+        current_scope_id: &mut FileId,
+    ) -> Result<ResolvedPathTarget, ImportResolveError> {
         for (idx, segment) in path.iter().enumerate().skip(1) {
-            let is_last = idx + 1 == path.len();
-            if !is_last {
-                current_scope_id = self
-                    .child_scope_named(context.graph, current_scope_id, segment)
-                    .ok_or_else(|| ImportResolveError::UnresolvedPath {
-                        from_file_id,
-                        path: path.to_vec(),
-                    })?;
+            if idx + 1 != path.len() {
+                *current_scope_id = Self::child_scope_named(
+                    context.graph,
+                    *current_scope_id,
+                    segment,
+                )
+                .ok_or_else(|| Self::unresolved_path(from_file_id, path))?;
                 continue;
             }
 
-            if let Some(child_scope_id) =
-                self.child_scope_named(context.graph, current_scope_id, segment)
-            {
-                let child_scope = self
-                    .scope_by_id(context.graph, child_scope_id)
-                    .ok_or_else(|| ImportResolveError::UnresolvedPath {
-                        from_file_id,
-                        path: path.to_vec(),
-                    })?;
-                return Ok(ResolvedPathTarget::Scope {
-                    file_id: child_scope_id,
-                    target_path: child_scope.scope_path.clone(),
-                    root_source: root_source.clone(),
-                });
-            }
+            return Self::resolve_last_path_segment(
+                from_file_id,
+                path,
+                root_source,
+                context,
+                *current_scope_id,
+                segment,
+            );
+        }
 
-            let symbol = self
-                .lookup_symbol_in_scope(
-                    context.scope_symbols,
-                    current_scope_id,
-                    segment,
-                )
-                .ok_or_else(|| ImportResolveError::UnresolvedPath {
-                    from_file_id,
-                    path: path.to_vec(),
-                })?;
-            let scope = self
-                .scope_by_id(context.graph, current_scope_id)
-                .ok_or_else(|| ImportResolveError::UnresolvedPath {
-                    from_file_id,
-                    path: path.to_vec(),
-                })?;
-            let mut target_path = scope.scope_path.clone();
-            target_path.push(segment.clone());
-            return Ok(ResolvedPathTarget::Symbol {
-                kind: symbol.kind,
-                file_id: symbol.defining_file_id,
-                target_path,
+        Err(Self::unresolved_path(from_file_id, path))
+    }
+
+    fn resolve_last_path_segment(
+        from_file_id: FileId,
+        path: &[String],
+        root_source: &ResolvedRootSource,
+        context: &ResolutionContext<'_>,
+        current_scope_id: FileId,
+        segment: &str,
+    ) -> Result<ResolvedPathTarget, ImportResolveError> {
+        if let Some(child_scope_id) =
+            Self::child_scope_named(context.graph, current_scope_id, segment)
+        {
+            let child_scope = Self::scope_by_id(context.graph, child_scope_id)
+                .ok_or_else(|| Self::unresolved_path(from_file_id, path))?;
+            return Ok(ResolvedPathTarget::Scope {
+                file_id: child_scope_id,
+                target_path: child_scope.scope_path.clone(),
+                root_source: root_source.clone(),
             });
         }
 
-        Err(ImportResolveError::UnresolvedPath {
-            from_file_id,
-            path: path.to_vec(),
+        let symbol = Self::lookup_symbol_in_scope(
+            context.scope_symbols,
+            current_scope_id,
+            segment,
+        )
+        .ok_or_else(|| Self::unresolved_path(from_file_id, path))?;
+        let scope = Self::scope_by_id(context.graph, current_scope_id)
+            .ok_or_else(|| Self::unresolved_path(from_file_id, path))?;
+        let mut target_path = scope.scope_path.clone();
+        target_path.push(segment.to_string());
+        Ok(ResolvedPathTarget::Symbol {
+            kind: symbol.kind,
+            file_id: symbol.defining_file_id,
+            target_path,
         })
     }
 
+    fn unresolved_path(
+        from_file_id: FileId,
+        path: &[String],
+    ) -> ImportResolveError {
+        ImportResolveError::UnresolvedPath {
+            from_file_id,
+            path: path.to_vec(),
+        }
+    }
+
     fn binding_from_target(
-        &self,
         local_name: String,
         target: ResolvedPathTarget,
     ) -> ResolvedImportBinding {
@@ -626,7 +677,6 @@ impl<'a> ImportResolver<'a> {
     }
 
     fn insert_binding_checked(
-        &self,
         file_id: FileId,
         bindings: &mut BTreeMap<String, ResolvedImportBinding>,
         binding: ResolvedImportBinding,
@@ -667,23 +717,21 @@ impl<'a> ImportResolver<'a> {
         }
     }
 
-    fn scope_by_id<'s>(
-        &self,
-        graph: &'s ScopeGraph,
+    fn scope_by_id(
+        graph: &ScopeGraph,
         file_id: FileId,
-    ) -> Option<&'s ResolvedScope> {
+    ) -> Option<&ResolvedScope> {
         graph.scope(file_id)
     }
 
     fn child_scope_named(
-        &self,
         graph: &ScopeGraph,
         file_id: FileId,
         name: &str,
     ) -> Option<FileId> {
-        let scope = self.scope_by_id(graph, file_id)?;
+        let scope = Self::scope_by_id(graph, file_id)?;
         for child_file_id in &scope.child_scope_ids {
-            let child_scope = self.scope_by_id(graph, *child_file_id)?;
+            let child_scope = Self::scope_by_id(graph, *child_file_id)?;
             if child_scope.name == name {
                 return Some(*child_file_id);
             }
@@ -692,7 +740,6 @@ impl<'a> ImportResolver<'a> {
     }
 
     fn lookup_symbol_in_scope<'s>(
-        &self,
         scope_symbols: &'s BTreeMap<FileId, ScopeSymbols>,
         file_id: FileId,
         name: &str,
@@ -734,32 +781,29 @@ struct ResolutionContext<'a> {
 }
 
 /// Resolves scope symbols and project-local imports for a resolved scope graph.
+///
+/// # Errors
+///
+/// Returns `ImportResolveError` when collecting or resolving project imports
+/// fails for any scope.
 pub fn resolve_project_imports(
     graph: &ScopeGraph,
     parsed_files: &[ParsedFile],
-) -> Result<
-    (
-        BTreeMap<FileId, ScopeSymbols>,
-        BTreeMap<FileId, ResolvedImports>,
-    ),
-    ImportResolveError,
-> {
+) -> Result<ProjectImportTables, ImportResolveError> {
     let named_roots = BTreeMap::new();
     resolve_project_imports_with_named_roots(graph, parsed_files, &named_roots)
 }
 
 /// Resolves scope symbols/imports and supports additional named import roots.
+///
+/// # Errors
+///
+/// Returns `ImportResolveError` when any import resolution step fails.
 pub fn resolve_project_imports_with_named_roots(
     graph: &ScopeGraph,
     parsed_files: &[ParsedFile],
     named_roots: &BTreeMap<String, NamedImportRoot>,
-) -> Result<
-    (
-        BTreeMap<FileId, ScopeSymbols>,
-        BTreeMap<FileId, ResolvedImports>,
-    ),
-    ImportResolveError,
-> {
+) -> Result<ProjectImportTables, ImportResolveError> {
     let empty = BTreeMap::new();
     let collector = ImportResolver::new(graph, parsed_files, &empty);
     let scope_symbols = collector.collect_scope_symbols();
@@ -791,6 +835,7 @@ pub fn resolve_project_imports_with_named_roots(
 }
 
 /// Resolves imports with named roots and accumulates diagnostics.
+#[must_use]
 pub fn resolve_project_imports_with_named_roots_and_diagnostics(
     graph: &ScopeGraph,
     parsed_files: &[ParsedFile],

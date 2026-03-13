@@ -10,9 +10,9 @@ fn render_diagnostic_without_labels() {
     let renderer = DiagnosticRenderer::new(&db);
     let diagnostic = Diagnostic::warning("unused variable");
 
-    let rendered = renderer.render(&diagnostic);
-    assert!(rendered.contains("warning: unused variable"));
-    assert!(!rendered.contains(" --> "));
+    let rendered_output = renderer.render(&diagnostic);
+    assert!(rendered_output.contains("warning: unused variable"));
+    assert!(!rendered_output.contains(" --> "));
 }
 
 #[test]
@@ -28,8 +28,8 @@ fn render_primary_label_includes_path_line_and_column() {
         ),
     );
 
-    let rendered = renderer.render(&diagnostic);
-    assert!(rendered.contains(" --> example.cx:1:4"));
+    let rendered_output = renderer.render(&diagnostic);
+    assert!(rendered_output.contains(" --> example.cx:1:4"));
 }
 
 #[test]
@@ -45,9 +45,9 @@ fn render_primary_label_shows_snippet_and_caret() {
         ),
     );
 
-    let rendered = renderer.render(&diagnostic);
-    assert!(rendered.contains("1 | fn {"));
-    assert!(rendered.contains("^ expected identifier"));
+    let rendered_output = renderer.render(&diagnostic);
+    assert!(rendered_output.contains("1 | fn {"));
+    assert!(rendered_output.contains("^ expected identifier"));
 }
 
 #[test]
@@ -62,9 +62,9 @@ fn render_secondary_label_uses_dash_markers() {
             "related",
         ));
 
-    let rendered = renderer.render(&diagnostic);
-    assert!(rendered.contains("- related"));
-    assert!(!rendered.contains("^ related"));
+    let rendered_output = renderer.render(&diagnostic);
+    assert!(rendered_output.contains("- related"));
+    assert!(!rendered_output.contains("^ related"));
 }
 
 #[test]
@@ -77,8 +77,8 @@ fn render_zero_width_span_shows_single_marker() {
         DiagnosticLabel::primary_span(FileSpan::new(file_id, Span::new(2, 2))),
     );
 
-    let rendered = renderer.render(&diagnostic);
-    assert_eq!(rendered.matches('^').count(), 1);
+    let rendered_output = renderer.render(&diagnostic);
+    assert_eq!(rendered_output.matches('^').count(), 1);
 }
 
 #[test]
@@ -95,10 +95,10 @@ fn render_includes_label_message_note_and_help() {
         .with_note("while parsing declaration")
         .with_help("insert a valid expression");
 
-    let rendered = renderer.render(&diagnostic);
-    assert!(rendered.contains("here"));
-    assert!(rendered.contains("note: while parsing declaration"));
-    assert!(rendered.contains("help: insert a valid expression"));
+    let rendered_output = renderer.render(&diagnostic);
+    assert!(rendered_output.contains("here"));
+    assert!(rendered_output.contains("note: while parsing declaration"));
+    assert!(rendered_output.contains("help: insert a valid expression"));
 }
 
 #[test]
@@ -108,9 +108,9 @@ fn render_all_joins_diagnostics_with_blank_line() {
 
     let diagnostics =
         vec![Diagnostic::error("first"), Diagnostic::warning("second")];
-    let rendered = renderer.render_all(&diagnostics);
+    let rendered_output = renderer.render_all(&diagnostics);
 
-    assert_eq!(rendered, "error: first\n\nwarning: second");
+    assert_eq!(rendered_output, "error: first\n\nwarning: second");
 }
 
 #[test]
@@ -123,8 +123,8 @@ fn render_skips_unresolvable_labels_without_panicking() {
             FileSpan::new(FileId::new(99), Span::new(0, 1)),
             "here",
         ));
-    let rendered = renderer.render(&diagnostic);
+    let rendered_output = renderer.render(&diagnostic);
 
-    assert!(rendered.contains("error: missing file"));
-    assert!(!rendered.contains(" --> "));
+    assert!(rendered_output.contains("error: missing file"));
+    assert!(!rendered_output.contains(" --> "));
 }

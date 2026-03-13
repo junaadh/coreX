@@ -75,14 +75,13 @@ pub fn diagnostic_from_resolve_error(
         }
         ResolveError::ScopeCycle { cycle } => {
             let mut diagnostic = Diagnostic::error("scope cycle detected");
-            if let Some(file_id) = cycle.first().copied() {
-                if let Some(span) = file_start_span(db, file_id) {
-                    diagnostic =
-                        diagnostic.with_label(DiagnosticLabel::primary(
-                            span,
-                            "cycle reaches this scope file",
-                        ));
-                }
+            if let Some(file_id) = cycle.first().copied()
+                && let Some(span) = file_start_span(db, file_id)
+            {
+                diagnostic = diagnostic.with_label(DiagnosticLabel::primary(
+                    span,
+                    "cycle reaches this scope file",
+                ));
             }
 
             let cycle_text = cycle
@@ -118,7 +117,7 @@ fn find_scope_decl_span(
 
 fn file_start_span(db: &SourceDb, file_id: FileId) -> Option<FileSpan> {
     let file = db.file(file_id)?;
-    let end = if file.is_empty() { 0 } else { 1 };
+    let end = usize::from(!file.is_empty());
     Some(FileSpan::new(file_id, Span::new(0, end)))
 }
 

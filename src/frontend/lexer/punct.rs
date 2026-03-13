@@ -40,109 +40,120 @@ use super::{SourceCursor, Token, TokenKind};
 pub fn lex_punct_or_operator(cursor: &mut SourceCursor<'_>) -> Option<Token> {
     let start = cursor.mark();
 
-    let kind = if cursor.eat_str("..=") {
-        TokenKind::DotDotEq
-    } else if cursor.eat_str("..") {
-        TokenKind::DotDot
-    } else if cursor.eat_str("<<=") {
-        TokenKind::ShlEq
-    } else if cursor.eat_str(">>=") {
-        TokenKind::ShrEq
-    } else if cursor.eat_str("<<") {
-        TokenKind::Shl
-    } else if cursor.eat_str(">>") {
-        TokenKind::Shr
-    } else if cursor.eat_str("::") {
-        TokenKind::ColonColon
-    } else if cursor.eat_str("->") {
-        TokenKind::Arrow
-    } else if cursor.eat_str("=>") {
-        TokenKind::FatArrow
-    } else if cursor.eat_str("==") {
-        TokenKind::EqEq
-    } else if cursor.eat_str("!=") {
-        TokenKind::BangEq
-    } else if cursor.eat_str("<=") {
-        TokenKind::Le
-    } else if cursor.eat_str(">=") {
-        TokenKind::Ge
-    } else if cursor.eat_str("&&") {
-        TokenKind::AmpAmp
-    } else if cursor.eat_str("||") {
-        TokenKind::PipePipe
-    } else if cursor.eat_str("+=") {
-        TokenKind::PlusEq
-    } else if cursor.eat_str("-=") {
-        TokenKind::MinusEq
-    } else if cursor.eat_str("*=") {
-        TokenKind::StarEq
-    } else if cursor.eat_str("/=") {
-        TokenKind::SlashEq
-    } else if cursor.eat_str("%=") {
-        TokenKind::PercentEq
-    } else if cursor.eat_str("^=") {
-        TokenKind::CaretEq
-    } else if cursor.eat_str("|=") {
-        TokenKind::PipeEq
-    } else if cursor.eat_str("&=") {
-        TokenKind::AmpEq
-    } else if cursor.eat_str("?.") {
-        TokenKind::QuestionDot
-    } else if cursor.eat_str("??") {
-        TokenKind::QuestionQuestion
-    } else if cursor.eat_if('(') {
-        TokenKind::LParen
-    } else if cursor.eat_if(')') {
-        TokenKind::RParen
-    } else if cursor.eat_if('{') {
-        TokenKind::LBrace
-    } else if cursor.eat_if('}') {
-        TokenKind::RBrace
-    } else if cursor.eat_if('[') {
-        TokenKind::LBracket
-    } else if cursor.eat_if(']') {
-        TokenKind::RBracket
-    } else if cursor.eat_if(',') {
-        TokenKind::Comma
-    } else if cursor.eat_if(';') {
-        TokenKind::Semi
-    } else if cursor.eat_if(':') {
-        TokenKind::Colon
-    } else if cursor.eat_if('.') {
-        TokenKind::Dot
-    } else if cursor.eat_if('=') {
-        TokenKind::Eq
-    } else if cursor.eat_if('+') {
-        TokenKind::Plus
-    } else if cursor.eat_if('-') {
-        TokenKind::Minus
-    } else if cursor.eat_if('*') {
-        TokenKind::Star
-    } else if cursor.eat_if('/') {
-        TokenKind::Slash
-    } else if cursor.eat_if('%') {
-        TokenKind::Percent
-    } else if cursor.eat_if('^') {
-        TokenKind::Caret
-    } else if cursor.eat_if('!') {
-        TokenKind::Bang
-    } else if cursor.eat_if('<') {
-        TokenKind::Lt
-    } else if cursor.eat_if('>') {
-        TokenKind::Gt
-    } else if cursor.eat_if('&') {
-        TokenKind::Amp
-    } else if cursor.eat_if('|') {
-        TokenKind::Pipe
-    } else if cursor.eat_if('?') {
-        TokenKind::Question
-    } else if cursor.eat_if('@') {
-        TokenKind::At
-    } else {
-        return None;
-    };
+    let kind = lex_multi_char_punct(cursor)
+        .or_else(|| lex_single_char_punct(cursor))?;
 
     Some(Token::new(kind, cursor.current_span_from(start)))
+}
+
+fn lex_multi_char_punct(cursor: &mut SourceCursor<'_>) -> Option<TokenKind> {
+    if cursor.eat_str("..=") {
+        Some(TokenKind::DotDotEq)
+    } else if cursor.eat_str("..") {
+        Some(TokenKind::DotDot)
+    } else if cursor.eat_str("<<=") {
+        Some(TokenKind::ShlEq)
+    } else if cursor.eat_str(">>=") {
+        Some(TokenKind::ShrEq)
+    } else if cursor.eat_str("<<") {
+        Some(TokenKind::Shl)
+    } else if cursor.eat_str(">>") {
+        Some(TokenKind::Shr)
+    } else if cursor.eat_str("::") {
+        Some(TokenKind::ColonColon)
+    } else if cursor.eat_str("->") {
+        Some(TokenKind::Arrow)
+    } else if cursor.eat_str("=>") {
+        Some(TokenKind::FatArrow)
+    } else if cursor.eat_str("==") {
+        Some(TokenKind::EqEq)
+    } else if cursor.eat_str("!=") {
+        Some(TokenKind::BangEq)
+    } else if cursor.eat_str("<=") {
+        Some(TokenKind::Le)
+    } else if cursor.eat_str(">=") {
+        Some(TokenKind::Ge)
+    } else if cursor.eat_str("&&") {
+        Some(TokenKind::AmpAmp)
+    } else if cursor.eat_str("||") {
+        Some(TokenKind::PipePipe)
+    } else if cursor.eat_str("+=") {
+        Some(TokenKind::PlusEq)
+    } else if cursor.eat_str("-=") {
+        Some(TokenKind::MinusEq)
+    } else if cursor.eat_str("*=") {
+        Some(TokenKind::StarEq)
+    } else if cursor.eat_str("/=") {
+        Some(TokenKind::SlashEq)
+    } else if cursor.eat_str("%=") {
+        Some(TokenKind::PercentEq)
+    } else if cursor.eat_str("^=") {
+        Some(TokenKind::CaretEq)
+    } else if cursor.eat_str("|=") {
+        Some(TokenKind::PipeEq)
+    } else if cursor.eat_str("&=") {
+        Some(TokenKind::AmpEq)
+    } else if cursor.eat_str("?.") {
+        Some(TokenKind::QuestionDot)
+    } else if cursor.eat_str("??") {
+        Some(TokenKind::QuestionQuestion)
+    } else {
+        None
+    }
+}
+
+fn lex_single_char_punct(cursor: &mut SourceCursor<'_>) -> Option<TokenKind> {
+    if cursor.eat_if('(') {
+        Some(TokenKind::LParen)
+    } else if cursor.eat_if(')') {
+        Some(TokenKind::RParen)
+    } else if cursor.eat_if('{') {
+        Some(TokenKind::LBrace)
+    } else if cursor.eat_if('}') {
+        Some(TokenKind::RBrace)
+    } else if cursor.eat_if('[') {
+        Some(TokenKind::LBracket)
+    } else if cursor.eat_if(']') {
+        Some(TokenKind::RBracket)
+    } else if cursor.eat_if(',') {
+        Some(TokenKind::Comma)
+    } else if cursor.eat_if(';') {
+        Some(TokenKind::Semi)
+    } else if cursor.eat_if(':') {
+        Some(TokenKind::Colon)
+    } else if cursor.eat_if('.') {
+        Some(TokenKind::Dot)
+    } else if cursor.eat_if('=') {
+        Some(TokenKind::Eq)
+    } else if cursor.eat_if('+') {
+        Some(TokenKind::Plus)
+    } else if cursor.eat_if('-') {
+        Some(TokenKind::Minus)
+    } else if cursor.eat_if('*') {
+        Some(TokenKind::Star)
+    } else if cursor.eat_if('/') {
+        Some(TokenKind::Slash)
+    } else if cursor.eat_if('%') {
+        Some(TokenKind::Percent)
+    } else if cursor.eat_if('^') {
+        Some(TokenKind::Caret)
+    } else if cursor.eat_if('!') {
+        Some(TokenKind::Bang)
+    } else if cursor.eat_if('<') {
+        Some(TokenKind::Lt)
+    } else if cursor.eat_if('>') {
+        Some(TokenKind::Gt)
+    } else if cursor.eat_if('&') {
+        Some(TokenKind::Amp)
+    } else if cursor.eat_if('|') {
+        Some(TokenKind::Pipe)
+    } else if cursor.eat_if('?') {
+        Some(TokenKind::Question)
+    } else if cursor.eat_if('@') {
+        Some(TokenKind::At)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

@@ -237,6 +237,31 @@ path = "src/bin/tool2.cx"
 }
 
 #[test]
+fn load_project_name_match_does_not_suppress_implicit_main_bin() {
+    let root = unique_temp_dir("name_match_not_suppression");
+    write_file(
+        &root.join("corex.toml"),
+        r#"
+[project]
+name = "app"
+
+[[bin]]
+name = "app"
+path = "src/bin/app.cx"
+"#,
+    );
+    write_file(&root.join("src/main.cx"), "fn main() {}\n");
+    write_file(&root.join("src/bin/app.cx"), "fn main() {}\n");
+
+    let error =
+        ProjectLoader::load_project_manifest(&root).expect_err("should fail");
+    assert!(matches!(
+        error,
+        ProjectLoadError::DuplicateBinaryTargetName { name, .. } if name == "app"
+    ));
+}
+
+#[test]
 fn load_project_reports_duplicate_target_root_paths() {
     let root = unique_temp_dir("duplicate_target_root");
     write_file(

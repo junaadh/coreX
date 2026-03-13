@@ -1,10 +1,7 @@
 use clap::{Args, ValueEnum};
+use core_x::foreign::{BindgenOptions, TargetOs};
 use std::io;
 use std::path::{Path, PathBuf};
-
-use super::{
-    BindgenOptions, BindgenOutput, TargetOs, generate_foreign_bindings,
-};
 
 /// CLI target-os value surface for bindgen commands.
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -70,35 +67,6 @@ impl BindgenCliArgs {
             clang_args: self.clang_arg,
         })
     }
-}
-
-/// Runs bindgen using shared CLI arguments.
-pub fn run_bindgen_from_args(
-    args: BindgenCliArgs,
-) -> Result<BindgenOutput, Box<dyn std::error::Error>> {
-    let options = args.into_bindgen_options()?;
-    let output = generate_foreign_bindings(&options)?;
-    Ok(output)
-}
-
-/// Stable success message printed by bindgen CLIs.
-#[must_use]
-pub fn bindgen_success_message(output: &BindgenOutput, color: bool) -> String {
-    let generated_label = if color {
-        "\x1b[1;32mgenerated:\x1b[0m"
-    } else {
-        "generated:"
-    };
-    let manifest_label = if color {
-        "\x1b[1;36mmanifest:\x1b[0m"
-    } else {
-        "manifest:"
-    };
-    format!(
-        "{generated_label} {}\n{manifest_label} {}",
-        output.source_path.display(),
-        output.manifest_path.display()
-    )
 }
 
 fn resolve_library_name(

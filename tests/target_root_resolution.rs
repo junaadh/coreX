@@ -58,7 +58,7 @@ fn collect_cx_files_recursive(dir: &Path, out: &mut BTreeSet<PathBuf>) {
         .expect("read directory")
         .collect::<Result<Vec<_>, _>>()
         .expect("read entries");
-    entries.sort_by_key(|entry| entry.path());
+    entries.sort_by_key(std::fs::DirEntry::path);
 
     for entry in entries {
         let path = entry.path();
@@ -100,7 +100,7 @@ fn parse_loaded_project(project: &LoadedProject) -> ParsedProject {
     for absolute_path in collect_project_cx_files(project) {
         let display_path = absolute_path
             .strip_prefix(&project.project_dir)
-            .map_or_else(|_| absolute_path.to_path_buf(), Path::to_path_buf);
+            .map_or_else(|_| absolute_path.clone(), Path::to_path_buf);
         let source = fs::read_to_string(&absolute_path).expect("read source");
         let file_id = db.add_file(display_path, source);
         let file = db.file(file_id).expect("source file should exist");

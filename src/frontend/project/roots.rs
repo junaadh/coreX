@@ -41,6 +41,12 @@ impl TargetRoots {
     }
 }
 
+/// Builds deterministic named import roots for a project graph.
+///
+/// # Errors
+///
+/// Returns `ProjectLoadError::DuplicateImportRootName` when multiple sources
+/// produce the same import root name.
 pub fn build_target_roots(
     graph: &ProjectGraph,
 ) -> Result<TargetRoots, ProjectLoadError> {
