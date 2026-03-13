@@ -30,11 +30,12 @@ pub use project::{
     load_project_from_dir,
 };
 pub use resolver::{
-    ImportBindingKind, ImportResolveError, ImportResolver, NamedImportRoot,
-    ResolveError, ResolvedImportBinding, ResolvedImports, ResolvedScope,
-    ResolvedScopeKind, ScopeGraph, ScopeResolver, ScopeSymbols, Symbol,
-    SymbolKind, resolve_project_imports,
+    GlobalItem, GlobalItemTable, ImportBindingKind, ImportResolveError,
+    ImportResolver, ItemId, ItemKind, NamedImportRoot, ResolveError,
+    ResolvedImportBinding, ResolvedImports, ResolvedScope, ResolvedScopeKind,
+    ScopeGraph, ScopeResolver, ScopeSymbols, Symbol, SymbolKind,
+    build_global_item_table, resolve_project_imports,
     resolve_project_imports_with_named_roots,
     resolve_project_imports_with_named_roots_and_diagnostics,
-    resolve_project_scopes,
+    resolve_project_scopes, scope_symbols_from_global_item_table,
 };

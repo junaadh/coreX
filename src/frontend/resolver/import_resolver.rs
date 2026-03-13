@@ -3,7 +3,10 @@ use crate::frontend::ParsedFile;
 use crate::frontend::ast::{Item, UseTree};
 use crate::frontend::diagnostic_from_import_resolve_error;
 use crate::frontend::resolver::import_error::ImportResolveError;
-use crate::frontend::resolver::symbols::{ScopeSymbols, Symbol, SymbolKind};
+use crate::frontend::resolver::item_table::build_global_item_table;
+use crate::frontend::resolver::symbols::{
+    ScopeSymbols, Symbol, SymbolKind, scope_symbols_from_global_item_table,
+};
 use crate::frontend::resolver::{ResolvedScope, ScopeGraph};
 use crate::frontend::source::{FileId, SourceDb};
 use std::collections::BTreeMap;
@@ -93,21 +96,8 @@ impl<'a> ImportResolver<'a> {
     /// Collects top-level scope symbols for all scopes in the graph.
     #[must_use]
     pub fn collect_scope_symbols(&self) -> BTreeMap<FileId, ScopeSymbols> {
-        let parsed_by_id = self.parsed_file_by_id();
-        let mut tables = BTreeMap::new();
-
-        for file_id in self.graph.scopes.keys().copied() {
-            let symbols = match parsed_by_id.get(&file_id) {
-                Some(parsed) => Self::collect_symbols_for_file(parsed),
-                None => ScopeSymbols {
-                    file_id,
-                    symbols: BTreeMap::new(),
-                },
-            };
-            tables.insert(file_id, symbols);
-        }
-
-        tables
+        let table = build_global_item_table(self.graph, self.parsed_files);
+        scope_symbols_from_global_item_table(&table)
     }
 
     /// Resolves all `use` trees for each scope in the graph.
@@ -210,42 +200,6 @@ impl<'a> ImportResolver<'a> {
             .iter()
             .map(|parsed| (parsed.file_id, parsed))
             .collect()
-    }
-
-    fn collect_symbols_for_file(parsed: &ParsedFile) -> ScopeSymbols {
-        let mut symbols = BTreeMap::new();
-
-        for item in &parsed.ast.items {
-            let (name, kind) = match &item.node {
-                Item::Scope(scope_decl) => {
-                    (scope_decl.node.name.clone(), SymbolKind::Scope)
-                }
-                Item::Function(function) => {
-                    (function.node.name.clone(), SymbolKind::Function)
-                }
-                Item::Struct(struct_decl) => {
-                    (struct_decl.node.name.clone(), SymbolKind::Struct)
-                }
-                Item::Enum(enum_decl) => {
-                    (enum_decl.node.name.clone(), SymbolKind::Enum)
-                }
-                Item::Protocol(protocol_decl) => {
-                    (protocol_decl.node.name.clone(), SymbolKind::Protocol)
-                }
-                _ => continue,
-            };
-
-            symbols.entry(name.clone()).or_insert(Symbol {
-                name,
-                kind,
-                defining_file_id: parsed.file_id,
-            });
-        }
-
-        ScopeSymbols {
-            file_id: parsed.file_id,
-            symbols,
-        }
     }
 
     fn parent_map(&self) -> BTreeMap<FileId, FileId> {
