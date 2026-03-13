@@ -10,6 +10,7 @@
 //! features beyond the existing dynamic call substrate.
 
 mod bindgen;
+mod bindgen_cli;
 mod decl;
 mod error;
 mod function;
@@ -20,6 +21,10 @@ mod parse;
 pub use crate::ffi::ForeignCallConv;
 pub use bindgen::{
     BindgenError, BindgenOptions, BindgenOutput, generate_foreign_bindings,
+};
+pub use bindgen_cli::{
+    BindgenCliArgs, BindgenTargetOs, bindgen_success_message,
+    run_bindgen_from_args,
 };
 pub use decl::{
     ForeignFunctionDecl, ForeignLibraryDecl, LoweringError,

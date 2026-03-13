@@ -5,13 +5,13 @@ use super::span::Spanned;
 use super::stmt::{Block, ClauseList};
 use super::ty::Type;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum UnaryOp {
     Negate,
     Not,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinaryOp {
     LogicalOr,
     LogicalAnd,
@@ -35,7 +35,7 @@ pub enum BinaryOp {
 }
 
 /// Assignment operator spelling preserved in source AST.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssignOp {
     Assign,
     AddAssign,
@@ -53,32 +53,32 @@ pub enum AssignOp {
 /// Source string literal preserving interpolation boundaries.
 ///
 /// `coreX` strings are UTF-8.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StringLiteral {
     pub parts: Vec<StringPart>,
 }
 
 /// Interpolation-aware string parts.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum StringPart {
     Text(String),
     Interpolation(Box<Spanned<Expr>>),
 }
 
 /// Struct-literal type expression (`Name` or `Self` in source grammar).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeExpr {
     Path(Vec<String>),
     SelfType,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ArrayElement {
     Expr(Box<Spanned<Expr>>),
     Spread(Box<Spanned<Expr>>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum StructLiteralField {
     Shorthand {
         name: String,
@@ -92,40 +92,40 @@ pub enum StructLiteralField {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MatchArmBody {
     Expr(Box<Spanned<Expr>>),
     Block(Block),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MatchArm {
     pub pattern: Spanned<Pattern>,
     pub body: MatchArmBody,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CallArg {
     pub label: Option<String>,
     pub value: Box<Spanned<Expr>>,
 }
 
 /// Closure parameter declaration.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ClosureParam {
     pub name: String,
     pub ty: Option<Spanned<Type>>,
 }
 
 /// Macro expression argument forms.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MacroExprArgs {
     Paren(Vec<CallArg>),
     Braced(Block),
 }
 
 /// Source expressions.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Expr {
     /// Integer literal with source-preserving spelling.
     IntegerLiteral(String),

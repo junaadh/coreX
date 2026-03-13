@@ -8,7 +8,7 @@ use super::span::Spanned;
 /// builtins during semantic analysis rather than by dedicated AST variants.
 ///
 /// Raw pointer source syntax is `*T` and `*mut T` (no `*const T` surface).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Named {
         segments: Vec<String>,

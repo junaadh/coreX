@@ -6,7 +6,7 @@
 use super::span::Spanned;
 
 /// Source pattern representation.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Pattern {
     Identifier(String),
     Wildcard,
@@ -32,13 +32,13 @@ pub enum Pattern {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StructPatternField {
     pub name: String,
     pub pattern: Option<Spanned<Pattern>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ArrayPatternRest {
     Ignore,
     Bind(String),

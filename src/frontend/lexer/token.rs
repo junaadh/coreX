@@ -1,7 +1,7 @@
 //! Token definitions and keyword classification for the `coreX` lexer.
 
 /// Byte span in the original source buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
@@ -15,7 +15,7 @@ impl Span {
 }
 
 /// One lexed token with a source span.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Token {
     pub kind: TokenKind,
     pub span: Span,
@@ -32,7 +32,7 @@ impl Token {
 ///
 /// Comments are classified lexically and intended to be kept as trivia rather
 /// than ordinary parser tokens.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CommentKind {
     Line,
     DocLine,
@@ -43,7 +43,7 @@ pub enum CommentKind {
 }
 
 /// Reserved keyword set for `coreX`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Keyword {
     Use,
     Scope,
@@ -183,7 +183,7 @@ pub fn classify_keyword_token(ident: &str) -> Option<TokenKind> {
 ///   contextual.
 /// - `At` always lexes the same; attribute vs macro interpretation is parser
 ///   contextual.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TokenKind {
     // Identifier-like
     Ident,

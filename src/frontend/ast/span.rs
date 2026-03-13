@@ -3,7 +3,7 @@
 pub use crate::frontend::lexer::Span;
 
 /// AST wrapper that attaches source span information to a node.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Spanned<T> {
     pub node: T,
     pub span: Span,

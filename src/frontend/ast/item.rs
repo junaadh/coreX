@@ -7,13 +7,13 @@ use super::decl::{
 use super::span::Spanned;
 
 /// Parsed source file.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct File {
     pub items: Vec<Spanned<Item>>,
 }
 
 /// Top-level source items.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Item {
     Use(Spanned<UseItem>),
     Scope(Spanned<ScopeDecl>),

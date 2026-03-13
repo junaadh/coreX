@@ -162,7 +162,8 @@ fn cli_invocation_generates_expected_outputs() {
         core_x::foreign::TargetOs::Windows => "windows",
     };
 
-    let status = Command::new(env!("CARGO_BIN_EXE_corex-bindgen"))
+    let status = Command::new(env!("CARGO_BIN_EXE_cxc"))
+        .arg("bindgen")
         .arg("--header")
         .arg(&fixture.header)
         .arg("--library-name")
@@ -218,7 +219,8 @@ fn cli_invocation_infers_library_name_from_library_path_stem() {
         core_x::foreign::TargetOs::Windows => "windows",
     };
 
-    let status = Command::new(env!("CARGO_BIN_EXE_corex-bindgen"))
+    let status = Command::new(env!("CARGO_BIN_EXE_cxc"))
+        .arg("bindgen")
         .arg("--header")
         .arg(&fixture.header)
         .arg("--target-os")
@@ -248,4 +250,15 @@ fn cli_invocation_infers_library_name_from_library_path_stem() {
     let parsed = parse_foreign_file(&source).expect("parse generated source");
     assert_eq!(parsed.libraries().len(), 1);
     assert_eq!(parsed.libraries()[0].library_name(), inferred_name);
+}
+
+#[test]
+fn cxc_help_lists_bindgen_subcommand() {
+    let output = Command::new(env!("CARGO_BIN_EXE_cxc"))
+        .arg("--help")
+        .output()
+        .expect("spawn cxc --help");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("bindgen"));
 }
