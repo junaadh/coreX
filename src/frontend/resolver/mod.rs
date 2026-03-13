@@ -1,13 +1,20 @@
+mod body_resolution;
 mod declaration_resolution;
 mod error;
 mod import_error;
 mod import_resolver;
 mod item_ids;
 mod item_table;
+mod local_ids;
 mod model;
 mod scope_resolver;
 mod symbols;
 
+pub use body_resolution::{
+    BodyKind, LocalKind, ResolvedBody, ResolvedBodyRef, ResolvedBodyReference,
+    ResolvedBodyTable, ResolvedLocalBinding, UnresolvedBodyReference,
+    resolve_bodies,
+};
 pub use declaration_resolution::{
     DeclarationOwner, ResolvedDeclaration, ResolvedDeclarationTable,
     ResolvedEnumCaseType, ResolvedEnumDeclaration, ResolvedEnumPayloadType,
@@ -29,6 +36,7 @@ pub use item_ids::ItemId;
 pub use item_table::{
     GlobalItem, GlobalItemTable, ItemKind, build_global_item_table,
 };
+pub use local_ids::LocalId;
 pub use model::{ResolvedScope, ResolvedScopeKind, ScopeGraph};
 pub use scope_resolver::{ScopeResolver, resolve_project_scopes};
 pub use symbols::{

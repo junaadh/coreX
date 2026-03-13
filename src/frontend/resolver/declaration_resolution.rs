@@ -113,7 +113,7 @@ pub enum ResolvedDeclaration {
     Protocol(ResolvedProtocolDeclaration),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DeclarationOwner {
     Item(ItemId),
     Impl {
