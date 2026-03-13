@@ -1,0 +1,13 @@
+[project]
+name = "multi_bin_lib"
+
+[lib]
+name = "multi_bin_lib"
+
+[[bin]]
+name = "multi_bin_lib"
+path = "src/main.cx"
+
+[[bin]]
+name = "tool"
+path = "src/bin/tool.cx"

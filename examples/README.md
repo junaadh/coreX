@@ -20,3 +20,20 @@ They are also covered by parser smoke tests in `tests/examples_parse.rs`.
 - `ffi.cx` - `extern` block with pointer types (`*void`, `*mut void`)
 - `doc_comments.cx` - outer/block doc comments vs normal comments
 - `control_flow.cx` - `if`, `while`, ternary `?:`, `??`, and optional chaining `?.`
+
+## Manifest Projects
+
+Manifest-driven examples for the project loader are in `examples/projects/`:
+
+- `bin_app` - binary-only project (`src/main.cx`)
+- `lib_core` - library-only project (`src/root.cx`)
+- `lib_and_bin` - implicit library + binary defaults
+- `multi_bin_lib` - explicit one-library + two-binary manifest
+
+## Workspace Examples
+
+Workspace manifest examples are in `examples/workspaces/`:
+
+- `basic_workspace` - two-member workspace (app + util)
+- `full_stack_workspace` - mixed runtime/cli/tooling member targets
+- `tools_workspace` - tools-focused workspace with explicit member list

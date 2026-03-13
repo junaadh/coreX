@@ -1,0 +1,13 @@
+[project]
+name = "tooling"
+
+[lib]
+name = "tooling"
+
+[[bin]]
+name = "tooling"
+path = "src/main.cx"
+
+[[bin]]
+name = "fmt"
+path = "src/bin/fmt.cx"

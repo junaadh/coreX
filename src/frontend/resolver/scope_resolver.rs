@@ -1,5 +1,7 @@
+use crate::frontend::DiagnosticsBag;
 use crate::frontend::ParsedFile;
 use crate::frontend::ast::Item;
+use crate::frontend::diagnostic_from_resolve_error;
 use crate::frontend::resolver::error::ResolveError;
 use crate::frontend::resolver::model::{
     ResolvedScope, ResolvedScopeKind, ScopeGraph,
@@ -31,6 +33,30 @@ impl<'a> ScopeResolver<'a> {
         root_file_id: FileId,
     ) -> Result<ScopeGraph, ResolveError> {
         self.resolve_with_root_kind(root_file_id, ResolvedScopeKind::BinaryRoot)
+    }
+
+    pub fn resolve_library_root_with_diagnostics(
+        &self,
+        root_file_id: FileId,
+        db: &SourceDb,
+    ) -> (Option<ScopeGraph>, DiagnosticsBag) {
+        self.resolve_with_root_kind_with_diagnostics(
+            root_file_id,
+            ResolvedScopeKind::Root,
+            db,
+        )
+    }
+
+    pub fn resolve_binary_root_with_diagnostics(
+        &self,
+        root_file_id: FileId,
+        db: &SourceDb,
+    ) -> (Option<ScopeGraph>, DiagnosticsBag) {
+        self.resolve_with_root_kind_with_diagnostics(
+            root_file_id,
+            ResolvedScopeKind::BinaryRoot,
+            db,
+        )
     }
 
     fn resolve_with_root_kind(
@@ -76,6 +102,72 @@ impl<'a> ScopeResolver<'a> {
             root_file_id,
             scopes: ctx.scopes,
         })
+    }
+
+    fn resolve_with_root_kind_with_diagnostics(
+        &self,
+        root_file_id: FileId,
+        root_kind: ResolvedScopeKind,
+        render_db: &SourceDb,
+    ) -> (Option<ScopeGraph>, DiagnosticsBag) {
+        let mut diagnostics = DiagnosticsBag::new();
+        let source_file = match self.db.file(root_file_id) {
+            Some(source_file) => source_file,
+            None => {
+                let expected_path = match root_kind {
+                    ResolvedScopeKind::BinaryRoot => {
+                        PathBuf::from("src/main.cx")
+                    }
+                    _ => PathBuf::from("src/root.cx"),
+                };
+                let error = ResolveError::MissingRootFile { expected_path };
+                diagnostics
+                    .push(diagnostic_from_resolve_error(render_db, &error));
+                return (None, diagnostics);
+            }
+        };
+        if self.parsed_file_by_id(root_file_id).is_none() {
+            let error = ResolveError::MissingRootFile {
+                expected_path: source_file.path().to_path_buf(),
+            };
+            diagnostics.push(diagnostic_from_resolve_error(render_db, &error));
+            return (None, diagnostics);
+        }
+
+        let mut ctx = ResolveContext {
+            parsed_by_id: self.parsed_by_id_map(),
+            parsed_path_to_id: self.parsed_path_to_id_map(),
+            scopes: BTreeMap::new(),
+            visiting_stack: Vec::new(),
+            visiting_pos: HashMap::new(),
+            resolved: HashSet::new(),
+        };
+
+        let root_name = match root_kind {
+            ResolvedScopeKind::BinaryRoot => "main",
+            _ => "root",
+        };
+        let resolve_result = self.resolve_scope_recursive_with_diagnostics(
+            &mut ctx,
+            root_file_id,
+            root_kind,
+            root_name.to_string(),
+            Vec::new(),
+            render_db,
+            &mut diagnostics,
+        );
+        if let Err(error) = resolve_result {
+            diagnostics.push(diagnostic_from_resolve_error(render_db, &error));
+            return (None, diagnostics);
+        }
+
+        (
+            Some(ScopeGraph {
+                root_file_id,
+                scopes: ctx.scopes,
+            }),
+            diagnostics,
+        )
     }
 
     fn parsed_by_id_map(&self) -> HashMap<FileId, &'a ParsedFile> {
@@ -181,6 +273,138 @@ impl<'a> ScopeResolver<'a> {
 
         ctx.visiting_pos.remove(&file_id);
         let _ = ctx.visiting_stack.pop();
+        ctx.resolved.insert(file_id);
+        Ok(())
+    }
+
+    fn resolve_scope_recursive_with_diagnostics(
+        &self,
+        ctx: &mut ResolveContext<'a>,
+        file_id: FileId,
+        kind: ResolvedScopeKind,
+        name: String,
+        scope_path: Vec<String>,
+        render_db: &SourceDb,
+        diagnostics: &mut DiagnosticsBag,
+    ) -> Result<(), ResolveError> {
+        if let Some(pos) = ctx.visiting_pos.get(&file_id).copied() {
+            let mut cycle = ctx.visiting_stack[pos..].to_vec();
+            cycle.push(file_id);
+            return Err(ResolveError::ScopeCycle { cycle });
+        }
+
+        if ctx.resolved.contains(&file_id) {
+            return Ok(());
+        }
+
+        let source_file = self.source_file_by_id(file_id).ok_or_else(|| {
+            ResolveError::MissingRootFile {
+                expected_path: PathBuf::from("src/root.cx"),
+            }
+        })?;
+        let parsed = ctx.parsed_by_id.get(&file_id).ok_or_else(|| {
+            ResolveError::MissingRootFile {
+                expected_path: source_file.path().to_path_buf(),
+            }
+        })?;
+
+        ctx.visiting_pos.insert(file_id, ctx.visiting_stack.len());
+        ctx.visiting_stack.push(file_id);
+
+        let mut fatal_error = None;
+        let declared_children = self.collect_declared_child_scopes(parsed);
+        let child_base_dir =
+            match self.child_base_dir_for(source_file.path(), kind) {
+                Ok(base_dir) => base_dir,
+                Err(error) => {
+                    fatal_error = Some(error);
+                    PathBuf::new()
+                }
+            };
+
+        let mut resolved_children = Vec::with_capacity(declared_children.len());
+        let mut child_meta = Vec::with_capacity(declared_children.len());
+        if fatal_error.is_none() {
+            for declared_name in declared_children {
+                match self.probe_declared_child_scope(
+                    ctx,
+                    file_id,
+                    &scope_path,
+                    &child_base_dir,
+                    &declared_name,
+                ) {
+                    Ok(resolved_child) => {
+                        resolved_children.push(resolved_child.file_id);
+                        child_meta.push((
+                            declared_name,
+                            resolved_child.file_id,
+                            resolved_child.kind,
+                        ));
+                    }
+                    Err(
+                        error @ ResolveError::MissingDeclaredScope { .. }
+                        | error @ ResolveError::AmbiguousDeclaredScope { .. },
+                    ) => {
+                        diagnostics.push(diagnostic_from_resolve_error(
+                            render_db, &error,
+                        ));
+                    }
+                    Err(error) => {
+                        fatal_error = Some(error);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if fatal_error.is_none() {
+            let scope = ResolvedScope {
+                file_id,
+                kind,
+                name,
+                scope_path: scope_path.clone(),
+                child_scope_ids: resolved_children,
+            };
+            ctx.scopes.insert(file_id, scope);
+        }
+
+        if fatal_error.is_none() {
+            for (child_name, child_file_id, child_kind) in child_meta {
+                let mut child_scope_path = scope_path.clone();
+                child_scope_path.push(child_name.clone());
+                match self.resolve_scope_recursive_with_diagnostics(
+                    ctx,
+                    child_file_id,
+                    child_kind,
+                    child_name,
+                    child_scope_path,
+                    render_db,
+                    diagnostics,
+                ) {
+                    Ok(()) => {}
+                    Err(
+                        error @ ResolveError::MissingDeclaredScope { .. }
+                        | error @ ResolveError::AmbiguousDeclaredScope { .. },
+                    ) => {
+                        diagnostics.push(diagnostic_from_resolve_error(
+                            render_db, &error,
+                        ));
+                    }
+                    Err(error) => {
+                        fatal_error = Some(error);
+                        break;
+                    }
+                }
+            }
+        }
+
+        ctx.visiting_pos.remove(&file_id);
+        let _ = ctx.visiting_stack.pop();
+
+        if let Some(error) = fatal_error {
+            return Err(error);
+        }
+
         ctx.resolved.insert(file_id);
         Ok(())
     }

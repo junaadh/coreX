@@ -10,19 +10,31 @@ pub mod lexer;
 pub mod parse_session;
 pub mod parsed_file;
 pub mod parser;
+pub mod project;
 pub mod resolver;
 pub mod source;
 
 pub use diagnostics::{
     Diagnostic, DiagnosticLabel, DiagnosticLabelKind, DiagnosticRenderer,
     DiagnosticSeverity, DiagnosticsBag, FileSpan,
-    diagnostic_from_file_parse_error, diagnostic_from_parse_error,
+    diagnostic_from_file_parse_error, diagnostic_from_import_resolve_error,
+    diagnostic_from_parse_error, diagnostic_from_resolve_error,
 };
 pub use parse_session::ParseSession;
 pub use parsed_file::{FileParseError, ParseSessionError, ParsedFile};
+pub use project::{
+    BinaryTarget, DependencyKind, DependencySpec, ImportRoot, ImportRootKind,
+    LibraryTarget, LoadedDependencyProject, LoadedProject, ProjectGraph,
+    ProjectLoadError, ProjectLoader, ProjectManifest, TargetKind, TargetRoots,
+    WorkspaceManifest, build_target_roots, load_local_dependency_project_graph,
+    load_project_from_dir,
+};
 pub use resolver::{
-    ImportBindingKind, ImportResolveError, ImportResolver, ResolveError,
-    ResolvedImportBinding, ResolvedImports, ResolvedScope, ResolvedScopeKind,
-    ScopeGraph, ScopeResolver, ScopeSymbols, Symbol, SymbolKind,
-    resolve_project_imports, resolve_project_scopes,
+    ImportBindingKind, ImportResolveError, ImportResolver, NamedImportRoot,
+    ResolveError, ResolvedImportBinding, ResolvedImports, ResolvedScope,
+    ResolvedScopeKind, ScopeGraph, ScopeResolver, ScopeSymbols, Symbol,
+    SymbolKind, resolve_project_imports,
+    resolve_project_imports_with_named_roots,
+    resolve_project_imports_with_named_roots_and_diagnostics,
+    resolve_project_scopes,
 };

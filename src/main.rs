@@ -8,11 +8,18 @@ use core_x::frontend::ParsedFile;
 use core_x::frontend::lexer::Lexer;
 use core_x::frontend::parser::parse_source_file_from_source_file_with_recovery;
 use core_x::frontend::resolver::{
-    ResolvedScopeKind, resolve_project_imports, resolve_project_scopes,
+    ResolvedScopeKind,
+    resolve_project_imports_with_named_roots_and_diagnostics,
+    resolve_project_scopes,
 };
 use core_x::frontend::source::{FileId, SourceDb};
+use core_x::frontend::{
+    ImportRootKind, NamedImportRoot, ProjectGraph, ProjectLoader,
+    ProjectManifest, TargetRoots, build_target_roots,
+    load_local_dependency_project_graph,
+};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
 use std::io::IsTerminal;
@@ -90,10 +97,13 @@ struct ProjectContext {
     parsed_files: Vec<ParsedFile>,
     ordered_file_ids: Vec<FileId>,
     path_by_file_id: BTreeMap<FileId, PathBuf>,
-    library_root: Option<FileId>,
-    binary_root: Option<FileId>,
+    library_target: Option<TargetSelection>,
+    binary_targets: Vec<TargetSelection>,
+    current_library_import_root: Option<String>,
+    dependency_named_roots: BTreeMap<String, NamedImportRoot>,
 }
 
+#[derive(Clone)]
 struct TargetSelection {
     kind: ResolvedScopeKind,
     label: &'static str,
@@ -470,13 +480,27 @@ fn dump_scopes(
     };
 
     let mut resolved = Vec::new();
+    let resolver = core_x::frontend::ScopeResolver::new(
+        &context.db,
+        &context.parsed_files,
+    );
     for target in targets {
-        let graph = resolve_project_scopes(
-            &context.db,
-            &context.parsed_files,
-            target.root_file_id,
-            target.kind,
-        )?;
+        let (graph, scope_diagnostics) =
+            resolve_target_scope_graph_with_diagnostics(
+                &resolver,
+                &context.db,
+                &context.parsed_files,
+                target.root_file_id,
+                target.kind,
+            );
+        emit_diagnostics_bag(&context.db, &scope_diagnostics);
+        let graph = graph.ok_or_else(|| {
+            format!(
+                "failed to build {} scope graph for {}",
+                target.label,
+                path_for_file_id(&context, target.root_file_id)
+            )
+        })?;
         resolved.push((target, graph));
     }
 
@@ -528,15 +552,66 @@ fn dump_imports(
     };
 
     let mut resolved = Vec::new();
+    let resolver = core_x::frontend::ScopeResolver::new(
+        &context.db,
+        &context.parsed_files,
+    );
     for target in targets {
-        let graph = resolve_project_scopes(
-            &context.db,
-            &context.parsed_files,
-            target.root_file_id,
-            target.kind,
-        )?;
-        let (symbols, imports) =
-            resolve_project_imports(&graph, &context.parsed_files)?;
+        let (graph, scope_diagnostics) =
+            resolve_target_scope_graph_with_diagnostics(
+                &resolver,
+                &context.db,
+                &context.parsed_files,
+                target.root_file_id,
+                target.kind,
+            );
+        emit_diagnostics_bag(&context.db, &scope_diagnostics);
+        let graph = graph.ok_or_else(|| {
+            format!(
+                "failed to build {} scope graph for {}",
+                target.label,
+                path_for_file_id(&context, target.root_file_id)
+            )
+        })?;
+        let mut named_roots = context.dependency_named_roots.clone();
+        if target.kind == ResolvedScopeKind::BinaryRoot {
+            if let (Some(root_name), Some(library_target)) = (
+                context.current_library_import_root.as_ref(),
+                context.library_target.as_ref(),
+            ) {
+                let (library_graph, library_diagnostics) =
+                    resolve_target_scope_graph_with_diagnostics(
+                        &resolver,
+                        &context.db,
+                        &context.parsed_files,
+                        library_target.root_file_id,
+                        ResolvedScopeKind::Root,
+                    );
+                emit_diagnostics_bag(&context.db, &library_diagnostics);
+                let library_graph = library_graph.ok_or_else(|| {
+                    format!(
+                        "failed to build library scope graph for {}",
+                        path_for_file_id(&context, library_target.root_file_id)
+                    )
+                })?;
+                named_roots.insert(
+                    root_name.clone(),
+                    NamedImportRoot::LoadedLibrary {
+                        graph: library_graph,
+                        parsed_files: context.parsed_files.clone(),
+                    },
+                );
+            }
+        }
+
+        let (symbols, imports, import_diagnostics) =
+            resolve_project_imports_with_named_roots_and_diagnostics(
+                &graph,
+                &context.parsed_files,
+                &named_roots,
+                &context.db,
+            );
+        emit_diagnostics_bag(&context.db, &import_diagnostics);
         resolved.push((target, graph, symbols, imports));
     }
 
@@ -566,6 +641,52 @@ fn dump_imports(
                 "targets": targets_json,
             }))?)
         }
+    }
+}
+
+fn resolve_target_scope_graph_with_diagnostics(
+    resolver: &core_x::frontend::ScopeResolver<'_>,
+    db: &SourceDb,
+    parsed_files: &[ParsedFile],
+    root_file_id: FileId,
+    kind: ResolvedScopeKind,
+) -> (
+    Option<core_x::frontend::ScopeGraph>,
+    core_x::frontend::DiagnosticsBag,
+) {
+    match kind {
+        ResolvedScopeKind::Root => {
+            resolver.resolve_library_root_with_diagnostics(root_file_id, db)
+        }
+        ResolvedScopeKind::BinaryRoot => {
+            resolver.resolve_binary_root_with_diagnostics(root_file_id, db)
+        }
+        other => {
+            let mut diagnostics = core_x::frontend::DiagnosticsBag::new();
+            match resolve_project_scopes(db, parsed_files, root_file_id, other)
+            {
+                Ok(graph) => (Some(graph), diagnostics),
+                Err(error) => {
+                    diagnostics.push(
+                        core_x::frontend::diagnostic_from_resolve_error(
+                            db, &error,
+                        ),
+                    );
+                    (None, diagnostics)
+                }
+            }
+        }
+    }
+}
+
+fn emit_diagnostics_bag(db: &SourceDb, bag: &core_x::frontend::DiagnosticsBag) {
+    if bag.is_empty() {
+        return;
+    }
+    let renderer = DiagnosticRenderer::new(db);
+    let rendered = renderer.render_all(bag.as_slice());
+    if !rendered.is_empty() {
+        eprintln!("{rendered}");
     }
 }
 
@@ -605,27 +726,30 @@ fn parse_single_file(
 fn load_project_context(
     project_dir: &Path,
 ) -> Result<ProjectContext, DynError> {
-    let src_dir = project_dir.join("src");
-    if !src_dir.is_dir() {
-        return Err(format!(
-            "project directory {} does not contain src/",
-            project_dir.display()
-        )
-        .into());
-    }
+    let loaded_project = ProjectLoader::load_project(project_dir)?;
+    let project_graph =
+        load_local_dependency_project_graph(loaded_project.clone())?;
+    let target_roots = build_target_roots(&project_graph)?;
+    let current_library_import_root =
+        target_roots.by_name.iter().find_map(|(name, root)| {
+            (root.kind == ImportRootKind::CurrentLibrary).then(|| name.clone())
+        });
 
-    let relative_files = collect_project_cx_files(project_dir)?;
+    let manifest = loaded_project.manifest.clone();
+    let project_root = loaded_project.project_dir.clone();
+    let project_files = collect_project_cx_files(&project_root, &manifest)?;
+
     let mut db = SourceDb::new();
-    let mut parsed_files = Vec::with_capacity(relative_files.len());
-    let mut ordered_file_ids = Vec::with_capacity(relative_files.len());
+    let mut parsed_files = Vec::with_capacity(project_files.len());
+    let mut ordered_file_ids = Vec::with_capacity(project_files.len());
     let mut path_by_file_id = BTreeMap::new();
-    let mut library_root = None;
-    let mut binary_root = None;
+    let mut file_id_by_path = BTreeMap::new();
 
-    for relative_path in relative_files {
-        let absolute_path = project_dir.join(&relative_path);
+    for absolute_path in project_files {
+        let display_path =
+            project_relative_or_absolute_path(&project_root, &absolute_path);
         let source = fs::read_to_string(&absolute_path)?;
-        let file_id = db.add_file(relative_path.clone(), source);
+        let file_id = db.add_file(display_path.clone(), source);
         let file = db.file(file_id).ok_or_else(|| {
             format!("missing source file id {}", file_id.raw())
         })?;
@@ -633,46 +757,87 @@ fn load_project_context(
             .map_err(|error| {
                 format!(
                     "failed to initialize parser for project file {}: {error}",
-                    relative_path.display()
+                    display_path.display()
                 )
             })?;
 
-        if relative_path == Path::new("src/root.cx") {
-            library_root = Some(file_id);
-        }
-        if relative_path == Path::new("src/main.cx") {
-            binary_root = Some(file_id);
-        }
-
         ordered_file_ids.push(file_id);
-        path_by_file_id.insert(file_id, relative_path);
+        path_by_file_id.insert(file_id, display_path);
+        file_id_by_path.insert(absolute_path, file_id);
         parsed_files.push(parsed);
     }
+
+    let library_target = if let Some(target) = manifest.library.as_ref() {
+        let file_id =
+            file_id_by_path.get(&target.root_file).ok_or_else(|| {
+                format!(
+                    "missing target root in parsed project files: {}",
+                    target.root_file.display()
+                )
+            })?;
+        Some(TargetSelection {
+            kind: ResolvedScopeKind::Root,
+            label: "library",
+            root_file_id: *file_id,
+        })
+    } else {
+        None
+    };
+
+    let mut binary_targets = Vec::with_capacity(manifest.binaries.len());
+    for target in &manifest.binaries {
+        let file_id =
+            file_id_by_path.get(&target.root_file).ok_or_else(|| {
+                format!(
+                    "missing target root in parsed project files: {}",
+                    target.root_file.display()
+                )
+            })?;
+        binary_targets.push(TargetSelection {
+            kind: ResolvedScopeKind::BinaryRoot,
+            label: "binary",
+            root_file_id: *file_id,
+        });
+    }
+
+    let dependency_named_roots =
+        build_dependency_named_roots(&project_graph, &target_roots)?;
 
     Ok(ProjectContext {
         db,
         parsed_files,
         ordered_file_ids,
         path_by_file_id,
-        library_root,
-        binary_root,
+        library_target,
+        binary_targets,
+        current_library_import_root,
+        dependency_named_roots,
     })
 }
 
 fn collect_project_cx_files(
     project_dir: &Path,
+    manifest: &ProjectManifest,
 ) -> Result<Vec<PathBuf>, DynError> {
-    let mut files = Vec::new();
+    let mut files = BTreeSet::new();
     let src_dir = project_dir.join("src");
-    collect_cx_files_recursive(project_dir, &src_dir, &mut files)?;
-    files.sort();
-    Ok(files)
+    if src_dir.is_dir() {
+        collect_cx_files_recursive(&src_dir, &mut files)?;
+    }
+
+    if let Some(library_target) = &manifest.library {
+        files.insert(library_target.root_file.clone());
+    }
+    for binary_target in &manifest.binaries {
+        files.insert(binary_target.root_file.clone());
+    }
+
+    Ok(files.into_iter().collect())
 }
 
 fn collect_cx_files_recursive(
-    project_dir: &Path,
     dir: &Path,
-    out: &mut Vec<PathBuf>,
+    out: &mut BTreeSet<PathBuf>,
 ) -> Result<(), DynError> {
     let mut entries = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(|entry| entry.path());
@@ -681,19 +846,124 @@ fn collect_cx_files_recursive(
         let path = entry.path();
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
-            collect_cx_files_recursive(project_dir, &path, out)?;
+            collect_cx_files_recursive(&path, out)?;
             continue;
         }
 
         if file_type.is_file()
             && path.extension().and_then(|ext| ext.to_str()) == Some("cx")
         {
-            let relative = path.strip_prefix(project_dir)?.to_path_buf();
-            out.push(relative);
+            out.insert(path);
         }
     }
 
     Ok(())
+}
+
+fn project_relative_or_absolute_path(
+    project_dir: &Path,
+    absolute_path: &Path,
+) -> PathBuf {
+    absolute_path
+        .strip_prefix(project_dir)
+        .map_or_else(|_| absolute_path.to_path_buf(), Path::to_path_buf)
+}
+
+fn build_dependency_named_roots(
+    project_graph: &ProjectGraph,
+    target_roots: &TargetRoots,
+) -> Result<BTreeMap<String, NamedImportRoot>, DynError> {
+    let mut named_roots = BTreeMap::new();
+
+    for (name, root) in &target_roots.by_name {
+        match root.kind {
+            ImportRootKind::CurrentLibrary => {}
+            ImportRootKind::UnloadedGitDependency => {
+                named_roots
+                    .insert(name.clone(), NamedImportRoot::UnloadedDependency);
+            }
+            ImportRootKind::LocalDependencyLibrary => {
+                let dependency = project_graph
+                    .local_dependencies
+                    .iter()
+                    .find(|dependency| dependency.dependency_name == *name)
+                    .ok_or_else(|| {
+                        format!(
+                            "missing loaded local dependency project for root `{name}`"
+                        )
+                    })?;
+                let library_target =
+                    dependency.project.manifest.library.as_ref().ok_or_else(
+                        || {
+                            format!(
+                                "dependency `{}` has no library target",
+                                dependency.dependency_name
+                            )
+                        },
+                    )?;
+                let (db, parsed_files, file_id_by_path) =
+                    parse_loaded_project_files(&dependency.project)?;
+                let library_root_file_id = file_id_by_path
+                    .get(&library_target.root_file)
+                    .copied()
+                    .ok_or_else(|| {
+                        format!(
+                            "missing dependency library root file {}",
+                            library_target.root_file.display()
+                        )
+                    })?;
+                let graph = resolve_project_scopes(
+                    &db,
+                    &parsed_files,
+                    library_root_file_id,
+                    ResolvedScopeKind::Root,
+                )?;
+                named_roots.insert(
+                    name.clone(),
+                    NamedImportRoot::LoadedLibrary {
+                        graph,
+                        parsed_files,
+                    },
+                );
+            }
+        }
+    }
+
+    Ok(named_roots)
+}
+
+fn parse_loaded_project_files(
+    project: &core_x::frontend::LoadedProject,
+) -> Result<(SourceDb, Vec<ParsedFile>, BTreeMap<PathBuf, FileId>), DynError> {
+    let project_files =
+        collect_project_cx_files(&project.project_dir, &project.manifest)?;
+    let mut db = SourceDb::new();
+    let mut parsed_files = Vec::with_capacity(project_files.len());
+    let mut file_id_by_path = BTreeMap::new();
+
+    for absolute_path in project_files {
+        let display_path = project_relative_or_absolute_path(
+            &project.project_dir,
+            &absolute_path,
+        );
+        let source = fs::read_to_string(&absolute_path)?;
+        let file_id = db.add_file(display_path, source);
+        let file = db.file(file_id).ok_or_else(|| {
+            format!("missing dependency source file id {}", file_id.raw())
+        })?;
+        let parsed = parse_source_file_from_source_file_with_recovery(file)
+            .map_err(|error| {
+                format!(
+                    "failed to initialize parser for dependency file {}: {error}",
+                    absolute_path.display()
+                )
+            })?;
+
+        parsed_files.push(parsed);
+        file_id_by_path.insert(absolute_path, file_id);
+    }
+
+    Ok((db, parsed_files, file_id_by_path))
 }
 
 fn classify_single_root_target(
@@ -732,26 +1002,24 @@ fn single_target_from_context(
     root_kind: ResolvedScopeKind,
 ) -> Result<TargetSelection, DynError> {
     match root_kind {
-        ResolvedScopeKind::Root => {
-            let root_file_id = context
-                .library_root
-                .ok_or("project does not contain src/root.cx")?;
-            Ok(TargetSelection {
-                kind: ResolvedScopeKind::Root,
-                label: "library",
-                root_file_id,
+        ResolvedScopeKind::Root => context
+            .library_target
+            .clone()
+            .ok_or_else(|| "project does not declare a library target".into()),
+        ResolvedScopeKind::BinaryRoot => context
+            .binary_targets
+            .iter()
+            .find(|target| {
+                context
+                    .path_by_file_id
+                    .get(&target.root_file_id)
+                    .is_some_and(|path| path == Path::new("src/main.cx"))
             })
-        }
-        ResolvedScopeKind::BinaryRoot => {
-            let root_file_id = context
-                .binary_root
-                .ok_or("project does not contain src/main.cx")?;
-            Ok(TargetSelection {
-                kind: ResolvedScopeKind::BinaryRoot,
-                label: "binary",
-                root_file_id,
-            })
-        }
+            .cloned()
+            .ok_or_else(|| {
+                "project does not declare binary target rooted at src/main.cx"
+                    .into()
+            }),
         _ => Err("single target root must be library or binary".into()),
     }
 }
@@ -760,24 +1028,14 @@ fn targets_from_context(
     context: &ProjectContext,
 ) -> Result<Vec<TargetSelection>, DynError> {
     let mut targets = Vec::new();
-    if let Some(root_file_id) = context.library_root {
-        targets.push(TargetSelection {
-            kind: ResolvedScopeKind::Root,
-            label: "library",
-            root_file_id,
-        });
+    if let Some(library_target) = &context.library_target {
+        targets.push(library_target.clone());
     }
-    if let Some(root_file_id) = context.binary_root {
-        targets.push(TargetSelection {
-            kind: ResolvedScopeKind::BinaryRoot,
-            label: "binary",
-            root_file_id,
-        });
-    }
+    targets.extend(context.binary_targets.iter().cloned());
 
     if targets.is_empty() {
         return Err(
-            "project does not contain src/root.cx or src/main.cx".into()
+            "project manifest does not define any compilation targets".into()
         );
     }
 

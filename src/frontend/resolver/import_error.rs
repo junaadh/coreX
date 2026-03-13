@@ -8,6 +8,10 @@ pub enum ImportResolveError {
         from_file_id: FileId,
         root: String,
     },
+    UnloadedDependencyRoot {
+        from_file_id: FileId,
+        root: String,
+    },
     UnresolvedPath {
         from_file_id: FileId,
         path: Vec<String>,
@@ -31,6 +35,12 @@ impl Display for ImportResolveError {
             Self::UnknownRoot { from_file_id, root } => write!(
                 f,
                 "unknown import root '{}' in file id {}",
+                root,
+                from_file_id.raw()
+            ),
+            Self::UnloadedDependencyRoot { from_file_id, root } => write!(
+                f,
+                "import root '{}' is declared but dependency is not loaded (file id {})",
                 root,
                 from_file_id.raw()
             ),

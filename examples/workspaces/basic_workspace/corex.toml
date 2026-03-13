@@ -1,0 +1,3 @@
+[workspace]
+name = "basic_workspace"
+members = ["projects/app", "projects/util"]

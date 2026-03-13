@@ -1,0 +1,3 @@
+[workspace]
+name = "full_stack_workspace"
+members = ["crates/runtime", "crates/cli", "crates/tooling"]

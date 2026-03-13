@@ -33,6 +33,7 @@ fn write_file(path: &Path, source: &str) {
 
 fn create_project_fixture(name: &str) -> TestProject {
     let root = unique_temp_dir(name);
+    write_file(&root.join("corex.toml"), "[project]\nname = \"app\"\n");
     let root_file = root.join("src/root.cx");
     let net_file = root.join("src/net.cx");
     let app_file = root.join("src/app.cx");
