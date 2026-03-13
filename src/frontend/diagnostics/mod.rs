@@ -7,6 +7,7 @@ mod imports;
 mod parse;
 mod render;
 mod resolve;
+mod semantic;
 
 pub use bag::DiagnosticsBag;
 pub use diagnostic::{
@@ -19,3 +20,7 @@ pub use parse::{
 };
 pub use render::DiagnosticRenderer;
 pub use resolve::diagnostic_from_resolve_error;
+pub use semantic::{
+    diagnostic_from_control_flow_issue, diagnostic_from_expr_check_issue,
+    diagnostic_from_stmt_check_issue, diagnostics_from_semantic_checks,
+};

@@ -27,8 +27,8 @@ enum Commands {
     /// Dump deterministic frontend pipeline snapshots.
     #[command(
         about = "Dump frontend pipeline artifacts (lexer/parser/resolver)",
-        long_about = "Produces deterministic frontend snapshots for a single file or project. This command hooks directly into concrete pipeline boundaries: lexer output (`tokens`), parser output (`ast`), parsed envelope output (`parsed`), scope-resolution output (`scopes`), and import-resolution output (`imports`).",
-        after_long_help = "Dump kinds:\n  tokens   Emit the full token stream from lexer output.\n  ast      Emit recursive AST structure from parser output.\n  parsed   Emit ParsedFile envelope (file id, AST, diagnostics).\n  scopes   Emit resolved project scope graph rooted at src/root.cx or src/main.cx.\n  imports  Emit resolved imports and collected scope symbols over a scope graph."
+        long_about = "Produces deterministic frontend snapshots for a single file or project. This command hooks directly into concrete pipeline boundaries: lexer output (`tokens`), parser output (`ast`), parsed envelope output (`parsed`), scope-resolution output (`scopes`), import-resolution output (`imports`), and semantic-analysis output (`semantic`).",
+        after_long_help = "Dump kinds:\n  tokens    Emit the full token stream from lexer output.\n  ast       Emit recursive AST structure from parser output.\n  parsed    Emit ParsedFile envelope (file id, AST, diagnostics).\n  scopes    Emit resolved project scope graph rooted at src/root.cx or src/main.cx.\n  imports   Emit resolved imports and collected scope symbols over a scope graph.\n  semantic  Emit semantic-analysis summaries and semantic diagnostics."
     )]
     Dump(DumpArgs),
 }
@@ -53,6 +53,7 @@ pub(crate) enum DumpKind {
     Ast,
     Scopes,
     Imports,
+    Semantic,
     Parsed,
 }
 

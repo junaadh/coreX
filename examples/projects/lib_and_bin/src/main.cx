@@ -1,1 +1,3 @@
-fn main() {}
+fn main() {
+    lib_and_bin::shared_logic();
+}

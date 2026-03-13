@@ -11,9 +11,9 @@ mod scope_resolver;
 mod symbols;
 
 pub use body_resolution::{
-    BodyKind, LocalKind, ResolvedBody, ResolvedBodyRef, ResolvedBodyReference,
-    ResolvedBodyTable, ResolvedLocalBinding, UnresolvedBodyReference,
-    resolve_bodies,
+    BodyKind, LocalKind, LocalMutability, ResolvedBody, ResolvedBodyRef,
+    ResolvedBodyReference, ResolvedBodyTable, ResolvedLocalBinding,
+    UnresolvedBodyReference, resolve_bodies,
 };
 pub use declaration_resolution::{
     DeclarationOwner, ResolvedDeclaration, ResolvedDeclarationTable,

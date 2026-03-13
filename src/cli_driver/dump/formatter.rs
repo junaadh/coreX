@@ -1,6 +1,6 @@
 use crate::cli_driver::dump::model::{
     FileAstDump, FileParsedDump, FileTokenDump, ResolvedImportDump,
-    ResolvedScopeDump,
+    ResolvedScopeDump, ResolvedSemanticDump,
 };
 use crate::cli_driver::project::{ProjectContext, path_for_file_id};
 use crate::cli_driver::ui::{ui_header, ui_section};
@@ -129,6 +129,46 @@ pub fn format_imports_text(
         let _ = writeln!(out, "{:#?}", item.symbols);
         let _ = writeln!(out, "{}", ui_section("resolved_imports:"));
         let _ = writeln!(out, "{:#?}", item.imports);
+    }
+    out.trim_end_matches('\n').to_string()
+}
+
+pub fn format_semantic_text(
+    context: &ProjectContext,
+    resolved: &[ResolvedSemanticDump],
+) -> String {
+    let mut out = String::new();
+    for (index, item) in resolved.iter().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        let _ = writeln!(
+            out,
+            "{}",
+            ui_header(&format!(
+                "== target: {} ({}) ==",
+                item.target.label,
+                path_for_file_id(context, item.target.root_file_id)
+            ))
+        );
+        let _ = writeln!(out, "{}", ui_section("scope_graph:"));
+        let _ = writeln!(out, "{:#?}", item.graph);
+        let _ = writeln!(out, "{}", ui_section("scope_symbols:"));
+        let _ = writeln!(out, "{:#?}", item.symbols);
+        let _ = writeln!(out, "{}", ui_section("resolved_imports:"));
+        let _ = writeln!(out, "{:#?}", item.imports);
+        let _ = writeln!(out, "{}", ui_section("semantic_summary:"));
+        let _ =
+            writeln!(out, "global_items: {}", item.semantic.global_items.len());
+        let _ =
+            writeln!(out, "typed_items: {}", item.semantic.typed_items.len());
+        let _ =
+            writeln!(out, "typed_bodies: {}", item.semantic.typed_bodies.len());
+        let _ = writeln!(
+            out,
+            "semantic_diagnostics: {}",
+            item.semantic.diagnostics.len()
+        );
     }
     out.trim_end_matches('\n').to_string()
 }

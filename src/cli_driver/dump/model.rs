@@ -49,3 +49,11 @@ pub struct ResolvedImportDump {
     pub symbols: BTreeMap<FileId, core_x::frontend::ScopeSymbols>,
     pub imports: BTreeMap<FileId, core_x::frontend::ResolvedImports>,
 }
+
+pub struct ResolvedSemanticDump {
+    pub target: crate::cli_driver::project::TargetSelection,
+    pub graph: core_x::frontend::ScopeGraph,
+    pub symbols: BTreeMap<FileId, core_x::frontend::ScopeSymbols>,
+    pub imports: BTreeMap<FileId, core_x::frontend::ResolvedImports>,
+    pub semantic: core_x::frontend::SemanticAnalysis,
+}

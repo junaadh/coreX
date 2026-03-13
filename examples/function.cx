@@ -1,0 +1,8 @@
+fn add(a: i32, b: i32) -> i32 {
+	let c = a + b;
+	c
+}
+
+fn main() {
+	let c = add(a: 1, b: 1);
+}

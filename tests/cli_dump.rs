@@ -71,6 +71,15 @@ fn create_project_fixture_with_parse_error(name: &str) -> TestProject {
     project
 }
 
+fn create_project_fixture_with_semantic_error(name: &str) -> TestProject {
+    let project = create_project_fixture(name);
+    write_file(
+        &project.root.join("src/root.cx"),
+        "scope net;\nscope app;\nfn top() {}\nstruct RootType {}\nfn broken() -> i32 { true }\n",
+    );
+    project
+}
+
 fn run_cxc(args: &[String]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_cxc"))
         .args(args)
@@ -371,7 +380,7 @@ fn dump_project_kinds_render_recovery_diagnostics_and_continue() {
     let project =
         create_project_fixture_with_parse_error("project_diagnostics");
 
-    for kind in ["tokens", "ast", "parsed", "scopes", "imports"] {
+    for kind in ["tokens", "ast", "parsed", "scopes", "imports", "semantic"] {
         let output = run_cxc(&[
             "dump".to_string(),
             kind.to_string(),
@@ -399,4 +408,76 @@ fn dump_project_kinds_render_recovery_diagnostics_and_continue() {
             "expected dump output to continue for `{kind}`"
         );
     }
+}
+
+#[test]
+fn dump_semantic_project_renders_semantic_diagnostics() {
+    let project =
+        create_project_fixture_with_semantic_error("project_semantic_error");
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "semantic".to_string(),
+        "--project".to_string(),
+        arg(&project.root),
+    ]);
+
+    assert!(
+        output.status.success(),
+        "expected dump semantic to continue after semantic diagnostics"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("type mismatch")
+            || stderr.contains("invalid return type"),
+        "expected semantic diagnostics from the analysis driver"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.is_empty(), "expected semantic dump output");
+}
+
+#[test]
+fn dump_imports_project_does_not_render_semantic_diagnostics() {
+    let project =
+        create_project_fixture_with_semantic_error("imports_no_semantic_diag");
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "imports".to_string(),
+        "--project".to_string(),
+        arg(&project.root),
+    ]);
+
+    assert!(
+        output.status.success(),
+        "expected dump imports to succeed without semantic diagnostics"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("type mismatch")
+            && !stderr.contains("invalid return type"),
+        "dump imports should stop at import diagnostics"
+    );
+}
+
+#[test]
+fn dump_parsed_project_does_not_render_semantic_diagnostics() {
+    let project =
+        create_project_fixture_with_semantic_error("parsed_no_semantic_diag");
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "parsed".to_string(),
+        "--project".to_string(),
+        arg(&project.root),
+    ]);
+
+    assert!(output.status.success(), "expected dump parsed to succeed");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("type mismatch")
+            && !stderr.contains("invalid return type"),
+        "dump parsed should stop at parse diagnostics"
+    );
 }

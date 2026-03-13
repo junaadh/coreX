@@ -7,11 +7,12 @@ use crate::cli_driver::diagnostics::{
 };
 use crate::cli_driver::dump::formatter::{
     diagnostics_to_json, format_ast_text, format_imports_text,
-    format_parsed_text, format_scopes_text, format_tokens_text,
+    format_parsed_text, format_scopes_text, format_semantic_text,
+    format_tokens_text,
 };
 use crate::cli_driver::dump::model::{
     FileAstDump, FileParsedDump, FileTokenDump, ResolvedImportDump,
-    ResolvedScopeDump, TokenView,
+    ResolvedScopeDump, ResolvedSemanticDump, TokenView,
 };
 use crate::cli_driver::project::{
     classify_single_root_target, load_project_context, parse_single_file,
@@ -20,6 +21,7 @@ use crate::cli_driver::project::{
     targets_from_context,
 };
 use core_x::frontend::NamedImportRoot;
+use core_x::frontend::analyze_semantics;
 use core_x::frontend::lexer::Lexer;
 use core_x::frontend::resolver::{
     ResolvedScopeKind, resolve_project_imports_with_named_roots_and_diagnostics,
@@ -36,6 +38,7 @@ pub fn run_dump(args: crate::DumpArgs) -> Result<(), DynError> {
         crate::DumpKind::Parsed => dump_parsed(input, args.format)?,
         crate::DumpKind::Scopes => dump_scopes(input, args.format)?,
         crate::DumpKind::Imports => dump_imports(input, args.format)?,
+        crate::DumpKind::Semantic => dump_semantic(input, args.format)?,
     };
 
     println!("{output}");
@@ -390,6 +393,7 @@ fn dump_imports(
                 &context.db,
             );
         emit_diagnostics_bag(&context.db, &import_diagnostics);
+
         resolved.push(ResolvedImportDump {
             target,
             graph,
@@ -420,6 +424,120 @@ fn dump_imports(
 
             Ok(serde_json::to_string_pretty(&json!({
                 "kind": "imports",
+                "mode": mode,
+                "targets": targets_json,
+            }))?)
+        }
+    }
+}
+
+fn dump_semantic(
+    input: DumpInput,
+    format: crate::DumpFormat,
+) -> Result<String, DynError> {
+    let (context, targets, mode) = match input {
+        DumpInput::File(path) => {
+            let (project_dir, root_kind) = classify_single_root_target(&path)?;
+            let context = load_project_context(&project_dir)?;
+            emit_context_diagnostics(&context);
+            let target = single_target_from_context(&context, root_kind)?;
+            (context, vec![target], "file")
+        }
+        DumpInput::Project(project_dir) => {
+            let context = load_project_context(&project_dir)?;
+            emit_context_diagnostics(&context);
+            let targets = targets_from_context(&context)?;
+            (context, targets, "project")
+        }
+    };
+
+    let mut resolved = Vec::new();
+    let scope_resolver = core_x::frontend::ScopeResolver::new(
+        &context.db,
+        &context.parsed_files,
+    );
+    for target in targets {
+        let (graph, scope_diagnostics) =
+            resolve_target_scope_graph_with_diagnostics(
+                &scope_resolver,
+                &context.db,
+                &context.parsed_files,
+                target.root_file_id,
+                target.kind,
+            );
+        emit_diagnostics_bag(&context.db, &scope_diagnostics);
+        let graph = graph.ok_or_else(|| {
+            format!(
+                "failed to build {} scope graph for {}",
+                target.label,
+                path_for_file_id(&context, target.root_file_id)
+            )
+        })?;
+
+        let mut named_roots = context.dependency_named_roots.clone();
+        maybe_add_current_library_root_for_binary(
+            &context,
+            &scope_resolver,
+            &target,
+            &mut named_roots,
+        )?;
+
+        let (symbols, imports, import_diagnostics) =
+            resolve_project_imports_with_named_roots_and_diagnostics(
+                &graph,
+                &context.parsed_files,
+                &named_roots,
+                &context.db,
+            );
+        emit_diagnostics_bag(&context.db, &import_diagnostics);
+
+        let semantic = analyze_semantics(
+            &context.db,
+            &graph,
+            &context.parsed_files,
+            &imports,
+        );
+        emit_diagnostics_bag(&context.db, &semantic.diagnostics);
+
+        resolved.push(ResolvedSemanticDump {
+            target,
+            graph,
+            symbols,
+            imports,
+            semantic,
+        });
+    }
+
+    match format {
+        crate::DumpFormat::Text => {
+            Ok(format_semantic_text(&context, &resolved))
+        }
+        crate::DumpFormat::Json => {
+            let targets_json = resolved
+                .iter()
+                .map(|item| {
+                    let root_path =
+                        path_for_file_id(&context, item.target.root_file_id);
+
+                    json!({
+                        "target_kind": item.target.label,
+                        "root_file_id": item.target.root_file_id.raw(),
+                        "root_path": root_path,
+                        "scope_graph_debug": format!("{:#?}", item.graph),
+                        "scope_symbols_debug": format!("{:#?}", item.symbols),
+                        "resolved_imports_debug": format!("{:#?}", item.imports),
+                        "semantic_summary": {
+                            "global_items": item.semantic.global_items.len(),
+                            "typed_items": item.semantic.typed_items.len(),
+                            "typed_bodies": item.semantic.typed_bodies.len(),
+                            "semantic_diagnostics": item.semantic.diagnostics.len(),
+                        },
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            Ok(serde_json::to_string_pretty(&json!({
+                "kind": "semantic",
                 "mode": mode,
                 "targets": targets_json,
             }))?)

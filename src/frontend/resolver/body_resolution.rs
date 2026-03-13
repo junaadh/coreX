@@ -1,5 +1,6 @@
 use super::declaration_resolution::{
-    DeclarationOwner, ResolvedDeclarationTable,
+    DeclarationOwner, ResolvedDeclarationTable, ResolvedItemRef,
+    ResolvedTypeRef,
 };
 use super::import_resolver::{ImportBindingKind, ResolvedImports};
 use super::item_ids::ItemId;
@@ -9,8 +10,8 @@ use super::model::ScopeGraph;
 use crate::frontend::ParsedFile;
 use crate::frontend::ast::{
     ArrayElement, Clause, Expr, ForStmt, FunctionDecl, IfStmt, IfStmtElse,
-    ImplMember, Item, MatchArmBody, Pattern, ProtocolMember, Span, Stmt,
-    StructLiteralField, StructMember, TypeExpr,
+    ImplMember, Item, MatchArmBody, Pattern, ProtocolMember, ReceiverKind,
+    Span, Stmt, StructLiteralField, StructMember, Type as AstType, TypeExpr,
 };
 use crate::frontend::source::FileId;
 use std::collections::BTreeMap;
@@ -20,6 +21,12 @@ pub enum LocalKind {
     Parameter,
     LocalBinding,
     PatternBinding,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalMutability {
+    Immutable,
+    Mutable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,7 +41,9 @@ pub enum ResolvedBodyRef {
 pub struct ResolvedLocalBinding {
     pub id: LocalId,
     pub kind: LocalKind,
+    pub mutability: LocalMutability,
     pub name: String,
+    pub declared_type: Option<ResolvedTypeRef>,
     pub declared_span: Span,
 }
 
@@ -64,6 +73,7 @@ pub struct UnresolvedBodyReference {
 pub struct ResolvedBody {
     pub owner: DeclarationOwner,
     pub body_index: usize,
+    pub signature_index: usize,
     pub kind: BodyKind,
     pub containing_scope_file_id: FileId,
     pub locals: Vec<ResolvedLocalBinding>,
@@ -163,6 +173,7 @@ impl<'a> BodyResolver<'a> {
                         let body = self.resolve_function_body(
                             owner.clone(),
                             body_index,
+                            0,
                             BodyKind::Function,
                             *scope_file_id,
                             &function_decl.node,
@@ -182,6 +193,8 @@ impl<'a> BodyResolver<'a> {
                             continue;
                         }
                         let owner = DeclarationOwner::Item(item_id);
+                        let mut method_signature_index = 0usize;
+                        let mut initializer_signature_index = 0usize;
                         for member in &struct_decl.node.members {
                             match &member.node {
                                 StructMember::Function(function_decl) => {
@@ -191,10 +204,14 @@ impl<'a> BodyResolver<'a> {
                                     let body = self.resolve_function_body(
                                         owner.clone(),
                                         body_index,
+                                        method_signature_index,
                                         BodyKind::Function,
                                         *scope_file_id,
                                         &function_decl.node,
                                     );
+                                    method_signature_index =
+                                        method_signature_index
+                                            .saturating_add(1);
                                     by_owner
                                         .entry(owner.clone())
                                         .or_default()
@@ -207,10 +224,14 @@ impl<'a> BodyResolver<'a> {
                                     let body = self.resolve_init_body(
                                         owner.clone(),
                                         body_index,
+                                        initializer_signature_index,
                                         BodyKind::Initializer,
                                         *scope_file_id,
                                         &init_decl.node,
                                     );
+                                    initializer_signature_index =
+                                        initializer_signature_index
+                                            .saturating_add(1);
                                     by_owner
                                         .entry(owner.clone())
                                         .or_default()
@@ -233,6 +254,8 @@ impl<'a> BodyResolver<'a> {
                             continue;
                         }
                         let owner = DeclarationOwner::Item(item_id);
+                        let mut method_signature_index = 0usize;
+                        let mut initializer_signature_index = 0usize;
                         for member in &enum_decl.node.members {
                             match &member.node {
                                 crate::frontend::ast::EnumMember::Function(
@@ -244,10 +267,14 @@ impl<'a> BodyResolver<'a> {
                                     let body = self.resolve_function_body(
                                         owner.clone(),
                                         body_index,
+                                        method_signature_index,
                                         BodyKind::Function,
                                         *scope_file_id,
                                         &function_decl.node,
                                     );
+                                    method_signature_index =
+                                        method_signature_index
+                                            .saturating_add(1);
                                     by_owner
                                         .entry(owner.clone())
                                         .or_default()
@@ -262,10 +289,14 @@ impl<'a> BodyResolver<'a> {
                                     let body = self.resolve_init_body(
                                         owner.clone(),
                                         body_index,
+                                        initializer_signature_index,
                                         BodyKind::Initializer,
                                         *scope_file_id,
                                         &init_decl.node,
                                     );
+                                    initializer_signature_index =
+                                        initializer_signature_index
+                                            .saturating_add(1);
                                     by_owner
                                         .entry(owner.clone())
                                         .or_default()
@@ -288,9 +319,16 @@ impl<'a> BodyResolver<'a> {
                             continue;
                         }
                         let owner = DeclarationOwner::Item(item_id);
+                        let mut method_signature_index = 0usize;
+                        let mut initializer_signature_index = 0usize;
                         for member in &protocol_decl.node.members {
                             match &member.node {
                                 ProtocolMember::Function(function_member) => {
+                                    let signature_index =
+                                        method_signature_index;
+                                    method_signature_index =
+                                        method_signature_index
+                                            .saturating_add(1);
                                     if function_member
                                         .node
                                         .default_body
@@ -305,6 +343,7 @@ impl<'a> BodyResolver<'a> {
                                         .resolve_protocol_function_default_body(
                                             owner.clone(),
                                             body_index,
+                                            signature_index,
                                             *scope_file_id,
                                             &function_member.node,
                                         );
@@ -314,6 +353,11 @@ impl<'a> BodyResolver<'a> {
                                         .push(body);
                                 }
                                 ProtocolMember::Initializer(init_member) => {
+                                    let signature_index =
+                                        initializer_signature_index;
+                                    initializer_signature_index =
+                                        initializer_signature_index
+                                            .saturating_add(1);
                                     if init_member.node.default_body.is_none() {
                                         continue;
                                     }
@@ -324,6 +368,7 @@ impl<'a> BodyResolver<'a> {
                                         .resolve_protocol_init_default_body(
                                             owner.clone(),
                                             body_index,
+                                            signature_index,
                                             *scope_file_id,
                                             &init_member.node,
                                         );
@@ -351,6 +396,8 @@ impl<'a> BodyResolver<'a> {
                         {
                             continue;
                         }
+                        let mut method_signature_index = 0usize;
+                        let mut initializer_signature_index = 0usize;
                         for member in &impl_decl.node.members {
                             match &member.node {
                                 ImplMember::Function(function_decl) => {
@@ -360,10 +407,14 @@ impl<'a> BodyResolver<'a> {
                                     let body = self.resolve_function_body(
                                         owner.clone(),
                                         body_index,
+                                        method_signature_index,
                                         BodyKind::Function,
                                         *scope_file_id,
                                         &function_decl.node,
                                     );
+                                    method_signature_index =
+                                        method_signature_index
+                                            .saturating_add(1);
                                     by_owner
                                         .entry(owner.clone())
                                         .or_default()
@@ -376,10 +427,14 @@ impl<'a> BodyResolver<'a> {
                                     let body = self.resolve_init_body(
                                         owner.clone(),
                                         body_index,
+                                        initializer_signature_index,
                                         BodyKind::Initializer,
                                         *scope_file_id,
                                         &init_decl.node,
                                     );
+                                    initializer_signature_index =
+                                        initializer_signature_index
+                                            .saturating_add(1);
                                     by_owner
                                         .entry(owner.clone())
                                         .or_default()
@@ -413,6 +468,7 @@ impl<'a> BodyResolver<'a> {
         &mut self,
         owner: DeclarationOwner,
         body_index: usize,
+        signature_index: usize,
         kind: BodyKind,
         scope_file_id: FileId,
         function_decl: &FunctionDecl,
@@ -420,6 +476,7 @@ impl<'a> BodyResolver<'a> {
         let mut resolved = ResolvedBody {
             owner,
             body_index,
+            signature_index,
             kind,
             containing_scope_file_id: scope_file_id,
             locals: Vec::new(),
@@ -434,15 +491,24 @@ impl<'a> BodyResolver<'a> {
                 &mut resolved.locals,
                 "self".to_string(),
                 LocalKind::Parameter,
+                receiver.node.to_local_mutability_for_parameter(),
+                None,
                 receiver.span,
             );
         }
         for param in &function_decl.params {
+            let declared_type = Some(self.resolve_type_ref(
+                &resolved.owner,
+                scope_file_id,
+                &param.node.ty.node,
+            ));
             self.declare_local(
                 &mut scopes,
                 &mut resolved.locals,
                 param.node.name.clone(),
                 LocalKind::Parameter,
+                LocalMutability::Immutable,
+                declared_type,
                 param.span,
             );
         }
@@ -459,6 +525,7 @@ impl<'a> BodyResolver<'a> {
         &mut self,
         owner: DeclarationOwner,
         body_index: usize,
+        signature_index: usize,
         kind: BodyKind,
         scope_file_id: FileId,
         init_decl: &crate::frontend::ast::InitDecl,
@@ -466,6 +533,7 @@ impl<'a> BodyResolver<'a> {
         let mut resolved = ResolvedBody {
             owner,
             body_index,
+            signature_index,
             kind,
             containing_scope_file_id: scope_file_id,
             locals: Vec::new(),
@@ -480,15 +548,24 @@ impl<'a> BodyResolver<'a> {
                 &mut resolved.locals,
                 "self".to_string(),
                 LocalKind::Parameter,
+                receiver.node.to_local_mutability_for_parameter(),
+                None,
                 receiver.span,
             );
         }
         for param in &init_decl.params {
+            let declared_type = Some(self.resolve_type_ref(
+                &resolved.owner,
+                scope_file_id,
+                &param.node.ty.node,
+            ));
             self.declare_local(
                 &mut scopes,
                 &mut resolved.locals,
                 param.node.name.clone(),
                 LocalKind::Parameter,
+                LocalMutability::Immutable,
+                declared_type,
                 param.span,
             );
         }
@@ -505,12 +582,14 @@ impl<'a> BodyResolver<'a> {
         &mut self,
         owner: DeclarationOwner,
         body_index: usize,
+        signature_index: usize,
         scope_file_id: FileId,
         function_member: &crate::frontend::ast::ProtocolFunctionMember,
     ) -> ResolvedBody {
         let mut resolved = ResolvedBody {
             owner,
             body_index,
+            signature_index,
             kind: BodyKind::ProtocolDefaultFunction,
             containing_scope_file_id: scope_file_id,
             locals: Vec::new(),
@@ -529,15 +608,24 @@ impl<'a> BodyResolver<'a> {
                 &mut resolved.locals,
                 "self".to_string(),
                 LocalKind::Parameter,
+                receiver.node.to_local_mutability_for_parameter(),
+                None,
                 receiver.span,
             );
         }
         for param in &function_member.params {
+            let declared_type = Some(self.resolve_type_ref(
+                &resolved.owner,
+                scope_file_id,
+                &param.node.ty.node,
+            ));
             self.declare_local(
                 &mut scopes,
                 &mut resolved.locals,
                 param.node.name.clone(),
                 LocalKind::Parameter,
+                LocalMutability::Immutable,
+                declared_type,
                 param.span,
             );
         }
@@ -549,12 +637,14 @@ impl<'a> BodyResolver<'a> {
         &mut self,
         owner: DeclarationOwner,
         body_index: usize,
+        signature_index: usize,
         scope_file_id: FileId,
         init_member: &crate::frontend::ast::ProtocolInitMember,
     ) -> ResolvedBody {
         let mut resolved = ResolvedBody {
             owner,
             body_index,
+            signature_index,
             kind: BodyKind::ProtocolDefaultInitializer,
             containing_scope_file_id: scope_file_id,
             locals: Vec::new(),
@@ -573,15 +663,24 @@ impl<'a> BodyResolver<'a> {
                 &mut resolved.locals,
                 "self".to_string(),
                 LocalKind::Parameter,
+                receiver.node.to_local_mutability_for_parameter(),
+                None,
                 receiver.span,
             );
         }
         for param in &init_member.params {
+            let declared_type = Some(self.resolve_type_ref(
+                &resolved.owner,
+                scope_file_id,
+                &param.node.ty.node,
+            ));
             self.declare_local(
                 &mut scopes,
                 &mut resolved.locals,
                 param.node.name.clone(),
                 LocalKind::Parameter,
+                LocalMutability::Immutable,
+                declared_type,
                 param.span,
             );
         }
@@ -620,7 +719,9 @@ impl<'a> BodyResolver<'a> {
                     scopes,
                     body,
                     &let_stmt.node.pattern,
+                    let_stmt.node.ty.as_ref(),
                     let_stmt.node.value.as_deref(),
+                    LocalMutability::Immutable,
                 );
             }
             Stmt::Var(var_stmt) => {
@@ -629,7 +730,9 @@ impl<'a> BodyResolver<'a> {
                     scopes,
                     body,
                     &var_stmt.node.pattern,
+                    var_stmt.node.ty.as_ref(),
                     var_stmt.node.value.as_deref(),
+                    LocalMutability::Mutable,
                 );
             }
             Stmt::Expr { expr, .. } => {
@@ -741,6 +844,8 @@ impl<'a> BodyResolver<'a> {
             body,
             &for_stmt.pattern,
             PatternBindingHint::Pattern,
+            LocalMutability::Immutable,
+            None,
         );
         self.resolve_block(scope_file_id, scopes, body, &for_stmt.body);
         scopes.pop();
@@ -752,7 +857,9 @@ impl<'a> BodyResolver<'a> {
         scopes: &mut LocalScopeStack,
         body: &mut ResolvedBody,
         pattern: &crate::frontend::ast::Spanned<Pattern>,
+        ty: Option<&crate::frontend::ast::Spanned<AstType>>,
         value: Option<&crate::frontend::ast::Spanned<Expr>>,
+        mutability: LocalMutability,
     ) {
         if let Some(value) = value {
             self.resolve_expr(scope_file_id, scopes, body, value, false);
@@ -762,7 +869,17 @@ impl<'a> BodyResolver<'a> {
         } else {
             PatternBindingHint::Pattern
         };
-        self.bind_pattern_into_scope(scopes, body, pattern, hint);
+        let declared_type = ty.map(|annotation| {
+            self.resolve_type_ref(&body.owner, scope_file_id, &annotation.node)
+        });
+        self.bind_pattern_into_scope(
+            scopes,
+            body,
+            pattern,
+            hint,
+            mutability,
+            declared_type,
+        );
     }
 
     fn resolve_clause_list(
@@ -793,11 +910,24 @@ impl<'a> BodyResolver<'a> {
                     } else {
                         PatternBindingHint::Pattern
                     };
+                    let mutability = match &clause.node {
+                        Clause::LetBinding(_) => LocalMutability::Immutable,
+                        Clause::VarBinding(_) => LocalMutability::Mutable,
+                        Clause::Expr(_) => LocalMutability::Immutable,
+                    };
                     self.bind_pattern_into_scope(
                         scopes,
                         body,
                         &binding.pattern,
                         hint,
+                        mutability,
+                        binding.ty.as_ref().map(|annotation| {
+                            self.resolve_type_ref(
+                                &body.owner,
+                                scope_file_id,
+                                &annotation.node,
+                            )
+                        }),
                     );
                 }
             }
@@ -957,6 +1087,8 @@ impl<'a> BodyResolver<'a> {
                         body,
                         &arm.node.pattern,
                         PatternBindingHint::Pattern,
+                        LocalMutability::Immutable,
+                        None,
                     );
                     match &arm.node.body {
                         MatchArmBody::Expr(expr) => {
@@ -992,6 +1124,14 @@ impl<'a> BodyResolver<'a> {
                         &mut body.locals,
                         param.name.clone(),
                         LocalKind::Parameter,
+                        LocalMutability::Immutable,
+                        param.ty.as_ref().map(|annotation| {
+                            self.resolve_type_ref(
+                                &body.owner,
+                                scope_file_id,
+                                &annotation.node,
+                            )
+                        }),
                         expr.span,
                     );
                 }
@@ -1214,6 +1354,8 @@ impl<'a> BodyResolver<'a> {
         locals: &mut ResolvedBody,
         pattern: &crate::frontend::ast::Spanned<Pattern>,
         hint: PatternBindingHint,
+        mutability: LocalMutability,
+        declared_type: Option<ResolvedTypeRef>,
     ) {
         match &pattern.node {
             Pattern::Identifier(name) => {
@@ -1226,6 +1368,8 @@ impl<'a> BodyResolver<'a> {
                     &mut locals.locals,
                     name.clone(),
                     kind,
+                    mutability,
+                    declared_type,
                     pattern.span,
                 );
             }
@@ -1236,6 +1380,8 @@ impl<'a> BodyResolver<'a> {
                         locals,
                         element,
                         PatternBindingHint::Pattern,
+                        mutability,
+                        None,
                     );
                 }
                 if let Pattern::Array { rest, .. } = &pattern.node
@@ -1248,6 +1394,8 @@ impl<'a> BodyResolver<'a> {
                         &mut locals.locals,
                         name.clone(),
                         LocalKind::PatternBinding,
+                        mutability,
+                        None,
                         pattern.span,
                     );
                 }
@@ -1259,6 +1407,8 @@ impl<'a> BodyResolver<'a> {
                         locals,
                         arg,
                         PatternBindingHint::Pattern,
+                        mutability,
+                        None,
                     );
                 }
             }
@@ -1271,6 +1421,8 @@ impl<'a> BodyResolver<'a> {
                                 locals,
                                 pattern,
                                 PatternBindingHint::Pattern,
+                                mutability,
+                                None,
                             );
                         }
                         None => {
@@ -1279,6 +1431,8 @@ impl<'a> BodyResolver<'a> {
                                 &mut locals.locals,
                                 field.name.clone(),
                                 LocalKind::PatternBinding,
+                                mutability,
+                                None,
                                 pattern.span,
                             );
                         }
@@ -1299,6 +1453,8 @@ impl<'a> BodyResolver<'a> {
         locals: &mut Vec<ResolvedLocalBinding>,
         name: String,
         kind: LocalKind,
+        mutability: LocalMutability,
+        declared_type: Option<ResolvedTypeRef>,
         declared_span: Span,
     ) {
         let local_id = LocalId::new(self.next_local_id);
@@ -1306,10 +1462,137 @@ impl<'a> BodyResolver<'a> {
         locals.push(ResolvedLocalBinding {
             id: local_id,
             kind,
+            mutability,
             name: name.clone(),
+            declared_type,
             declared_span,
         });
         scopes.insert(name, local_id);
+    }
+
+    fn resolve_type_ref(
+        &self,
+        owner: &DeclarationOwner,
+        scope_file_id: FileId,
+        ty: &AstType,
+    ) -> ResolvedTypeRef {
+        match ty {
+            AstType::Named { segments } => ResolvedTypeRef::Named {
+                segments: segments.clone(),
+                resolved: self.resolve_named_type_path(scope_file_id, segments),
+            },
+            AstType::GenericApplication { base, args } => {
+                ResolvedTypeRef::GenericApplication {
+                    base: Box::new(self.resolve_type_ref(
+                        owner,
+                        scope_file_id,
+                        &base.node,
+                    )),
+                    args: args
+                        .iter()
+                        .map(|arg| {
+                            self.resolve_type_ref(
+                                owner,
+                                scope_file_id,
+                                &arg.node,
+                            )
+                        })
+                        .collect(),
+                }
+            }
+            AstType::SelfType => ResolvedTypeRef::SelfType,
+            AstType::Reference(inner) => ResolvedTypeRef::Reference(Box::new(
+                self.resolve_type_ref(owner, scope_file_id, &inner.node),
+            )),
+            AstType::MutableReference(inner) => {
+                ResolvedTypeRef::MutableReference(Box::new(
+                    self.resolve_type_ref(owner, scope_file_id, &inner.node),
+                ))
+            }
+            AstType::ConstPointer(inner) => {
+                ResolvedTypeRef::ConstPointer(Box::new(self.resolve_type_ref(
+                    owner,
+                    scope_file_id,
+                    &inner.node,
+                )))
+            }
+            AstType::MutablePointer(inner) => {
+                ResolvedTypeRef::MutablePointer(Box::new(
+                    self.resolve_type_ref(owner, scope_file_id, &inner.node),
+                ))
+            }
+            AstType::Array(inner) => ResolvedTypeRef::Array(Box::new(
+                self.resolve_type_ref(owner, scope_file_id, &inner.node),
+            )),
+            AstType::Optional(inner) => ResolvedTypeRef::Optional(Box::new(
+                self.resolve_type_ref(owner, scope_file_id, &inner.node),
+            )),
+            AstType::Result { ok, err } => ResolvedTypeRef::Result {
+                ok: Box::new(self.resolve_type_ref(
+                    owner,
+                    scope_file_id,
+                    &ok.node,
+                )),
+                err: Box::new(self.resolve_type_ref(
+                    owner,
+                    scope_file_id,
+                    &err.node,
+                )),
+            },
+            AstType::Grouped(inner) => ResolvedTypeRef::Grouped(Box::new(
+                self.resolve_type_ref(owner, scope_file_id, &inner.node),
+            )),
+        }
+    }
+
+    fn resolve_named_type_path(
+        &self,
+        scope_file_id: FileId,
+        segments: &[String],
+    ) -> Option<ResolvedItemRef> {
+        let first = segments.first()?;
+
+        if let Some(binding) = self
+            .imports
+            .get(&scope_file_id)
+            .and_then(|imports| imports.get(first))
+            && let Some(resolved) =
+                self.resolve_named_path_from_import(binding, segments)
+        {
+            return Some(resolved);
+        }
+
+        let scope = self.graph.scope(scope_file_id)?;
+        let mut local_full_path = scope.scope_path.clone();
+        local_full_path.extend(segments.iter().cloned());
+        self.item_ref_by_full_path(local_full_path)
+    }
+
+    fn resolve_named_path_from_import(
+        &self,
+        binding: &crate::frontend::resolver::ResolvedImportBinding,
+        segments: &[String],
+    ) -> Option<ResolvedItemRef> {
+        if segments.len() == 1 {
+            return self.item_ref_by_full_path(binding.target_path.clone());
+        }
+
+        match binding.kind {
+            ImportBindingKind::Scope => {
+                let mut full_path = binding.target_path.clone();
+                full_path.extend(segments.iter().skip(1).cloned());
+                self.item_ref_by_full_path(full_path)
+            }
+            ImportBindingKind::Symbol(_) => None,
+        }
+    }
+
+    fn item_ref_by_full_path(
+        &self,
+        full_path: Vec<String>,
+    ) -> Option<ResolvedItemRef> {
+        let item_id = self.item_table.item_id_by_full_path(&full_path)?;
+        Some(ResolvedItemRef { item_id, full_path })
     }
 
     fn extract_namespace_path(expr: &Expr) -> Option<Vec<String>> {
@@ -1321,6 +1604,21 @@ impl<'a> BodyResolver<'a> {
                 Some(path)
             }
             _ => None,
+        }
+    }
+}
+
+trait ReceiverMutabilityExt {
+    fn to_local_mutability_for_parameter(self) -> LocalMutability;
+}
+
+impl ReceiverMutabilityExt for ReceiverKind {
+    fn to_local_mutability_for_parameter(self) -> LocalMutability {
+        match self {
+            ReceiverKind::MutRef => LocalMutability::Mutable,
+            ReceiverKind::Owned | ReceiverKind::Ref => {
+                LocalMutability::Immutable
+            }
         }
     }
 }

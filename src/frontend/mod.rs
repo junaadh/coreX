@@ -12,6 +12,7 @@ pub mod parsed_file;
 pub mod parser;
 pub mod project;
 pub mod resolver;
+pub mod semantic;
 pub mod source;
 
 pub use diagnostics::{
@@ -19,6 +20,7 @@ pub use diagnostics::{
     DiagnosticSeverity, DiagnosticsBag, FileSpan,
     diagnostic_from_file_parse_error, diagnostic_from_import_resolve_error,
     diagnostic_from_parse_error, diagnostic_from_resolve_error,
+    diagnostics_from_semantic_checks,
 };
 pub use parse_session::ParseSession;
 pub use parsed_file::{FileParseError, ParseSessionError, ParsedFile};
@@ -32,18 +34,40 @@ pub use project::{
 pub use resolver::{
     BodyKind, DeclarationOwner, GlobalItem, GlobalItemTable, ImportBindingKind,
     ImportResolveError, ImportResolver, ItemId, ItemKind, LocalId, LocalKind,
-    NamedImportRoot, ResolveError, ResolvedBody, ResolvedBodyRef,
-    ResolvedBodyReference, ResolvedBodyTable, ResolvedDeclaration,
-    ResolvedDeclarationTable, ResolvedEnumCaseType, ResolvedEnumDeclaration,
-    ResolvedEnumPayloadType, ResolvedFunctionSignature,
-    ResolvedImplDeclaration, ResolvedImportBinding, ResolvedImports,
-    ResolvedItemRef, ResolvedLocalBinding, ResolvedNamedFunctionSignature,
-    ResolvedParamType, ResolvedProtocolDeclaration, ResolvedScope,
-    ResolvedScopeKind, ResolvedStructDeclaration, ResolvedStructFieldType,
-    ResolvedTypeRef, ScopeGraph, ScopeResolver, ScopeSymbols, Symbol,
-    SymbolKind, UnresolvedBodyReference, UnresolvedDeclarationPath,
+    LocalMutability, NamedImportRoot, ResolveError, ResolvedBody,
+    ResolvedBodyRef, ResolvedBodyReference, ResolvedBodyTable,
+    ResolvedDeclaration, ResolvedDeclarationTable, ResolvedEnumCaseType,
+    ResolvedEnumDeclaration, ResolvedEnumPayloadType,
+    ResolvedFunctionSignature, ResolvedImplDeclaration, ResolvedImportBinding,
+    ResolvedImports, ResolvedItemRef, ResolvedLocalBinding,
+    ResolvedNamedFunctionSignature, ResolvedParamType,
+    ResolvedProtocolDeclaration, ResolvedScope, ResolvedScopeKind,
+    ResolvedStructDeclaration, ResolvedStructFieldType, ResolvedTypeRef,
+    ScopeGraph, ScopeResolver, ScopeSymbols, Symbol, SymbolKind,
+    UnresolvedBodyReference, UnresolvedDeclarationPath,
     build_global_item_table, resolve_bodies, resolve_declaration_types,
     resolve_project_imports, resolve_project_imports_with_named_roots,
     resolve_project_imports_with_named_roots_and_diagnostics,
     resolve_project_scopes, scope_symbols_from_global_item_table,
+};
+pub use semantic::{
+    BodyControlFlowId, BodyControlFlowResult, BodyEnvIssue, BodyEnvIssueKind,
+    BodyExprId, BodyLocalBindingInfo, BodyStmtId, BodyTypeEnvironment,
+    BodyTypeEnvironmentTable, BuiltinType, ControlFlowIssue,
+    ControlFlowIssueKind, ControlFlowTable, ExprCheckIssue, ExprCheckIssueKind,
+    ExpressionTypeTable, Mutability, NamedTypeKind, SemanticAnalysis,
+    SemanticAnalysisIssues, SignatureTypingIssue, SignatureTypingIssueKind,
+    StatementKind, StatementTypeEntry, StatementTypeTable, StmtCheckIssue,
+    StmtCheckIssueKind, Type, TypedAssociatedTypeBounds, TypedBody,
+    TypedBodyId, TypedBodyIssueKind, TypedBodyIssueMarker, TypedBodyTable,
+    TypedBodyTableIssue, TypedBodyTableIssueKind, TypedEnumCaseSignature,
+    TypedEnumSignatureData, TypedFunctionSignature, TypedImplAttachment,
+    TypedImplSignature, TypedItemData, TypedItemKind, TypedItemTable,
+    TypedItemTableIssue, TypedItemTableIssueKind, TypedNamedFunctionSignature,
+    TypedProtocolProperty, TypedProtocolSignatureData, TypedSignatureTable,
+    TypedStructField, TypedStructSignatureData, analyze_semantics,
+    build_body_type_environments, build_typed_body_table,
+    build_typed_item_table, check_control_flow, check_control_flow_with_tables,
+    check_expression_types, check_statements,
+    check_statements_with_expression_types, type_declaration_signatures,
 };
