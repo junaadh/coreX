@@ -157,6 +157,18 @@ pub fn diagnostic_from_expr_check_issue(
             Diagnostic::error("invalid call target"),
             "callee does not resolve to a callable function".to_string(),
         ),
+        Kind::BareExternFunctionCall {
+            function,
+            namespace,
+        } => with_body_label(
+            db,
+            resolved_bodies,
+            issue,
+            Diagnostic::error("invalid extern call target"),
+            format!(
+                "extern function `{function}` must be called through `{namespace}::{function}`"
+            ),
+        ),
         Kind::IncompatibleIfBranches {
             then_type,
             else_type,

@@ -20,25 +20,59 @@ use crate::cli_driver::project::{
     resolve_target_scope_graph_with_diagnostics, single_target_from_context,
     targets_from_context,
 };
+use clap::{Args, ValueEnum};
 use core_x::frontend::NamedImportRoot;
-use core_x::frontend::analyze_semantics;
 use core_x::frontend::lexer::Lexer;
 use core_x::frontend::resolver::{
     ResolvedScopeKind, resolve_project_imports_with_named_roots_and_diagnostics,
+};
+use core_x::frontend::{
+    ExternalSemanticLookup, Type, TypedFunctionSignature,
+    analyze_semantics_with_external_lookup,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-pub fn run_dump(args: crate::DumpArgs) -> Result<(), DynError> {
+#[derive(Args)]
+pub(crate) struct DumpArgs {
+    /// Dump kind to emit from the frontend pipeline.
+    kind: DumpKind,
+    /// Single source file path (mutually exclusive with `--project`).
+    path: Option<std::path::PathBuf>,
+    /// Project directory root (mutually exclusive with `<path>`).
+    #[arg(long)]
+    project: Option<std::path::PathBuf>,
+    /// Output format for emitted dump payload.
+    #[arg(long, value_enum, default_value_t = DumpFormat::Text)]
+    format: DumpFormat,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum DumpKind {
+    Tokens,
+    Ast,
+    Scopes,
+    Imports,
+    Semantic,
+    Parsed,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum DumpFormat {
+    Text,
+    Json,
+}
+
+pub fn run_dump(args: DumpArgs) -> Result<(), DynError> {
     let input = parse_dump_input(args.path, args.project)?;
     let output = match args.kind {
-        crate::DumpKind::Tokens => dump_tokens(input, args.format)?,
-        crate::DumpKind::Ast => dump_ast(input, args.format)?,
-        crate::DumpKind::Parsed => dump_parsed(input, args.format)?,
-        crate::DumpKind::Scopes => dump_scopes(input, args.format)?,
-        crate::DumpKind::Imports => dump_imports(input, args.format)?,
-        crate::DumpKind::Semantic => dump_semantic(input, args.format)?,
+        DumpKind::Tokens => dump_tokens(input, args.format)?,
+        DumpKind::Ast => dump_ast(input, args.format)?,
+        DumpKind::Parsed => dump_parsed(input, args.format)?,
+        DumpKind::Scopes => dump_scopes(input, args.format)?,
+        DumpKind::Imports => dump_imports(input, args.format)?,
+        DumpKind::Semantic => dump_semantic(input, args.format)?,
     };
 
     println!("{output}");
@@ -66,7 +100,7 @@ fn parse_dump_input(
 
 fn dump_tokens(
     input: DumpInput,
-    format: crate::DumpFormat,
+    format: DumpFormat,
 ) -> Result<String, DynError> {
     let (files, mode) = match input {
         DumpInput::File(path) => {
@@ -92,8 +126,8 @@ fn dump_tokens(
     };
 
     match format {
-        crate::DumpFormat::Text => Ok(format_tokens_text(&files)),
-        crate::DumpFormat::Json => Ok(serde_json::to_string_pretty(&json!({
+        DumpFormat::Text => Ok(format_tokens_text(&files)),
+        DumpFormat::Json => Ok(serde_json::to_string_pretty(&json!({
             "kind": "tokens",
             "mode": mode,
             "files": files.iter().map(|file| {
@@ -114,10 +148,7 @@ fn dump_tokens(
     }
 }
 
-fn dump_ast(
-    input: DumpInput,
-    format: crate::DumpFormat,
-) -> Result<String, DynError> {
+fn dump_ast(input: DumpInput, format: DumpFormat) -> Result<String, DynError> {
     let (files, mode) = match input {
         DumpInput::File(path) => {
             let (db, parsed, file_id) = parse_single_file(&path)?;
@@ -166,8 +197,8 @@ fn dump_ast(
     };
 
     match format {
-        crate::DumpFormat::Text => Ok(format_ast_text(&files)),
-        crate::DumpFormat::Json => Ok(serde_json::to_string_pretty(&json!({
+        DumpFormat::Text => Ok(format_ast_text(&files)),
+        DumpFormat::Json => Ok(serde_json::to_string_pretty(&json!({
             "kind": "ast",
             "mode": mode,
             "files": files.iter().map(|file| {
@@ -185,7 +216,7 @@ fn dump_ast(
 
 fn dump_parsed(
     input: DumpInput,
-    format: crate::DumpFormat,
+    format: DumpFormat,
 ) -> Result<String, DynError> {
     let (files, mode) = match input {
         DumpInput::File(path) => {
@@ -241,8 +272,8 @@ fn dump_parsed(
     };
 
     match format {
-        crate::DumpFormat::Text => Ok(format_parsed_text(&files)),
-        crate::DumpFormat::Json => Ok(serde_json::to_string_pretty(&json!({
+        DumpFormat::Text => Ok(format_parsed_text(&files)),
+        DumpFormat::Json => Ok(serde_json::to_string_pretty(&json!({
             "kind": "parsed",
             "mode": mode,
             "files": files.iter().map(|file| {
@@ -264,7 +295,7 @@ fn dump_parsed(
 
 fn dump_scopes(
     input: DumpInput,
-    format: crate::DumpFormat,
+    format: DumpFormat,
 ) -> Result<String, DynError> {
     let (context, targets, mode) = match input {
         DumpInput::File(path) => {
@@ -308,8 +339,8 @@ fn dump_scopes(
     }
 
     match format {
-        crate::DumpFormat::Text => Ok(format_scopes_text(&context, &resolved)),
-        crate::DumpFormat::Json => {
+        DumpFormat::Text => Ok(format_scopes_text(&context, &resolved)),
+        DumpFormat::Json => {
             let targets_json = resolved
                 .iter()
                 .map(|item| {
@@ -336,7 +367,7 @@ fn dump_scopes(
 
 fn dump_imports(
     input: DumpInput,
-    format: crate::DumpFormat,
+    format: DumpFormat,
 ) -> Result<String, DynError> {
     let (context, targets, mode) = match input {
         DumpInput::File(path) => {
@@ -403,8 +434,8 @@ fn dump_imports(
     }
 
     match format {
-        crate::DumpFormat::Text => Ok(format_imports_text(&context, &resolved)),
-        crate::DumpFormat::Json => {
+        DumpFormat::Text => Ok(format_imports_text(&context, &resolved)),
+        DumpFormat::Json => {
             let targets_json = resolved
                 .iter()
                 .map(|item| {
@@ -433,7 +464,7 @@ fn dump_imports(
 
 fn dump_semantic(
     input: DumpInput,
-    format: crate::DumpFormat,
+    format: DumpFormat,
 ) -> Result<String, DynError> {
     let (context, targets, mode) = match input {
         DumpInput::File(path) => {
@@ -491,11 +522,18 @@ fn dump_semantic(
             );
         emit_diagnostics_bag(&context.db, &import_diagnostics);
 
-        let semantic = analyze_semantics(
+        let external_lookup = build_external_semantic_lookup(
+            &context.db,
+            &named_roots,
+            &graph,
+            &context.parsed_files,
+        );
+        let semantic = analyze_semantics_with_external_lookup(
             &context.db,
             &graph,
             &context.parsed_files,
             &imports,
+            &external_lookup,
         );
         emit_diagnostics_bag(&context.db, &semantic.diagnostics);
 
@@ -509,10 +547,8 @@ fn dump_semantic(
     }
 
     match format {
-        crate::DumpFormat::Text => {
-            Ok(format_semantic_text(&context, &resolved))
-        }
-        crate::DumpFormat::Json => {
+        DumpFormat::Text => Ok(format_semantic_text(&context, &resolved)),
+        DumpFormat::Json => {
             let targets_json = resolved
                 .iter()
                 .map(|item| {
@@ -585,6 +621,86 @@ fn maybe_add_current_library_root_for_binary(
         },
     );
     Ok(())
+}
+
+fn build_external_semantic_lookup(
+    db: &core_x::frontend::source::SourceDb,
+    named_roots: &BTreeMap<String, NamedImportRoot>,
+    graph: &core_x::frontend::ScopeGraph,
+    parsed_files: &[core_x::frontend::ParsedFile],
+) -> ExternalSemanticLookup {
+    let mut lookup = ExternalSemanticLookup::new();
+
+    for (root_name, root) in named_roots {
+        let NamedImportRoot::LoadedLibrary {
+            graph,
+            parsed_files,
+        } = root
+        else {
+            continue;
+        };
+        let empty_named_roots = BTreeMap::new();
+        let (_, imports, _) =
+            resolve_project_imports_with_named_roots_and_diagnostics(
+                graph,
+                parsed_files,
+                &empty_named_roots,
+                db,
+            );
+        let semantic = analyze_semantics_with_external_lookup(
+            db,
+            graph,
+            parsed_files,
+            &imports,
+            &ExternalSemanticLookup::new(),
+        );
+        for item in semantic.global_items.iter() {
+            if let Some(signature) = semantic.typed_items.function(item.id) {
+                lookup.insert_named_root_function(
+                    root_name.clone(),
+                    item.full_path.clone(),
+                    signature.clone(),
+                );
+            }
+        }
+    }
+
+    let parsed_by_id = parsed_by_id(parsed_files);
+    for scope_file_id in graph.scopes.keys() {
+        let Some(parsed) = parsed_by_id.get(scope_file_id) else {
+            continue;
+        };
+        for item in &parsed.ast.items {
+            let core_x::frontend::ast::Item::ExternBlock(extern_block) =
+                &item.node
+            else {
+                continue;
+            };
+            let library_name = extern_block.node.library_name.clone();
+            for member in &extern_block.node.members {
+                match &member.node {
+                    core_x::frontend::ast::ExternMember::Function(function) => {
+                        lookup.insert_extern_function(
+                            library_name.clone(),
+                            function.node.local_name.clone(),
+                            extern_function_signature(&function.node),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    lookup
+}
+
+fn extern_function_signature(
+    decl: &core_x::frontend::ast::ExternFunctionDecl,
+) -> TypedFunctionSignature {
+    TypedFunctionSignature {
+        param_types: vec![Type::error(); decl.params.len()],
+        return_type: decl.return_type.as_ref().map(|_| Type::error()),
+    }
 }
 
 fn dump_tokens_for_file_path(path: &Path) -> Result<FileTokenDump, DynError> {

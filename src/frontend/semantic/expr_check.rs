@@ -1,4 +1,5 @@
 use super::body_env::BodyTypeEnvironmentTable;
+use super::external_lookup::ExternalSemanticLookup;
 use super::signatures::TypedFunctionSignature;
 use super::{BuiltinType, Type, TypedItemData, TypedItemTable};
 use crate::frontend::ParsedFile;
@@ -7,8 +8,9 @@ use crate::frontend::ast::{
     StructMember, UnaryOp,
 };
 use crate::frontend::resolver::{
-    DeclarationOwner, GlobalItemTable, ItemId, LocalId, LocalMutability,
-    ResolvedBody, ResolvedBodyRef, ResolvedBodyTable, ScopeGraph,
+    DeclarationOwner, GlobalItemTable, ImportBindingKind, ItemId, LocalId,
+    LocalMutability, ResolvedBody, ResolvedBodyRef, ResolvedBodyTable,
+    ResolvedImports, ScopeGraph,
 };
 use crate::frontend::source::FileId;
 use std::collections::BTreeMap;
@@ -44,6 +46,10 @@ pub enum ExprCheckIssueKind {
         value: Type,
     },
     InvalidCallCallee,
+    BareExternFunctionCall {
+        function: String,
+        namespace: String,
+    },
     CallArityMismatch {
         expected: usize,
         found: usize,
@@ -142,6 +148,31 @@ pub fn check_expression_types(
     resolved_bodies: &ResolvedBodyTable,
     body_envs: &BodyTypeEnvironmentTable,
 ) -> ExpressionTypeTable {
+    let empty_imports = BTreeMap::new();
+    let empty_external_lookup = ExternalSemanticLookup::default();
+    check_expression_types_with_external_lookup(
+        graph,
+        parsed_files,
+        global_items,
+        typed_items,
+        resolved_bodies,
+        body_envs,
+        &empty_imports,
+        &empty_external_lookup,
+    )
+}
+
+#[must_use]
+pub fn check_expression_types_with_external_lookup(
+    graph: &ScopeGraph,
+    parsed_files: &[ParsedFile],
+    global_items: &GlobalItemTable,
+    typed_items: &TypedItemTable,
+    resolved_bodies: &ResolvedBodyTable,
+    body_envs: &BodyTypeEnvironmentTable,
+    imports: &BTreeMap<FileId, ResolvedImports>,
+    external_lookup: &ExternalSemanticLookup,
+) -> ExpressionTypeTable {
     let parsed_by_id: BTreeMap<FileId, &ParsedFile> = parsed_files
         .iter()
         .map(|parsed| (parsed.file_id, parsed))
@@ -185,7 +216,12 @@ pub fn check_expression_types(
             continue;
         };
 
-        let mut checker = BodyExprChecker::new(body, env.local_types.clone());
+        let mut checker = BodyExprChecker::new(
+            body,
+            env.local_types.clone(),
+            imports,
+            external_lookup,
+        );
         let root_type = checker.check_block(
             block_entry.block,
             typed_items,
@@ -403,6 +439,8 @@ fn item_id_for_top_level(
 struct BodyExprChecker<'a> {
     body: &'a ResolvedBody,
     local_types: BTreeMap<LocalId, Type>,
+    imports: &'a BTreeMap<FileId, ResolvedImports>,
+    external_lookup: &'a ExternalSemanticLookup,
     expr_ids_by_span:
         BTreeMap<(DeclarationOwner, usize, usize, usize), Vec<BodyExprId>>,
     next_expr_index: u32,
@@ -412,10 +450,14 @@ impl<'a> BodyExprChecker<'a> {
     fn new(
         body: &'a ResolvedBody,
         local_types: BTreeMap<LocalId, Type>,
+        imports: &'a BTreeMap<FileId, ResolvedImports>,
+        external_lookup: &'a ExternalSemanticLookup,
     ) -> Self {
         Self {
             body,
             local_types,
+            imports,
+            external_lookup,
             expr_ids_by_span: BTreeMap::new(),
             next_expr_index: 0,
         }
@@ -758,8 +800,28 @@ impl<'a> BodyExprChecker<'a> {
                 }
 
                 let signature = match callee_sig {
-                    Some(signature) => signature,
-                    None => {
+                    CallSignatureResolution::Signature(signature) => signature,
+                    CallSignatureResolution::BareExtern {
+                        function,
+                        namespace,
+                    } => {
+                        issues.push(ExprCheckIssue {
+                            owner: self.body.owner.clone(),
+                            body_index: self.body.body_index,
+                            span: expr.span,
+                            kind: ExprCheckIssueKind::BareExternFunctionCall {
+                                function,
+                                namespace,
+                            },
+                        });
+                        return self.store_and_return(
+                            expr_id,
+                            expr.span,
+                            Type::error(),
+                            types_by_expr_id,
+                        );
+                    }
+                    CallSignatureResolution::Missing => {
                         issues.push(ExprCheckIssue {
                             owner: self.body.owner.clone(),
                             body_index: self.body.body_index,
@@ -836,6 +898,8 @@ impl<'a> BodyExprChecker<'a> {
                 let mut then_checker = Self {
                     body: self.body,
                     local_types: self.local_types.clone(),
+                    imports: self.imports,
+                    external_lookup: self.external_lookup,
                     expr_ids_by_span: BTreeMap::new(),
                     next_expr_index: self.next_expr_index,
                 };
@@ -868,6 +932,8 @@ impl<'a> BodyExprChecker<'a> {
                 let mut else_checker = Self {
                     body: self.body,
                     local_types: self.local_types.clone(),
+                    imports: self.imports,
+                    external_lookup: self.external_lookup,
                     expr_ids_by_span: BTreeMap::new(),
                     next_expr_index: self.next_expr_index,
                 };
@@ -1209,12 +1275,55 @@ impl<'a> BodyExprChecker<'a> {
         }
     }
 
-    fn call_signature_for_callee<'b>(
+    fn call_signature_for_callee(
         &self,
         callee: &crate::frontend::ast::Spanned<Expr>,
-        typed_items: &'b TypedItemTable,
-    ) -> Option<&'b TypedFunctionSignature> {
-        let path = Self::extract_namespace_path(&callee.node)?;
+        typed_items: &TypedItemTable,
+    ) -> CallSignatureResolution {
+        let Some(path) = Self::extract_namespace_path(&callee.node) else {
+            return CallSignatureResolution::Missing;
+        };
+
+        if let Some(signature) =
+            self.local_signature_for_callee(callee, &path, typed_items)
+        {
+            return CallSignatureResolution::Signature(signature);
+        }
+
+        if let Some(signature) = self.external_import_signature_for_path(&path)
+        {
+            return CallSignatureResolution::Signature(signature);
+        }
+
+        if let Some(signature) =
+            self.direct_named_root_signature_for_path(&path)
+        {
+            return CallSignatureResolution::Signature(signature);
+        }
+
+        if let Some(signature) = self.extern_signature_for_path(&path) {
+            return CallSignatureResolution::Signature(signature);
+        }
+
+        if path.len() == 1
+            && let Some(namespace) =
+                self.external_lookup.extern_namespace_for_function(&path[0])
+        {
+            return CallSignatureResolution::BareExtern {
+                function: path[0].clone(),
+                namespace: namespace.to_string(),
+            };
+        }
+
+        CallSignatureResolution::Missing
+    }
+
+    fn local_signature_for_callee(
+        &self,
+        callee: &crate::frontend::ast::Spanned<Expr>,
+        path: &[String],
+        typed_items: &TypedItemTable,
+    ) -> Option<TypedFunctionSignature> {
         let resolved = self
             .body
             .references
@@ -1230,7 +1339,63 @@ impl<'a> BodyExprChecker<'a> {
                 return None;
             }
         };
-        typed_items.function(item_id)
+        typed_items.function(item_id).cloned()
+    }
+
+    fn external_import_signature_for_path(
+        &self,
+        path: &[String],
+    ) -> Option<TypedFunctionSignature> {
+        let (first, rest) = path.split_first()?;
+        let imports = self.imports.get(&self.body.containing_scope_file_id)?;
+        let binding = imports.get(first)?;
+        let mut full_path = if rest.is_empty() {
+            binding.target_path.clone()
+        } else {
+            match binding.kind {
+                ImportBindingKind::Scope => {
+                    let mut combined = binding.target_path.clone();
+                    combined.extend(rest.iter().cloned());
+                    combined
+                }
+                ImportBindingKind::Symbol(_) => return None,
+            }
+        };
+
+        let source_root = binding.source_root.as_deref()?;
+        if full_path.is_empty() {
+            full_path = binding.target_path.clone();
+        }
+        self.external_lookup
+            .function_for_named_root_path(source_root, &full_path)
+            .cloned()
+    }
+
+    fn direct_named_root_signature_for_path(
+        &self,
+        path: &[String],
+    ) -> Option<TypedFunctionSignature> {
+        let (root, rest) = path.split_first()?;
+        if rest.is_empty() {
+            return None;
+        }
+        self.external_lookup
+            .function_for_named_root_path(root, rest)
+            .cloned()
+    }
+
+    fn extern_signature_for_path(
+        &self,
+        path: &[String],
+    ) -> Option<TypedFunctionSignature> {
+        if path.len() != 2 {
+            return None;
+        }
+        let library = path[0].as_str();
+        let function = path[1].as_str();
+        self.external_lookup
+            .extern_function_signature(library, function)
+            .cloned()
     }
 
     fn type_unary(
@@ -1392,6 +1557,12 @@ impl<'a> BodyExprChecker<'a> {
             _ => None,
         }
     }
+}
+
+enum CallSignatureResolution {
+    Signature(TypedFunctionSignature),
+    BareExtern { function: String, namespace: String },
+    Missing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

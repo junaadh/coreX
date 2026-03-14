@@ -30,6 +30,7 @@ pub struct ResolvedImportBinding {
     pub kind: ImportBindingKind,
     pub target_file_id: FileId,
     pub target_path: Vec<String>,
+    pub source_root: Option<String>,
 }
 
 /// Resolved imports for a single scope file.
@@ -410,6 +411,7 @@ impl<'a> ImportResolver<'a> {
                     kind: ImportBindingKind::Scope,
                     target_file_id: child_file_id,
                     target_path: child_scope.scope_path.clone(),
+                    source_root: named_root_name(&root_source),
                 },
             )?;
         }
@@ -431,6 +433,7 @@ impl<'a> ImportResolver<'a> {
                         kind: ImportBindingKind::Symbol(symbol.kind),
                         target_file_id: symbol.defining_file_id,
                         target_path,
+                        source_root: named_root_name(&root_source),
                     },
                 )?;
             }
@@ -589,6 +592,7 @@ impl<'a> ImportResolver<'a> {
             kind: symbol.kind,
             file_id: symbol.defining_file_id,
             target_path,
+            root_source: root_source.clone(),
         })
     }
 
@@ -610,22 +614,25 @@ impl<'a> ImportResolver<'a> {
             ResolvedPathTarget::Scope {
                 file_id,
                 target_path,
-                ..
+                root_source,
             } => ResolvedImportBinding {
                 local_name,
                 kind: ImportBindingKind::Scope,
                 target_file_id: file_id,
                 target_path,
+                source_root: named_root_name(&root_source),
             },
             ResolvedPathTarget::Symbol {
                 kind,
                 file_id,
                 target_path,
+                root_source,
             } => ResolvedImportBinding {
                 local_name,
                 kind: ImportBindingKind::Symbol(kind),
                 target_file_id: file_id,
                 target_path,
+                source_root: named_root_name(&root_source),
             },
         }
     }
@@ -712,6 +719,7 @@ enum ResolvedPathTarget {
         kind: SymbolKind,
         file_id: FileId,
         target_path: Vec<String>,
+        root_source: ResolvedRootSource,
     },
 }
 
@@ -732,6 +740,13 @@ enum ResolvedRootSource {
 struct ResolutionContext<'a> {
     graph: &'a ScopeGraph,
     scope_symbols: &'a BTreeMap<FileId, ScopeSymbols>,
+}
+
+fn named_root_name(root_source: &ResolvedRootSource) -> Option<String> {
+    match root_source {
+        ResolvedRootSource::Current => None,
+        ResolvedRootSource::Named(name) => Some(name.clone()),
+    }
 }
 
 /// Resolves scope symbols and project-local imports for a resolved scope graph.

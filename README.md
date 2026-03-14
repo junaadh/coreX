@@ -26,6 +26,7 @@ Top-level commands:
 - `cxc dump <kind> <path>`
 - `cxc dump <kind> --project <dir>`
 - `cxc bindgen ...`
+- `cxc lsp`
 
 ## `cxc dump`
 
@@ -36,6 +37,7 @@ Supported dump kinds:
 - `parsed`
 - `scopes`
 - `imports`
+- `semantic`
 
 Options:
 
@@ -56,6 +58,7 @@ Project examples:
 cargo run --bin cxc -- dump ast --project .
 cargo run --bin cxc -- dump scopes --project .
 cargo run --bin cxc -- dump imports --project .
+cargo run --bin cxc -- dump semantic --project .
 ```
 
 Notes:
@@ -75,6 +78,31 @@ cargo run --bin cxc -- bindgen \
   --library-path /path/to/libexample.dylib \
   --out-dir ./generated
 ```
+
+## `cxc lsp`
+
+Start the CoreX language server over stdio:
+
+```bash
+cargo run --bin cxc -- lsp
+```
+
+Current v0 LSP support:
+
+- lifecycle: `initialize`, `initialized`, `shutdown`, `exit`
+- text sync: `textDocument/didOpen`, `textDocument/didChange`, `textDocument/didClose`
+- diagnostics: `textDocument/publishDiagnostics`
+- language features:
+  - `textDocument/documentSymbol`
+  - `textDocument/hover`
+  - `textDocument/definition`
+  - `textDocument/completion`
+  - `textDocument/inlayHint`
+
+Analysis behavior:
+
+- files inside a CoreX project are analyzed in project context
+- standalone files use fallback single-file analysis
 
 ## Development
 

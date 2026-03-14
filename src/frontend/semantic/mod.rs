@@ -2,6 +2,7 @@ mod analysis;
 mod body_env;
 mod control_flow;
 mod expr_check;
+mod external_lookup;
 mod item_table;
 mod signatures;
 mod stmt_check;
@@ -10,6 +11,7 @@ mod types;
 
 pub use analysis::{
     SemanticAnalysis, SemanticAnalysisIssues, analyze_semantics,
+    analyze_semantics_with_external_lookup,
 };
 pub use body_env::{
     BodyEnvIssue, BodyEnvIssueKind, BodyLocalBindingInfo, BodyTypeEnvironment,
@@ -22,8 +24,9 @@ pub use control_flow::{
 };
 pub use expr_check::{
     BodyExprId, ExprCheckIssue, ExprCheckIssueKind, ExpressionTypeTable,
-    check_expression_types,
+    check_expression_types, check_expression_types_with_external_lookup,
 };
+pub use external_lookup::ExternalSemanticLookup;
 pub use item_table::{
     TypedImplAttachment, TypedItemData, TypedItemKind, TypedItemTable,
     TypedItemTableIssue, TypedItemTableIssueKind, build_typed_item_table,

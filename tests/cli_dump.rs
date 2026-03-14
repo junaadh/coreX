@@ -80,6 +80,63 @@ fn create_project_fixture_with_semantic_error(name: &str) -> TestProject {
     project
 }
 
+fn create_library_bridge_call_fixture(name: &str) -> PathBuf {
+    let root = unique_temp_dir(name);
+    write_file(&root.join("corex.toml"), "[project]\nname = \"app\"\n");
+    write_file(&root.join("src/root.cx"), "pub fn shared_logic() {}\n");
+    write_file(
+        &root.join("src/main.cx"),
+        "use app::shared_logic;\nfn main() { shared_logic(); }\n",
+    );
+    root
+}
+
+fn create_library_bridge_qualified_call_fixture(name: &str) -> PathBuf {
+    let root = unique_temp_dir(name);
+    write_file(
+        &root.join("corex.toml"),
+        "[project]\nname = \"lib_and_bin\"\n",
+    );
+    write_file(&root.join("src/root.cx"), "pub fn shared_logic() {}\n");
+    write_file(
+        &root.join("src/main.cx"),
+        "fn main() { lib_and_bin::shared_logic(); }\n",
+    );
+    root
+}
+
+fn create_dependency_call_fixture(name: &str) -> PathBuf {
+    let workspace_root = unique_temp_dir(name);
+    let util_dir = workspace_root.join("util");
+    let app_dir = workspace_root.join("app");
+
+    write_file(&util_dir.join("corex.toml"), "[project]\nname = \"util\"\n");
+    write_file(&util_dir.join("src/root.cx"), "pub fn helper() {}\n");
+
+    write_file(
+        &app_dir.join("corex.toml"),
+        "[project]\nname = \"app\"\n\n[dependencies]\nutil = { path = \"../util\" }\n",
+    );
+    write_file(
+        &app_dir.join("src/main.cx"),
+        "use util::helper;\nfn main() { helper(); }\n",
+    );
+
+    app_dir
+}
+
+fn create_extern_call_fixture(name: &str, callee: &str) -> PathBuf {
+    let root = unique_temp_dir(name);
+    write_file(&root.join("corex.toml"), "[project]\nname = \"app\"\n");
+    write_file(
+        &root.join("src/main.cx"),
+        &format!(
+            "@call(.C)\nextern libc {{\n  fn malloc(size: usize) -> *mut void;\n}}\n\nfn main() {{\n  {callee}(1);\n}}\n"
+        ),
+    );
+    root
+}
+
 fn run_cxc(args: &[String]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_cxc"))
         .args(args)
@@ -479,5 +536,127 @@ fn dump_parsed_project_does_not_render_semantic_diagnostics() {
         !stderr.contains("type mismatch")
             && !stderr.contains("invalid return type"),
         "dump parsed should stop at parse diagnostics"
+    );
+}
+
+#[test]
+fn dump_semantic_binary_call_into_library_target_resolves() {
+    let project = create_library_bridge_call_fixture("semantic_lib_bridge");
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "semantic".to_string(),
+        "--project".to_string(),
+        arg(&project),
+    ]);
+
+    assert!(output.status.success(), "expected semantic dump to succeed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("invalid call target"),
+        "binary call to imported library function should be callable"
+    );
+}
+
+#[test]
+fn dump_semantic_dependency_function_call_resolves() {
+    let project = create_dependency_call_fixture("semantic_dependency_call");
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "semantic".to_string(),
+        "--project".to_string(),
+        arg(&project),
+    ]);
+
+    assert!(output.status.success(), "expected semantic dump to succeed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("invalid call target"),
+        "dependency-imported function call should be callable"
+    );
+}
+
+#[test]
+fn dump_semantic_extern_namespace_call_is_callable() {
+    let project = create_extern_call_fixture(
+        "semantic_extern_namespaced",
+        "libc::malloc",
+    );
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "semantic".to_string(),
+        "--project".to_string(),
+        arg(&project),
+    ]);
+
+    assert!(output.status.success(), "expected semantic dump to succeed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("invalid call target"),
+        "extern function call via namespace should be callable"
+    );
+}
+
+#[test]
+fn dump_semantic_extern_block_namespaced_call_has_no_semantic_diagnostics() {
+    let project = create_extern_call_fixture(
+        "semantic_extern_block_zero_diag",
+        "libc::malloc",
+    );
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "semantic".to_string(),
+        "--project".to_string(),
+        arg(&project),
+    ]);
+
+    assert!(output.status.success(), "expected semantic dump to succeed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.is_empty(), "expected no diagnostics, got: {stderr}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("semantic_diagnostics: 0"),
+        "expected zero semantic diagnostics for namespaced extern call"
+    );
+}
+
+#[test]
+fn dump_semantic_bare_extern_call_reports_namespace_requirement() {
+    let project = create_extern_call_fixture("semantic_extern_bare", "malloc");
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "semantic".to_string(),
+        "--project".to_string(),
+        arg(&project),
+    ]);
+
+    assert!(output.status.success(), "expected semantic dump to succeed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid extern call target"),
+        "bare extern call should emit dedicated namespace diagnostic"
+    );
+    assert!(
+        stderr.contains("libc::malloc"),
+        "diagnostic should mention required extern namespace call form"
+    );
+}
+
+#[test]
+fn dump_semantic_binary_qualified_library_path_call_resolves() {
+    let project = create_library_bridge_qualified_call_fixture(
+        "semantic_lib_bridge_qualified",
+    );
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "semantic".to_string(),
+        "--project".to_string(),
+        arg(&project),
+    ]);
+
+    assert!(output.status.success(), "expected semantic dump to succeed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("invalid call target"),
+        "qualified binary call into library target should be callable"
     );
 }

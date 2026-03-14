@@ -5,8 +5,10 @@ use super::control_flow::{
     ControlFlowIssue, ControlFlowTable, check_control_flow_with_tables,
 };
 use super::expr_check::{
-    ExprCheckIssue, ExpressionTypeTable, check_expression_types,
+    ExprCheckIssue, ExpressionTypeTable,
+    check_expression_types_with_external_lookup,
 };
+use super::external_lookup::ExternalSemanticLookup;
 use super::item_table::{
     TypedItemTable, TypedItemTableIssue, build_typed_item_table,
 };
@@ -95,6 +97,25 @@ pub fn analyze_semantics(
     parsed_files: &[ParsedFile],
     imports: &BTreeMap<FileId, ResolvedImports>,
 ) -> SemanticAnalysis {
+    let external_lookup = ExternalSemanticLookup::default();
+    analyze_semantics_with_external_lookup(
+        db,
+        graph,
+        parsed_files,
+        imports,
+        &external_lookup,
+    )
+}
+
+/// Runs the semantic pass chain with lookup-only external semantic context.
+#[must_use]
+pub fn analyze_semantics_with_external_lookup(
+    db: &SourceDb,
+    graph: &ScopeGraph,
+    parsed_files: &[ParsedFile],
+    imports: &BTreeMap<FileId, ResolvedImports>,
+    external_lookup: &ExternalSemanticLookup,
+) -> SemanticAnalysis {
     let global_items = GlobalItemTable::collect(graph, parsed_files);
     let declarations =
         resolve_declaration_types(graph, parsed_files, imports, &global_items);
@@ -109,13 +130,15 @@ pub fn analyze_semantics(
     );
     let body_envs =
         build_body_type_environments(&resolved_bodies, &typed_items);
-    let expr_types = check_expression_types(
+    let expr_types = check_expression_types_with_external_lookup(
         graph,
         parsed_files,
         &global_items,
         &typed_items,
         &resolved_bodies,
         &body_envs,
+        imports,
+        external_lookup,
     );
     let stmt_types = check_statements_with_expression_types(
         graph,
