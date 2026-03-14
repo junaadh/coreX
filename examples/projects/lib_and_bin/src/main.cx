@@ -1,3 +1,6 @@
+use lib_and_bin::shared_logic;
+
 fn main() {
     lib_and_bin::shared_logic();
+    shared_logic();
 }

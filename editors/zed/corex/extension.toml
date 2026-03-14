@@ -9,3 +9,7 @@ repository = "file:///Users/junaadh/Developer/rust/core_x/editors/zed/corex"
 [grammars.corex]
 repository = "file:///Users/junaadh/Developer/rust/core_x/tree-sitter"
 rev = "089ae9807780b784481168d962d36eb1be1eac55"
+
+[language_servers.corex-lsp]
+name = "CoreX LSP"
+languages = ["CoreX"]

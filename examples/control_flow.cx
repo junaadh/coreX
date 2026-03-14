@@ -1,5 +1,16 @@
+struct Person {
+  name: string,
+  age: i32
+}
+
+/// Token Kind ts
+enum TokenKind {
+  Slash,
+  Star,
+}
+
 fn main() {
-  var count: i32 = 0;
+  var count = 0;
 
   if count == 0 {
     count = 1;
@@ -15,7 +26,9 @@ fn main() {
   let name = maybe_name ?? "guest";
   let label = count > 1 ? "hot" : "cold";
 
-  user?.profile;
-  name;
-  label;
+  let user = Person { name: "User 1", age: 30 };
+  let age = user.age;
+
+  let token = .Slash;
+  let token2 = TokenKind.Star;
 }

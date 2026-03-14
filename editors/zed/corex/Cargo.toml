@@ -1,0 +1,11 @@
+[package]
+name = "corex-lsp"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "corex_lsp"
+crate-type = ["cdylib"]
+
+[dependencies]
+zed_extension_api = "0.7.0"
