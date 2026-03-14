@@ -27,8 +27,7 @@ use core_x::frontend::resolver::{
     ResolvedScopeKind, resolve_project_imports_with_named_roots_and_diagnostics,
 };
 use core_x::frontend::{
-    ExternalSemanticLookup, Type, TypedFunctionSignature,
-    analyze_semantics_with_external_lookup,
+    analyze_semantics_with_external_lookup, build_external_semantic_lookup,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -618,89 +617,10 @@ fn maybe_add_current_library_root_for_binary(
         NamedImportRoot::LoadedLibrary {
             graph: library_graph,
             parsed_files: context.parsed_files.clone(),
+            path_by_file_id: context.path_by_file_id.clone(),
         },
     );
     Ok(())
-}
-
-fn build_external_semantic_lookup(
-    db: &core_x::frontend::source::SourceDb,
-    named_roots: &BTreeMap<String, NamedImportRoot>,
-    graph: &core_x::frontend::ScopeGraph,
-    parsed_files: &[core_x::frontend::ParsedFile],
-) -> ExternalSemanticLookup {
-    let mut lookup = ExternalSemanticLookup::new();
-
-    for (root_name, root) in named_roots {
-        let NamedImportRoot::LoadedLibrary {
-            graph,
-            parsed_files,
-        } = root
-        else {
-            continue;
-        };
-        let empty_named_roots = BTreeMap::new();
-        let (_, imports, _) =
-            resolve_project_imports_with_named_roots_and_diagnostics(
-                graph,
-                parsed_files,
-                &empty_named_roots,
-                db,
-            );
-        let semantic = analyze_semantics_with_external_lookup(
-            db,
-            graph,
-            parsed_files,
-            &imports,
-            &ExternalSemanticLookup::new(),
-        );
-        for item in semantic.global_items.iter() {
-            if let Some(signature) = semantic.typed_items.function(item.id) {
-                lookup.insert_named_root_function(
-                    root_name.clone(),
-                    item.full_path.clone(),
-                    signature.clone(),
-                );
-            }
-        }
-    }
-
-    let parsed_by_id = parsed_by_id(parsed_files);
-    for scope_file_id in graph.scopes.keys() {
-        let Some(parsed) = parsed_by_id.get(scope_file_id) else {
-            continue;
-        };
-        for item in &parsed.ast.items {
-            let core_x::frontend::ast::Item::ExternBlock(extern_block) =
-                &item.node
-            else {
-                continue;
-            };
-            let library_name = extern_block.node.library_name.clone();
-            for member in &extern_block.node.members {
-                match &member.node {
-                    core_x::frontend::ast::ExternMember::Function(function) => {
-                        lookup.insert_extern_function(
-                            library_name.clone(),
-                            function.node.local_name.clone(),
-                            extern_function_signature(&function.node),
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    lookup
-}
-
-fn extern_function_signature(
-    decl: &core_x::frontend::ast::ExternFunctionDecl,
-) -> TypedFunctionSignature {
-    TypedFunctionSignature {
-        param_types: vec![Type::error(); decl.params.len()],
-        return_type: decl.return_type.as_ref().map(|_| Type::error()),
-    }
 }
 
 fn dump_tokens_for_file_path(path: &Path) -> Result<FileTokenDump, DynError> {

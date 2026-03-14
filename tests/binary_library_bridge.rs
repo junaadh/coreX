@@ -155,6 +155,11 @@ fn resolve_binary_imports_with_library_bridge(
             NamedImportRoot::LoadedLibrary {
                 graph: library_graph,
                 parsed_files: parsed.parsed_files.clone(),
+                path_by_file_id: parsed
+                    .file_id_by_abs_path
+                    .iter()
+                    .map(|(path, file_id)| (*file_id, path.clone()))
+                    .collect(),
             },
         );
     }

@@ -10,6 +10,7 @@ use crate::frontend::resolver::symbols::{
 use crate::frontend::resolver::{ResolvedScope, ScopeGraph};
 use crate::frontend::source::{FileId, SourceDb};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 type ProjectImportTables = (
     BTreeMap<FileId, ScopeSymbols>,
@@ -66,6 +67,7 @@ pub enum NamedImportRoot {
     LoadedLibrary {
         graph: ScopeGraph,
         parsed_files: Vec<ParsedFile>,
+        path_by_file_id: BTreeMap<FileId, PathBuf>,
     },
     UnloadedDependency,
 }
@@ -783,6 +785,7 @@ pub fn resolve_project_imports_with_named_roots(
             NamedImportRoot::LoadedLibrary {
                 graph,
                 parsed_files,
+                ..
             } => {
                 let collector =
                     ImportResolver::new(graph, parsed_files, &empty);
@@ -825,6 +828,7 @@ pub fn resolve_project_imports_with_named_roots_and_diagnostics(
             NamedImportRoot::LoadedLibrary {
                 graph,
                 parsed_files,
+                ..
             } => {
                 let collector =
                     ImportResolver::new(graph, parsed_files, &empty);

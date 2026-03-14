@@ -1,6 +1,7 @@
 mod analysis;
 mod body_env;
 mod control_flow;
+mod definition;
 mod expr_check;
 mod external_lookup;
 mod item_table;
@@ -22,11 +23,20 @@ pub use control_flow::{
     ControlFlowIssueKind, ControlFlowTable, check_control_flow,
     check_control_flow_with_tables,
 };
+pub use definition::{
+    DefinitionLocation, DefinitionTarget, SemanticCompletionCandidate,
+    SemanticCompletionKind, SemanticDefinitionLookup,
+    collect_item_definition_locations, completion_candidates_for_file,
+    local_binding_type, lookup_definition_target,
+};
 pub use expr_check::{
     BodyExprId, ExprCheckIssue, ExprCheckIssueKind, ExpressionTypeTable,
     check_expression_types, check_expression_types_with_external_lookup,
 };
-pub use external_lookup::ExternalSemanticLookup;
+pub use external_lookup::{
+    ExternalDefinitionLocation, ExternalSemanticLookup,
+    build_external_semantic_lookup,
+};
 pub use item_table::{
     TypedImplAttachment, TypedItemData, TypedItemKind, TypedItemTable,
     TypedItemTableIssue, TypedItemTableIssueKind, build_typed_item_table,

@@ -1,5 +1,5 @@
 use crate::lsp::analysis::{
-    analyze_document, completion_for_position, definition_for_position,
+    analyze_document_cached, completion_for_position, definition_for_position,
     diagnostics_for_document, document_symbols_for_document,
     hover_for_position, inlay_hints_for_range,
 };
@@ -76,12 +76,12 @@ pub fn handle_request(
                 return request_error(id, -32602, "missing textDocument.uri");
             };
 
-            match analyze_document(state, uri) {
+            match analyze_document_cached(state, uri) {
                 Ok(analysis) => HandlerOutput {
                     outbound: vec![json!({
                         "jsonrpc": "2.0",
                         "id": id,
-                        "result": document_symbols_for_document(&analysis),
+                        "result": document_symbols_for_document(analysis.as_ref()),
                     })],
                     should_exit: false,
                 },
@@ -106,12 +106,12 @@ pub fn handle_request(
                 return request_error(id, -32602, "missing hover position");
             };
 
-            match analyze_document(state, uri) {
+            match analyze_document_cached(state, uri) {
                 Ok(analysis) => HandlerOutput {
                     outbound: vec![json!({
                         "jsonrpc": "2.0",
                         "id": id,
-                        "result": hover_for_position(&analysis, position).unwrap_or(Value::Null),
+                        "result": hover_for_position(analysis.as_ref(), position).unwrap_or(Value::Null),
                     })],
                     should_exit: false,
                 },
@@ -140,12 +140,12 @@ pub fn handle_request(
                 );
             };
 
-            match analyze_document(state, uri) {
+            match analyze_document_cached(state, uri) {
                 Ok(analysis) => HandlerOutput {
                     outbound: vec![json!({
                         "jsonrpc": "2.0",
                         "id": id,
-                        "result": definition_for_position(&analysis, position),
+                        "result": definition_for_position(analysis.as_ref(), position),
                     })],
                     should_exit: false,
                 },
@@ -174,12 +174,12 @@ pub fn handle_request(
                 );
             };
 
-            match analyze_document(state, uri) {
+            match analyze_document_cached(state, uri) {
                 Ok(analysis) => HandlerOutput {
                     outbound: vec![json!({
                         "jsonrpc": "2.0",
                         "id": id,
-                        "result": completion_for_position(&analysis, position),
+                        "result": completion_for_position(analysis.as_ref(), position),
                     })],
                     should_exit: false,
                 },
@@ -204,12 +204,12 @@ pub fn handle_request(
                 return request_error(id, -32602, "missing inlay hint range");
             };
 
-            match analyze_document(state, uri) {
+            match analyze_document_cached(state, uri) {
                 Ok(analysis) => HandlerOutput {
                     outbound: vec![json!({
                         "jsonrpc": "2.0",
                         "id": id,
-                        "result": inlay_hints_for_range(&analysis, range),
+                        "result": inlay_hints_for_range(analysis.as_ref(), range),
                     })],
                     should_exit: false,
                 },
@@ -335,17 +335,17 @@ fn request_error(id: Value, code: i64, message: &str) -> HandlerOutput {
 }
 
 fn publish_document_diagnostics(
-    state: &ServerState,
+    state: &mut ServerState,
     uri: &str,
 ) -> HandlerOutput {
-    match analyze_document(state, uri) {
+    match analyze_document_cached(state, uri) {
         Ok(analysis) => HandlerOutput {
             outbound: vec![json!({
                 "jsonrpc": "2.0",
                 "method": "textDocument/publishDiagnostics",
                 "params": {
                     "uri": analysis.uri,
-                    "diagnostics": diagnostics_for_document(&analysis),
+                    "diagnostics": diagnostics_for_document(analysis.as_ref()),
                 }
             })],
             should_exit: false,

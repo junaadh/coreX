@@ -1,6 +1,13 @@
 use crate::lsp::convert::uri_to_path;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+#[derive(Debug, Clone)]
+struct CachedAnalysis {
+    version: Option<i64>,
+    analysis: Arc<crate::lsp::analysis::DocumentAnalysis>,
+}
 
 #[derive(Debug, Clone)]
 pub struct OpenDocument {
@@ -13,6 +20,7 @@ pub struct OpenDocument {
 pub struct ServerState {
     shutdown_requested: bool,
     documents_by_uri: BTreeMap<String, OpenDocument>,
+    analysis_cache_by_uri: BTreeMap<String, CachedAnalysis>,
 }
 
 impl ServerState {
@@ -42,6 +50,7 @@ impl ServerState {
                 version,
             },
         );
+        self.analysis_cache_by_uri.remove(&uri);
         Ok(())
     }
 
@@ -56,11 +65,13 @@ impl ServerState {
         };
         document.text = text;
         document.version = version;
+        self.analysis_cache_by_uri.remove(uri);
         Ok(())
     }
 
     pub fn close_document(&mut self, uri: &str) {
         self.documents_by_uri.remove(uri);
+        self.analysis_cache_by_uri.remove(uri);
     }
 
     #[must_use]
@@ -74,5 +85,26 @@ impl ServerState {
             .values()
             .map(|document| (document.path.clone(), document.text.clone()))
             .collect()
+    }
+
+    #[must_use]
+    pub fn cached_analysis(
+        &self,
+        uri: &str,
+        version: Option<i64>,
+    ) -> Option<Arc<crate::lsp::analysis::DocumentAnalysis>> {
+        self.analysis_cache_by_uri.get(uri).and_then(|cached| {
+            (cached.version == version).then(|| Arc::clone(&cached.analysis))
+        })
+    }
+
+    pub fn store_cached_analysis(
+        &mut self,
+        uri: &str,
+        version: Option<i64>,
+        analysis: Arc<crate::lsp::analysis::DocumentAnalysis>,
+    ) {
+        self.analysis_cache_by_uri
+            .insert(uri.to_string(), CachedAnalysis { version, analysis });
     }
 }

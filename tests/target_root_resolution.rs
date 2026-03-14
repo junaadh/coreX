@@ -165,6 +165,11 @@ fn build_named_roots_for_target(
                     NamedImportRoot::LoadedLibrary {
                         graph,
                         parsed_files: root_parsed.parsed_files.clone(),
+                        path_by_file_id: root_parsed
+                            .file_id_by_absolute_path
+                            .iter()
+                            .map(|(path, file_id)| (*file_id, path.clone()))
+                            .collect(),
                     },
                 );
             }
@@ -187,11 +192,17 @@ fn build_named_roots_for_target(
                     &library.root_file,
                     ResolvedScopeKind::Root,
                 );
+                let dependency_path_by_file_id = dependency_parsed
+                    .file_id_by_absolute_path
+                    .iter()
+                    .map(|(path, file_id)| (*file_id, path.clone()))
+                    .collect();
                 named_roots.insert(
                     name.clone(),
                     NamedImportRoot::LoadedLibrary {
                         graph,
                         parsed_files: dependency_parsed.parsed_files,
+                        path_by_file_id: dependency_path_by_file_id,
                     },
                 );
             }

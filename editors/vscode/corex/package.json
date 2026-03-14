@@ -1,0 +1,76 @@
+{
+  "name": "corex-vscode",
+  "displayName": "CoreX",
+  "description": "CoreX support for VS Code with Tree-sitter highlighting and CoreX LSP integration.",
+  "version": "0.0.1",
+  "publisher": "junaadh",
+  "license": "MIT",
+  "packageManager": "bun@1.2.23",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "corex",
+    "lsp",
+    "tree-sitter"
+  ],
+  "activationEvents": [
+    "onLanguage:corex"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "corex",
+        "aliases": [
+          "CoreX",
+          "corex"
+        ],
+        "extensions": [
+          ".cx"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configuration": {
+      "title": "CoreX",
+      "properties": {
+        "corex.languageServer.command": {
+          "type": "string",
+          "default": "/Users/junaadh/Developer/rust/core_x/target/debug/cxc",
+          "description": "Command used to launch the CoreX language server."
+        },
+        "corex.languageServer.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "lsp"
+          ],
+          "description": "Arguments passed to the CoreX language server command."
+        },
+        "corex.languageServer.cwd": {
+          "type": "string",
+          "default": "workspace",
+          "description": "Working directory for the language server. Use 'workspace' for the first workspace folder or an absolute path."
+        },
+        "corex.treeSitter.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Tree-sitter based semantic highlighting for CoreX."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "check": "node --check extension.js"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1",
+    "web-tree-sitter": "^0.25.10"
+  }
+}

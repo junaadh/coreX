@@ -1,0 +1,10 @@
+(block) @fold
+(struct_body) @fold
+(enum_body) @fold
+(impl_body) @fold
+(protocol_body) @fold
+(extern_body) @fold
+(attribute_block) @fold
+(closure_expression) @fold
+(match_expression) @fold
+(use_group) @fold

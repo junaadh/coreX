@@ -527,6 +527,172 @@ mod tests {
     }
 
     #[test]
+    fn definition_resolves_binary_import_into_library_target() {
+        let root = unique_temp_dir("definition_binary_library");
+        write_file(&root.join("corex.toml"), "[project]\nname = \"app\"\n");
+        write_file(&root.join("src/root.cx"), "pub fn shared_logic() {}\n");
+        write_file(
+            &root.join("src/main.cx"),
+            "use app::shared_logic;\nfn main() { shared_logic(); }\n",
+        );
+        let main_path = root.join("src/main.cx");
+        let uri = path_to_uri(&main_path);
+        let source = fs::read_to_string(&main_path)
+            .expect("read main source for didOpen");
+        let call_line = source
+            .lines()
+            .position(|line| line.contains("shared_logic();"))
+            .expect("shared_logic call line") as u32;
+        let call_col = source
+            .lines()
+            .nth(call_line as usize)
+            .and_then(|line| line.find("shared_logic"))
+            .expect("shared_logic call column") as u32;
+
+        let messages = run_with_messages(&[
+            initialize_message(1),
+            initialized_message(),
+            did_open_message(&uri, &source),
+            definition_message(5, &uri, call_line, call_col),
+            shutdown_message(2),
+            exit_message(),
+        ]);
+        let response =
+            find_response(&messages, 5).expect("definition response");
+        let locations = response["result"].as_array().expect("locations array");
+        assert!(!locations.is_empty());
+        let uri = locations[0]
+            .get("uri")
+            .and_then(Value::as_str)
+            .expect("uri string");
+        assert!(
+            uri.ends_with("/src/root.cx"),
+            "expected library root definition uri, got {uri}"
+        );
+    }
+
+    #[test]
+    fn definition_resolves_binary_qualified_library_call_into_root() {
+        let root = unique_temp_dir("definition_binary_library_qualified");
+        write_file(&root.join("corex.toml"), "[project]\nname = \"app\"\n");
+        write_file(&root.join("src/root.cx"), "pub fn shared_logic() {}\n");
+        write_file(
+            &root.join("src/main.cx"),
+            "fn main() {\n  app::shared_logic();\n}\n",
+        );
+        let main_path = root.join("src/main.cx");
+        let uri = path_to_uri(&main_path);
+        let source = fs::read_to_string(&main_path)
+            .expect("read main source for didOpen");
+
+        let messages = run_with_messages(&[
+            initialize_message(1),
+            initialized_message(),
+            did_open_message(&uri, &source),
+            definition_message(5, &uri, 1, 10),
+            shutdown_message(2),
+            exit_message(),
+        ]);
+        let response =
+            find_response(&messages, 5).expect("definition response");
+        let locations = response["result"].as_array().expect("locations array");
+        assert!(!locations.is_empty());
+        let uri = locations[0]
+            .get("uri")
+            .and_then(Value::as_str)
+            .expect("uri string");
+        assert!(
+            uri.ends_with("/src/root.cx"),
+            "expected qualified call definition uri to point at root.cx, got {uri}"
+        );
+    }
+
+    #[test]
+    fn definition_resolves_namespaced_extern_function() {
+        let file_path =
+            unique_temp_dir("definition_extern").join("extern_def.cx");
+        let uri = path_to_uri(&file_path);
+        let source = "@call(.C)\nextern libc {\n  fn malloc(size: usize) -> *mut void;\n}\nfn main() { libc::malloc(1); }\n";
+
+        let messages = run_with_messages(&[
+            initialize_message(1),
+            initialized_message(),
+            did_open_message(&uri, source),
+            definition_message(5, &uri, 4, 19),
+            shutdown_message(2),
+            exit_message(),
+        ]);
+        let response =
+            find_response(&messages, 5).expect("definition response");
+        let locations = response["result"].as_array().expect("locations array");
+        assert!(!locations.is_empty());
+        assert_eq!(
+            locations[0].get("uri").and_then(Value::as_str),
+            Some(uri.as_str())
+        );
+        let line = locations[0]["range"]["start"]["line"]
+            .as_u64()
+            .expect("line as u64");
+        assert_eq!(line, 2);
+    }
+
+    #[test]
+    fn definition_resolves_dependency_root_item_in_project_context() {
+        let workspace = unique_temp_dir("definition_dependency_root");
+        let app_dir = workspace.join("app");
+        let util_dir = workspace.join("util");
+
+        write_file(
+            &app_dir.join("corex.toml"),
+            "[project]\nname = \"app\"\n\n[dependencies]\nutil = { path = \"../util\" }\n",
+        );
+        write_file(
+            &app_dir.join("src/main.cx"),
+            "fn main() { util::shared_logic(); }\n",
+        );
+        write_file(
+            &util_dir.join("corex.toml"),
+            "[project]\nname = \"utility\"\n",
+        );
+        write_file(&util_dir.join("src/root.cx"), "pub fn shared_logic() {}\n");
+
+        let main_path = app_dir.join("src/main.cx");
+        let uri = path_to_uri(&main_path);
+        let source = fs::read_to_string(&main_path)
+            .expect("read main source for didOpen");
+        let call_line = source
+            .lines()
+            .position(|line| line.contains("util::shared_logic();"))
+            .expect("shared_logic call line") as u32;
+        let call_col = source
+            .lines()
+            .nth(call_line as usize)
+            .and_then(|line| line.find("shared_logic"))
+            .expect("shared_logic call column") as u32;
+
+        let messages = run_with_messages(&[
+            initialize_message(1),
+            initialized_message(),
+            did_open_message(&uri, &source),
+            definition_message(5, &uri, call_line, call_col),
+            shutdown_message(2),
+            exit_message(),
+        ]);
+        let response =
+            find_response(&messages, 5).expect("definition response");
+        let locations = response["result"].as_array().expect("locations array");
+        assert!(!locations.is_empty());
+        let uri = locations[0]
+            .get("uri")
+            .and_then(Value::as_str)
+            .expect("uri string");
+        assert!(
+            uri.ends_with("/util/src/root.cx"),
+            "expected dependency definition uri to point at util root, got {uri}"
+        );
+    }
+
+    #[test]
     fn completion_returns_locals_and_items() {
         let file_path = unique_temp_dir("completion").join("completion.cx");
         let uri = path_to_uri(&file_path);

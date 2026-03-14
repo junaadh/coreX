@@ -313,6 +313,10 @@ fn build_dependency_named_roots(
                     )?;
                 let (db, parsed_files, file_id_by_path) =
                     parse_loaded_project_files(&dependency.project)?;
+                let path_by_file_id = file_id_by_path
+                    .iter()
+                    .map(|(path, file_id)| (*file_id, path.clone()))
+                    .collect();
                 let library_root_file_id = file_id_by_path
                     .get(&library_target.root_file)
                     .copied()
@@ -333,6 +337,7 @@ fn build_dependency_named_roots(
                     NamedImportRoot::LoadedLibrary {
                         graph,
                         parsed_files,
+                        path_by_file_id,
                     },
                 );
             }
