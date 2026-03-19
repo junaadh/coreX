@@ -7,7 +7,7 @@ use super::item_ids::ItemId;
 use super::item_table::GlobalItemTable;
 use super::local_ids::LocalId;
 use super::model::ScopeGraph;
-use crate::frontend::ParsedFile;
+use crate::frontend::ExpandedFile;
 use crate::frontend::ast::{
     ArrayElement, Clause, Expr, ForStmt, FunctionDecl, IfStmt, IfStmtElse,
     ImplMember, Item, MatchArmBody, Pattern, ProtocolMember, ReceiverKind,
@@ -114,7 +114,7 @@ impl ResolvedBodyTable {
 #[must_use]
 pub fn resolve_bodies(
     graph: &ScopeGraph,
-    parsed_files: &[ParsedFile],
+    parsed_files: &[ExpandedFile],
     imports: &BTreeMap<FileId, ResolvedImports>,
     item_table: &GlobalItemTable,
     declarations: &ResolvedDeclarationTable,
@@ -135,7 +135,7 @@ pub fn resolve_bodies(
 
 struct BodyResolver<'a> {
     graph: &'a ScopeGraph,
-    parsed_by_id: BTreeMap<FileId, &'a ParsedFile>,
+    parsed_by_id: BTreeMap<FileId, &'a ExpandedFile>,
     imports: &'a BTreeMap<FileId, ResolvedImports>,
     item_table: &'a GlobalItemTable,
     declarations: &'a ResolvedDeclarationTable,
@@ -1056,7 +1056,7 @@ impl<'a> BodyResolver<'a> {
                     }
                 }
             }
-            Expr::Block(block) => {
+            Expr::Block(block) | Expr::UnsafeBlock(block) => {
                 self.resolve_block(scope_file_id, scopes, body, block);
             }
             Expr::If {
@@ -1150,9 +1150,7 @@ impl<'a> BodyResolver<'a> {
                         );
                     }
                 }
-                crate::frontend::ast::MacroExprArgs::Braced(block) => {
-                    self.resolve_block(scope_file_id, scopes, body, block);
-                }
+                crate::frontend::ast::MacroExprArgs::Braced(_) => {}
             },
             Expr::Ternary {
                 condition,

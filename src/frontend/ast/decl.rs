@@ -3,11 +3,13 @@
 use super::span::{Span, Spanned};
 use super::stmt::Block;
 use super::ty::Type;
+use crate::frontend::lexer::Token;
 
 /// Item/member modifier set currently supported by source grammar.
 #[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Modifier {
     Async,
+    Unsafe,
 }
 
 /// Source visibility surface captured by the parser.
@@ -206,9 +208,62 @@ pub enum ImplMember {
 pub struct ImplDecl {
     pub docs: Vec<Spanned<DocComment>>,
     pub attributes: Vec<Spanned<Attribute>>,
+    pub modifiers: Vec<Modifier>,
     pub target: Spanned<Type>,
     pub conformance: Option<Spanned<Type>>,
     pub members: Vec<Spanned<ImplMember>>,
+}
+
+/// Macro declaration input-kind surface.
+#[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MacroInputKind {
+    Item,
+    Expr,
+    Stmt,
+    Block,
+    Type,
+    Pattern,
+    Tokens,
+    MacroArgs,
+}
+
+/// One named macro clause parameter.
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MacroParam {
+    pub name: String,
+    pub kind: MacroInputKind,
+}
+
+/// Macro-body braces are captured as token fragments, not parsed as normal blocks.
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MacroBlock {
+    pub tokens: Vec<Token>,
+    /// Byte range for source inside `{ ... }` (without braces).
+    pub span: Span,
+}
+
+/// Unified declarative macro clause kind.
+#[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MacroClauseKind {
+    Rule,
+    Reflect,
+}
+
+/// One macro expansion clause (`rule(...) => { ... };` / `reflect(...) => { ... };`).
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MacroClause {
+    pub kind: MacroClauseKind,
+    pub params: Vec<Spanned<MacroParam>>,
+    pub body: MacroBlock,
+}
+
+/// Unified declarative macro declaration.
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MacroDecl {
+    pub docs: Vec<Spanned<DocComment>>,
+    pub attributes: Vec<Spanned<Attribute>>,
+    pub name: String,
+    pub clauses: Vec<Spanned<MacroClause>>,
 }
 
 #[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]

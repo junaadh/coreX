@@ -1,0 +1,24 @@
+struct PointError {
+  msg: string,
+}
+
+struct Point {
+  x: i32,
+  y: i32,
+  
+  init(x: i32, y: i32) {
+    // TODO
+  }
+
+  init?(x: i32, y: i32?) {
+    // TODO
+  }
+
+  init!(x: i32, y: i32!PointError) {
+    
+  }
+}
+
+fn main() {
+  let p = Point(10, 20);
+}

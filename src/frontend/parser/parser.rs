@@ -4,12 +4,13 @@ use crate::frontend::ast::{
     DocComment, DocCommentKind, EnumCase, EnumCaseParam, EnumDecl, EnumMember,
     Expr, ExternBlock, ExternFunctionDecl, ExternMember, FunctionDecl,
     GenericParam, ImplDecl, ImplMember, InitDecl, InitKind, Item, LetStmt,
-    MacroExprArgs, MatchArm, MatchArmBody, Modifier, ParamDecl, ParamLabel,
-    Pattern, ProtocolDecl, ProtocolFunctionMember, ProtocolInitMember,
-    ProtocolMember, ProtocolPropertyRequirement, ReceiverKind, ScopeDecl,
-    Spanned, StringLiteral, StringPart, StructDecl, StructField,
-    StructLiteralField, StructMember, StructPatternField, Type, TypeExpr,
-    UseItem, UsePath, UseTree, VarStmt, Visibility, WhileStmt,
+    MacroBlock, MacroClause, MacroClauseKind, MacroDecl, MacroExprArgs,
+    MacroInputKind, MacroParam, MatchArm, MatchArmBody, Modifier, ParamDecl,
+    ParamLabel, Pattern, ProtocolDecl, ProtocolFunctionMember,
+    ProtocolInitMember, ProtocolMember, ProtocolPropertyRequirement,
+    ReceiverKind, ScopeDecl, Spanned, StringLiteral, StringPart, StructDecl,
+    StructField, StructLiteralField, StructMember, StructPatternField, Type,
+    TypeExpr, UseItem, UsePath, UseTree, VarStmt, Visibility, WhileStmt,
 };
 use crate::frontend::lexer::{
     CommentKind, Lexer, LexerError, Span, Token, TokenKind,
@@ -200,15 +201,26 @@ impl<'a> Parser<'a> {
                 Ok(Spanned::new(Item::Enum(decl), span))
             }
             TokenKind::KwImpl => {
-                if !modifiers.is_empty() || visibility.is_some() {
+                if visibility.is_some() {
                     return Err(ParseError::UnexpectedToken {
                         expected: "'impl'",
                         found: token.kind,
                         span: token.span,
                     });
                 }
-                let decl =
-                    self.parse_impl_decl_with_prefix(start, docs, attributes)?;
+                if modifiers
+                    .iter()
+                    .any(|modifier| !matches!(modifier, Modifier::Unsafe))
+                {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "'unsafe impl' or 'impl'",
+                        found: token.kind,
+                        span: token.span,
+                    });
+                }
+                let decl = self.parse_impl_decl_with_prefix(
+                    start, docs, attributes, modifiers,
+                )?;
                 let span = decl.span;
                 Ok(Spanned::new(Item::Impl(decl), span))
             }
@@ -232,6 +244,19 @@ impl<'a> Parser<'a> {
                     .parse_extern_block_with_prefix(start, docs, attributes)?;
                 let span = extern_block.span;
                 Ok(Spanned::new(Item::ExternBlock(extern_block), span))
+            }
+            TokenKind::KwMacro => {
+                if !modifiers.is_empty() || visibility.is_some() {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "'macro'",
+                        found: token.kind,
+                        span: token.span,
+                    });
+                }
+                let macro_decl =
+                    self.parse_macro_decl_with_prefix(start, docs, attributes)?;
+                let span = macro_decl.span;
+                Ok(Spanned::new(Item::Macro(macro_decl), span))
             }
             TokenKind::Eof => Err(ParseError::UnexpectedEof {
                 expected: "top-level item",
@@ -632,11 +657,57 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn capture_delimited_tokens(
+        &mut self,
+        open: TokenKind,
+        close: TokenKind,
+    ) -> Result<(Vec<Token>, usize), ParseError> {
+        let _open_tok = self.expect(open)?;
+        let mut depth = 1usize;
+        let mut captured = Vec::new();
+
+        loop {
+            let token = *self.peek();
+            if token.kind == TokenKind::Eof {
+                return Err(ParseError::UnexpectedEof {
+                    expected: expected_for_token(close),
+                    span: token.span,
+                });
+            }
+
+            let token = self.bump();
+            if token.kind == open {
+                depth += 1;
+                captured.push(token);
+            } else if token.kind == close {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok((captured, token.span.end));
+                }
+                captured.push(token);
+            } else {
+                captured.push(token);
+            }
+        }
+    }
+
+    fn parse_macro_block_tokens(
+        &mut self,
+    ) -> Result<(MacroBlock, usize), ParseError> {
+        let open = self.peek().span;
+        let (tokens, end) = self
+            .capture_delimited_tokens(TokenKind::LBrace, TokenKind::RBrace)?;
+        let close_start = end.saturating_sub(1);
+        let span = Span::new(open.end, close_start);
+        Ok((MacroBlock { tokens, span }, end))
+    }
+
     fn parse_modifiers(&mut self) -> Vec<Modifier> {
         let mut modifiers = Vec::new();
         loop {
             let modifier = match self.peek().kind {
                 TokenKind::KwAsync => Some(Modifier::Async),
+                TokenKind::KwUnsafe => Some(Modifier::Unsafe),
                 _ => None,
             };
 
@@ -1022,7 +1093,18 @@ impl<'a> Parser<'a> {
         let start = self.peek().span.start;
         let docs = self.parse_outer_doc_comments();
         let attributes = self.parse_attributes()?;
-        self.parse_impl_decl_with_prefix(start, docs, attributes)
+        let modifiers = self.parse_modifiers();
+        if modifiers
+            .iter()
+            .any(|modifier| !matches!(modifier, Modifier::Unsafe))
+        {
+            return Err(ParseError::UnexpectedToken {
+                expected: "'unsafe impl' or 'impl'",
+                found: self.peek().kind,
+                span: self.peek().span,
+            });
+        }
+        self.parse_impl_decl_with_prefix(start, docs, attributes, modifiers)
     }
 
     fn parse_impl_decl_with_prefix(
@@ -1030,6 +1112,7 @@ impl<'a> Parser<'a> {
         start: usize,
         docs: Vec<Spanned<DocComment>>,
         attributes: Vec<Spanned<Attribute>>,
+        modifiers: Vec<Modifier>,
     ) -> Result<Spanned<ImplDecl>, ParseError> {
         self.expect(TokenKind::KwImpl)?;
         let first_type = self.parse_type()?;
@@ -1057,6 +1140,7 @@ impl<'a> Parser<'a> {
             ImplDecl {
                 docs,
                 attributes,
+                modifiers,
                 target,
                 conformance,
                 members,
@@ -1580,6 +1664,131 @@ impl<'a> Parser<'a> {
         }
 
         None
+    }
+
+    /// Parses a top-level `macro` declaration.
+    #[cfg(test)]
+    pub(crate) fn parse_macro_decl(
+        &mut self,
+    ) -> Result<Spanned<MacroDecl>, ParseError> {
+        let start = self.peek().span.start;
+        let docs = self.parse_outer_doc_comments();
+        let attributes = self.parse_attributes()?;
+        self.parse_macro_decl_with_prefix(start, docs, attributes)
+    }
+
+    fn parse_macro_decl_with_prefix(
+        &mut self,
+        start: usize,
+        docs: Vec<Spanned<DocComment>>,
+        attributes: Vec<Spanned<Attribute>>,
+    ) -> Result<Spanned<MacroDecl>, ParseError> {
+        self.expect(TokenKind::KwMacro)?;
+        let (name, _) = self.expect_identifier_text()?;
+        self.expect(TokenKind::LBrace)?;
+        let mut clauses = Vec::new();
+
+        while !self.at(TokenKind::RBrace) {
+            if self.is_eof() {
+                return Err(ParseError::UnexpectedEof {
+                    expected: "'}'",
+                    span: self.peek().span,
+                });
+            }
+            clauses.push(self.parse_macro_clause()?);
+        }
+
+        let rbrace = self.expect(TokenKind::RBrace)?;
+        Ok(Spanned::new(
+            MacroDecl {
+                docs,
+                attributes,
+                name,
+                clauses,
+            },
+            Span::new(start, rbrace.span.end),
+        ))
+    }
+
+    fn parse_macro_clause(
+        &mut self,
+    ) -> Result<Spanned<MacroClause>, ParseError> {
+        let start = self.peek().span.start;
+        let kind = match self.peek().kind {
+            TokenKind::KwRule => {
+                let _ = self.bump();
+                MacroClauseKind::Rule
+            }
+            TokenKind::KwReflect => {
+                let _ = self.bump();
+                MacroClauseKind::Reflect
+            }
+            _ => {
+                return Err(ParseError::UnexpectedToken {
+                    expected: "macro clause ('rule' or 'reflect')",
+                    found: self.peek().kind,
+                    span: self.peek().span,
+                });
+            }
+        };
+
+        self.expect(TokenKind::LParen)?;
+        let mut params = Vec::new();
+        if !self.at(TokenKind::RParen) {
+            loop {
+                params.push(self.parse_macro_param()?);
+                if self.eat(TokenKind::Comma).is_some() {
+                    if self.at(TokenKind::RParen) {
+                        break;
+                    }
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen)?;
+        self.expect(TokenKind::FatArrow)?;
+        let (body, _) = self.parse_macro_block_tokens()?;
+        let semi = self.expect(TokenKind::Semi)?;
+
+        Ok(Spanned::new(
+            MacroClause { kind, params, body },
+            Span::new(start, semi.span.end),
+        ))
+    }
+
+    fn parse_macro_param(&mut self) -> Result<Spanned<MacroParam>, ParseError> {
+        let (name, name_span) = self.expect_identifier_text()?;
+        self.expect(TokenKind::Colon)?;
+        let (kind, kind_span) = self.parse_macro_input_kind()?;
+        Ok(Spanned::new(
+            MacroParam { name, kind },
+            Span::new(name_span.start, kind_span.end),
+        ))
+    }
+
+    fn parse_macro_input_kind(
+        &mut self,
+    ) -> Result<(MacroInputKind, Span), ParseError> {
+        let (text, span) = self.expect_identifier_text()?;
+        let kind = match text.as_str() {
+            "Item" => MacroInputKind::Item,
+            "Expr" => MacroInputKind::Expr,
+            "Stmt" => MacroInputKind::Stmt,
+            "Block" => MacroInputKind::Block,
+            "Type" => MacroInputKind::Type,
+            "Pattern" => MacroInputKind::Pattern,
+            "Tokens" => MacroInputKind::Tokens,
+            "MacroArgs" => MacroInputKind::MacroArgs,
+            _ => {
+                return Err(ParseError::UnexpectedToken {
+                    expected: "macro input kind",
+                    found: TokenKind::Ident,
+                    span,
+                });
+            }
+        };
+        Ok((kind, span))
     }
 
     /// Parses an `extern` block and its foreign function members.
@@ -2226,7 +2435,10 @@ impl<'a> Parser<'a> {
                 | TokenKind::KwImpl
                 | TokenKind::KwProtocol
                 | TokenKind::KwExtern
+                | TokenKind::KwMacro
                 | TokenKind::KwPub
+                | TokenKind::KwAsync
+                | TokenKind::KwUnsafe
                 | TokenKind::At
         )
     }
@@ -2953,6 +3165,7 @@ impl<'a> Parser<'a> {
             kind,
             TokenKind::KwIf
                 | TokenKind::KwMatch
+                | TokenKind::KwUnsafe
                 | TokenKind::LBrace
                 | TokenKind::ClosureShorthandParam
                 | TokenKind::Ident
@@ -2985,6 +3198,7 @@ impl<'a> Parser<'a> {
         match token.kind {
             TokenKind::KwIf => self.parse_if_expr(),
             TokenKind::KwMatch => self.parse_match_expr(),
+            TokenKind::KwUnsafe => self.parse_unsafe_expr(),
             TokenKind::LBrace => self.parse_closure_expr(),
             TokenKind::Ident => self.parse_struct_literal_or_identifier_expr(),
             TokenKind::ClosureShorthandParam => {
@@ -3178,8 +3392,55 @@ impl<'a> Parser<'a> {
                 params,
                 body,
                 uses_shorthand_params,
+                is_unsafe: false,
             },
             Span::new(lbrace.span.start, end),
+        ))
+    }
+
+    /// Parses `unsafe { ... }` as either an unsafe closure (when explicit
+    /// closure signature is present) or an unsafe block expression.
+    fn parse_unsafe_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
+        let unsafe_kw = self.expect(TokenKind::KwUnsafe)?;
+        if !self.at(TokenKind::LBrace) {
+            return Err(ParseError::UnexpectedToken {
+                expected: "'{' after 'unsafe'",
+                found: self.peek().kind,
+                span: self.peek().span,
+            });
+        }
+
+        let _ = self.expect(TokenKind::LBrace)?;
+        let checkpoint = self.cursor;
+
+        if let Some(params) = self.try_parse_closure_params_and_in()? {
+            let (statements, tail_expr, end) =
+                self.parse_block_contents_until_rbrace()?;
+            let body = ast::Block {
+                statements,
+                tail_expr,
+            };
+            return Ok(Spanned::new(
+                Expr::Closure {
+                    params,
+                    body,
+                    uses_shorthand_params: false,
+                    is_unsafe: true,
+                },
+                Span::new(unsafe_kw.span.start, end),
+            ));
+        }
+
+        self.cursor = checkpoint;
+        let (statements, tail_expr, end) =
+            self.parse_block_contents_until_rbrace()?;
+        let block = ast::Block {
+            statements,
+            tail_expr,
+        };
+        Ok(Spanned::new(
+            Expr::UnsafeBlock(block),
+            Span::new(unsafe_kw.span.start, end),
         ))
     }
 
@@ -3542,7 +3803,7 @@ impl<'a> Parser<'a> {
             let (args, end) = self.parse_call_arg_list()?;
             (MacroExprArgs::Paren(args), end)
         } else if self.at(TokenKind::LBrace) {
-            let (block, end) = self.parse_block_with_end()?;
+            let (block, end) = self.parse_macro_block_tokens()?;
             (MacroExprArgs::Braced(block), end)
         } else {
             (MacroExprArgs::Paren(Vec::new()), self.peek().span.start)
@@ -4112,6 +4373,7 @@ fn expected_for_token(kind: TokenKind) -> &'static str {
         TokenKind::KwImpl => "'impl'",
         TokenKind::KwProtocol => "'protocol'",
         TokenKind::KwExtern => "'extern'",
+        TokenKind::KwMacro => "'macro'",
         TokenKind::Semi => "';'",
         TokenKind::LBrace => "'{'",
         TokenKind::RBrace => "'}'",
@@ -4269,6 +4531,13 @@ mod tests {
         decl
     }
 
+    fn parse_macro_decl_from_source(source: &str) -> Spanned<MacroDecl> {
+        let mut parser = Parser::new(source).expect("parser");
+        let decl = parser.parse_macro_decl().expect("macro parse");
+        assert!(parser.is_eof(), "expected eof after macro parse");
+        decl
+    }
+
     #[test]
     fn parse_function_with_modifiers_and_return_type() {
         let function =
@@ -4277,6 +4546,13 @@ mod tests {
         assert_eq!(function.node.modifiers.len(), 1);
         assert_eq!(function.node.params.len(), 1);
         assert!(function.node.return_type.is_some());
+    }
+
+    #[test]
+    fn parse_function_with_unsafe_modifier() {
+        let function = parse_function_decl_from_source("unsafe fn f() {}");
+        assert_eq!(function.node.modifiers.len(), 1);
+        assert!(matches!(function.node.modifiers[0], Modifier::Unsafe));
     }
 
     #[test]
@@ -4326,6 +4602,13 @@ mod tests {
     fn parse_fallible_init_decl() {
         let init = parse_init_decl_from_source("init!() {}");
         assert!(matches!(init.node.kind, InitKind::Fallible));
+    }
+
+    #[test]
+    fn parse_init_with_unsafe_modifier() {
+        let init = parse_init_decl_from_source("unsafe init() {}");
+        assert_eq!(init.node.modifiers.len(), 1);
+        assert!(matches!(init.node.modifiers[0], Modifier::Unsafe));
     }
 
     #[test]
@@ -4516,6 +4799,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_file_with_macro_then_function() {
+        let mut parser = Parser::new(
+            "macro m { rule(input: Tokens) => { input }; } fn f() {}",
+        )
+        .expect("parser");
+        let file = parser.parse_file().expect("parse file");
+        assert_eq!(file.items.len(), 2);
+        assert!(matches!(file.items[0].node, Item::Macro(_)));
+        assert!(matches!(file.items[1].node, Item::Function(_)));
+    }
+
+    #[test]
     fn parse_minimal_struct_decl() {
         let decl = parse_struct_decl_from_source("struct Foo {}");
         assert_eq!(decl.node.name, "Foo");
@@ -4678,6 +4973,13 @@ mod tests {
     }
 
     #[test]
+    fn parse_impl_with_unsafe_modifier() {
+        let decl = parse_impl_decl_from_source("unsafe impl Foo {}");
+        assert_eq!(decl.node.modifiers.len(), 1);
+        assert!(matches!(decl.node.modifiers[0], Modifier::Unsafe));
+    }
+
+    #[test]
     fn parse_impl_with_init_and_method() {
         let decl =
             parse_impl_decl_from_source("impl Foo { init() {} fn bar() {} }");
@@ -4701,6 +5003,19 @@ mod tests {
         match &decl.node.members[0].node {
             ProtocolMember::Function(member) => {
                 assert!(member.node.default_body.is_none());
+            }
+            _ => panic!("expected protocol function member"),
+        }
+    }
+
+    #[test]
+    fn parse_protocol_function_requirement_with_unsafe_modifier() {
+        let decl =
+            parse_protocol_decl_from_source("protocol P { unsafe fn f(); }");
+        match &decl.node.members[0].node {
+            ProtocolMember::Function(member) => {
+                assert_eq!(member.node.modifiers.len(), 1);
+                assert!(matches!(member.node.modifiers[0], Modifier::Unsafe));
             }
             _ => panic!("expected protocol function member"),
         }
@@ -4798,6 +5113,60 @@ mod tests {
             }
             _ => panic!("expected protocol property member"),
         }
+    }
+
+    #[test]
+    fn parse_macro_decl_with_rule_clause() {
+        let decl = parse_macro_decl_from_source(
+            "macro unless { rule(cond: Expr, body: Block) => { if !cond body }; }",
+        );
+        assert_eq!(decl.node.name, "unless");
+        assert_eq!(decl.node.clauses.len(), 1);
+        let clause = &decl.node.clauses[0].node;
+        assert!(matches!(clause.kind, MacroClauseKind::Rule));
+        assert_eq!(clause.params.len(), 2);
+        assert!(matches!(clause.params[0].node.kind, MacroInputKind::Expr));
+        assert!(matches!(clause.params[1].node.kind, MacroInputKind::Block));
+        assert_eq!(
+            clause
+                .body
+                .tokens
+                .iter()
+                .map(|token| token.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                TokenKind::KwIf,
+                TokenKind::Bang,
+                TokenKind::Ident,
+                TokenKind::Ident,
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_macro_decl_with_reflect_item_and_args_clause() {
+        let decl = parse_macro_decl_from_source(
+            "macro derive { reflect(item: Item, args: MacroArgs) => { item }; }",
+        );
+        assert_eq!(decl.node.name, "derive");
+        assert_eq!(decl.node.clauses.len(), 1);
+        let clause = &decl.node.clauses[0].node;
+        assert!(matches!(clause.kind, MacroClauseKind::Reflect));
+        assert_eq!(clause.params.len(), 2);
+        assert!(matches!(clause.params[0].node.kind, MacroInputKind::Item));
+        assert!(matches!(
+            clause.params[1].node.kind,
+            MacroInputKind::MacroArgs
+        ));
+    }
+
+    #[test]
+    fn parse_macro_decl_reports_error_on_invalid_input_kind() {
+        let mut parser =
+            Parser::new("macro m { rule(x: UnknownKind) => { x }; }")
+                .expect("parser");
+        let err = parser.parse_macro_decl().expect_err("expected parse error");
+        assert!(matches!(err, ParseError::UnexpectedToken { .. }));
     }
 
     #[test]
@@ -5402,13 +5771,26 @@ mod tests {
     }
 
     #[test]
-    fn parse_macro_braced_expr_uses_real_block_if_applicable() {
+    fn parse_macro_braced_expr_captures_raw_block() {
         let expr = parse_expr_from_source("@build { let x = y; x }");
         match expr.node {
             Expr::Macro { args, .. } => match args {
                 MacroExprArgs::Braced(block) => {
-                    assert_eq!(block.statements.len(), 1);
-                    assert!(block.tail_expr.is_some());
+                    assert_eq!(
+                        block
+                            .tokens
+                            .iter()
+                            .map(|token| token.kind)
+                            .collect::<Vec<_>>(),
+                        vec![
+                            TokenKind::KwLet,
+                            TokenKind::Ident,
+                            TokenKind::Eq,
+                            TokenKind::Ident,
+                            TokenKind::Semi,
+                            TokenKind::Ident,
+                        ]
+                    );
                 }
                 MacroExprArgs::Paren(_) => panic!("expected braced macro args"),
             },
@@ -5904,6 +6286,36 @@ mod tests {
                 assert!(body.tail_expr.is_some());
             }
             _ => panic!("expected closure expr"),
+        }
+    }
+
+    #[test]
+    fn parse_unsafe_closure_expr_with_explicit_param() {
+        let expr = parse_expr_from_source("unsafe { x in x }");
+        match expr.node {
+            Expr::Closure {
+                is_unsafe,
+                uses_shorthand_params,
+                params,
+                ..
+            } => {
+                assert!(is_unsafe);
+                assert!(!uses_shorthand_params);
+                assert_eq!(params.len(), 1);
+            }
+            _ => panic!("expected unsafe closure expr"),
+        }
+    }
+
+    #[test]
+    fn parse_unsafe_block_expr() {
+        let expr = parse_expr_from_source("unsafe { let x = 1; x }");
+        match expr.node {
+            Expr::UnsafeBlock(block) => {
+                assert_eq!(block.statements.len(), 1);
+                assert!(block.tail_expr.is_some());
+            }
+            _ => panic!("expected unsafe block expr"),
         }
     }
 

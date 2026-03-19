@@ -1,6 +1,6 @@
 use super::item_ids::ItemId;
 use super::model::ScopeGraph;
-use crate::frontend::ParsedFile;
+use crate::frontend::ExpandedFile;
 use crate::frontend::ast::Item;
 use crate::frontend::source::FileId;
 use std::collections::BTreeMap;
@@ -38,8 +38,8 @@ pub struct GlobalItemTable {
 impl GlobalItemTable {
     /// Collects all top-level named items across resolved scopes.
     #[must_use]
-    pub fn collect(graph: &ScopeGraph, parsed_files: &[ParsedFile]) -> Self {
-        let parsed_by_id: BTreeMap<FileId, &ParsedFile> = parsed_files
+    pub fn collect(graph: &ScopeGraph, parsed_files: &[ExpandedFile]) -> Self {
+        let parsed_by_id: BTreeMap<FileId, &ExpandedFile> = parsed_files
             .iter()
             .map(|parsed| (parsed.file_id, parsed))
             .collect();
@@ -161,7 +161,7 @@ impl GlobalItemTable {
 #[must_use]
 pub fn build_global_item_table(
     graph: &ScopeGraph,
-    parsed_files: &[ParsedFile],
+    parsed_files: &[ExpandedFile],
 ) -> GlobalItemTable {
     GlobalItemTable::collect(graph, parsed_files)
 }

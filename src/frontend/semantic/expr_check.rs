@@ -2,7 +2,7 @@ use super::body_env::BodyTypeEnvironmentTable;
 use super::external_lookup::ExternalSemanticLookup;
 use super::signatures::TypedFunctionSignature;
 use super::{BuiltinType, Type, TypedItemData, TypedItemTable};
-use crate::frontend::ParsedFile;
+use crate::frontend::ExpandedFile;
 use crate::frontend::ast::{
     BinaryOp, Block, Clause, Expr, Item, MatchArmBody, Span, Stmt,
     StructMember, UnaryOp,
@@ -142,7 +142,7 @@ impl ExpressionTypeTable {
 #[must_use]
 pub fn check_expression_types(
     graph: &ScopeGraph,
-    parsed_files: &[ParsedFile],
+    parsed_files: &[ExpandedFile],
     global_items: &GlobalItemTable,
     typed_items: &TypedItemTable,
     resolved_bodies: &ResolvedBodyTable,
@@ -165,7 +165,7 @@ pub fn check_expression_types(
 #[must_use]
 pub fn check_expression_types_with_external_lookup(
     graph: &ScopeGraph,
-    parsed_files: &[ParsedFile],
+    parsed_files: &[ExpandedFile],
     global_items: &GlobalItemTable,
     typed_items: &TypedItemTable,
     resolved_bodies: &ResolvedBodyTable,
@@ -173,7 +173,7 @@ pub fn check_expression_types_with_external_lookup(
     imports: &BTreeMap<FileId, ResolvedImports>,
     external_lookup: &ExternalSemanticLookup,
 ) -> ExpressionTypeTable {
-    let parsed_by_id: BTreeMap<FileId, &ParsedFile> = parsed_files
+    let parsed_by_id: BTreeMap<FileId, &ExpandedFile> = parsed_files
         .iter()
         .map(|parsed| (parsed.file_id, parsed))
         .collect();
@@ -249,7 +249,7 @@ struct BodyBlockEntry<'a> {
 
 fn collect_body_blocks<'a>(
     graph: &'a ScopeGraph,
-    parsed_by_id: &'a BTreeMap<FileId, &'a ParsedFile>,
+    parsed_by_id: &'a BTreeMap<FileId, &'a ExpandedFile>,
     global_items: &'a GlobalItemTable,
 ) -> BTreeMap<DeclarationOwner, Vec<BodyBlockEntry<'a>>> {
     let mut result: BTreeMap<DeclarationOwner, Vec<BodyBlockEntry<'a>>> =
@@ -881,7 +881,7 @@ impl<'a> BodyExprChecker<'a> {
                     signature.return_type.clone().unwrap_or_else(Type::void)
                 }
             }
-            Expr::Block(block) => {
+            Expr::Block(block) | Expr::UnsafeBlock(block) => {
                 self.check_block(block, typed_items, issues, types_by_expr_id)
             }
             Expr::If {

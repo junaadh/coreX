@@ -8,7 +8,7 @@ use super::stmt_check::{
     check_statements_with_expression_types,
 };
 use super::{BuiltinType, Type, TypedItemTable};
-use crate::frontend::ParsedFile;
+use crate::frontend::ExpandedFile;
 use crate::frontend::ast::{Block, Item, Span, StructMember};
 use crate::frontend::resolver::{
     DeclarationOwner, GlobalItemTable, ResolvedBodyTable, ScopeGraph,
@@ -92,7 +92,7 @@ impl ControlFlowTable {
 #[must_use]
 pub fn check_control_flow(
     graph: &ScopeGraph,
-    parsed_files: &[ParsedFile],
+    parsed_files: &[ExpandedFile],
     global_items: &GlobalItemTable,
     typed_items: &TypedItemTable,
     resolved_bodies: &ResolvedBodyTable,
@@ -128,14 +128,14 @@ pub fn check_control_flow(
 #[must_use]
 pub fn check_control_flow_with_tables(
     graph: &ScopeGraph,
-    parsed_files: &[ParsedFile],
+    parsed_files: &[ExpandedFile],
     global_items: &GlobalItemTable,
     resolved_bodies: &ResolvedBodyTable,
     body_envs: &BodyTypeEnvironmentTable,
     expr_types: &ExpressionTypeTable,
     stmt_types: &StatementTypeTable,
 ) -> ControlFlowTable {
-    let parsed_by_id: BTreeMap<FileId, &ParsedFile> = parsed_files
+    let parsed_by_id: BTreeMap<FileId, &ExpandedFile> = parsed_files
         .iter()
         .map(|parsed| (parsed.file_id, parsed))
         .collect();
@@ -386,7 +386,7 @@ struct BodyBlockEntry {
 
 fn collect_body_blocks(
     graph: &ScopeGraph,
-    parsed_by_id: &BTreeMap<FileId, &ParsedFile>,
+    parsed_by_id: &BTreeMap<FileId, &ExpandedFile>,
     global_items: &GlobalItemTable,
 ) -> BTreeMap<DeclarationOwner, Vec<BodyBlockEntry>> {
     let mut result: BTreeMap<DeclarationOwner, Vec<BodyBlockEntry>> =

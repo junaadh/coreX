@@ -137,6 +137,16 @@ fn create_extern_call_fixture(name: &str, callee: &str) -> PathBuf {
     root
 }
 
+fn create_macro_expansion_extern_call_fixture(name: &str) -> PathBuf {
+    let root = unique_temp_dir(name);
+    write_file(&root.join("corex.toml"), "[project]\nname = \"app\"\n");
+    write_file(
+        &root.join("src/main.cx"),
+        "macro call_malloc {\n  rule(size: Expr) => { malloc(size) };\n}\n@call(.C)\nextern libc {\n  fn malloc(size: usize) -> *mut void;\n}\nfn main() { @call_malloc(1); }\n",
+    );
+    root
+}
+
 fn run_cxc(args: &[String]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_cxc"))
         .args(args)
@@ -658,5 +668,50 @@ fn dump_semantic_binary_qualified_library_path_call_resolves() {
     assert!(
         !stderr.contains("invalid call target"),
         "qualified binary call into library target should be callable"
+    );
+}
+
+#[test]
+fn dump_semantic_project_expands_macros_before_semantic() {
+    let project = create_macro_expansion_extern_call_fixture(
+        "semantic_macro_expansion_project",
+    );
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "semantic".to_string(),
+        "--project".to_string(),
+        arg(&project),
+    ]);
+
+    assert!(output.status.success(), "expected semantic dump to succeed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid extern call target"),
+        "expanded macro output should be type-checked by semantic analysis"
+    );
+    assert!(
+        !stderr.contains("unknown macro"),
+        "macro invocation should be handled in expansion stage"
+    );
+}
+
+#[test]
+fn dump_semantic_single_file_expands_macros_before_semantic() {
+    let project = create_macro_expansion_extern_call_fixture(
+        "semantic_macro_expansion_single_file",
+    );
+    let main_file = project.join("src/main.cx");
+    let output =
+        run_cxc(&["dump".to_string(), "semantic".to_string(), arg(&main_file)]);
+
+    assert!(output.status.success(), "expected semantic dump to succeed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid extern call target"),
+        "single-file semantic entrypoint should analyze expanded macro output"
+    );
+    assert!(
+        !stderr.contains("unknown macro"),
+        "single-file semantic entrypoint should run expansion"
     );
 }

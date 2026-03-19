@@ -511,7 +511,23 @@ Current frontend implementation note:
 
 - Identifiers are ASCII-only (`_`, `A-Z`, `a-z`, `0-9`).
 
-### 4.2 Literals
+### 4.2 Types
+
+CoreX distinguishes between native references, raw pointers, and foreign pointers.
+
+| Type form | Syntax | Meaning |
+|---|---|---|
+| Shared borrow | `&T` | Borrowed shared reference to `T` |
+| Exclusive borrow | `&mut T` | Borrowed exclusive mutable reference to `T` |
+| Raw const pointer | `*T` | Raw const pointer to `T` |
+| Raw mutable pointer | `*mut T` | Raw mutable pointer to `T` |
+
+Rules:
+- `&T` and `&mut T` are native borrow semantics with lifetime guarantees.
+- `*T` and `*mut T` are raw pointers without lifetime guarantees.
+- Raw pointer dereference requires `unsafe`.
+
+### 4.3 Literals
 
 ```ebnf
 literal            = integer_literal
@@ -520,34 +536,6 @@ literal            = integer_literal
                    | string_literal
                    | boolean_literal
                    ;
-
-integer_literal    = dec_integer
-                   | hex_integer
-                   | oct_integer
-                   | legacy_oct_integer
-                   ;
-
-dec_integer        = digit, { digit_or_sep } , [ integer_suffix ] ;
-hex_integer        = "0x", hex_digit, { hex_digit_or_sep } , [ integer_suffix ] ;
-oct_integer        = "0o", oct_digit, { oct_digit_or_sep } , [ integer_suffix ] ;
-legacy_oct_integer = "0", oct_digit, { oct_digit_or_sep } , [ integer_suffix ] ;
-
-float_literal      = dec_integer_no_suffix, ".", digit, { digit_or_sep }, [ exponent_part ]
-                   | dec_integer_no_suffix, exponent_part
-                   ;
-
-dec_integer_no_suffix = digit, { digit_or_sep } ;
-
-exponent_part      = ("e" | "E"), [ "+" | "-" ], digit, { digit_or_sep } ;
-
-integer_suffix     = primitive_int_type
-                   | "_", primitive_int_type
-                   ;
-
-char_literal       = "'", char_content, "'" ;
-string_literal     = '"', { string_char | interpolation }, '"' ;
-interpolation      = "\\(", expr, ")" ;
-boolean_literal    = "true" | "false" ;
 ```
 
 Literal notes:
@@ -685,9 +673,29 @@ Grouped `self` rules:
 ## 7. Modifiers
 
 ```ebnf
-modifier      = "async" ;
+modifier      = "unsafe"
+            | "async"
+            ;
 modifier_list = { modifier } ;
 ```
+
+### 7.1 Unsafe Modifier
+
+`unsafe` marks boundaries where compiler guarantees are suspended.
+
+`unsafe` placement:
+- Functions: `unsafe fn` - function body requires unsafe operations
+- Initializers: `unsafe init` - initializer may bypass safety checks
+- Impl blocks: `unsafe impl` - implementation uses unsafe operations
+- Closures: `unsafe { ... }` - closure body requires unsafe operations
+- Blocks: `unsafe { ... }` - unsafe block within safe code
+
+`unsafe` semantics:
+- Compiler does not enforce memory safety or borrowing rules inside `unsafe`.
+- Raw pointer dereference is only permitted within `unsafe`.
+- Direct calls to foreign functions without safe wrappers are permitted.
+- `unsafe` on a function definition does not make callers unsafe.
+- `unsafe` on a function signature means the implementation is trusted, not that calling it is unsafe.
 
 Visibility is a separate declaration prefix category and is not part of
 `modifier_list`.
@@ -700,17 +708,15 @@ Visibility is a separate declaration prefix category and is not part of
 fn_decl      = [ visibility ], modifier_list, "fn", identifier, [ generic_params ],
                "(", [ param_list ], ")", [ return_type ],
                [ where_clause ], block ;
-
 return_type  = "->", type ;
 ```
+
+`unsafe fn` declares a function whose body may use unsafe operations. This does not make calling the function unsafe.
 
 ### 8.2 Initializer Declarations
 
 ```ebnf
-init_decl    = modifier_list, "init", [ init_kind ],
-               "(", [ param_list ], ")", block ;
-
-init_kind    = "?" | "!" ;
+init_decl    = modifier_list, "init", "(", [ param_list ], ")", block ;
 ```
 
 Current parser behavior:
@@ -803,9 +809,12 @@ enum_case_param     = type
 ```ebnf
 impl_decl             = "impl", type, [ protocol_conformance ], impl_body ;
 protocol_conformance  = "for", type ;
-
 impl_body             = "{", { impl_member }, "}" ;
+
 impl_member           = init_decl | fn_decl ;
+
+Unsafe impl blocks:
+`unsafe impl` marks that the implementation uses unsafe operations. This does not make using the impl unsafe.
 ```
 
 ### 9.4 Builtin primitive type names
@@ -820,7 +829,48 @@ while remaining ordinary identifier-shaped names in source:
 
 ## 10. Foreign Declarations
 
-### 10.1 Extern Block
+### 10.1 Foreign Domains
+
+CoreX identifies foreign domains through call convention attributes.
+
+Foreign domain identification:
+- Call convention attributes (`@call(.C)`, `@call(.ObjC)`) specify the FFI domain.
+- The domain is determined by the supported calling convention.
+- FFI domains are first-class when the corresponding call convention is implemented.
+
+Supported foreign domains:
+
+| Domain | Call Convention | Description |
+|---|---|---|
+| C | `@call(.C)` | C calling convention and ABI |
+| Objective-C | `@call(.ObjC)` | Objective-C calling convention and ABI |
+
+Foreign domain rules:
+- Foreign values do not automatically become native owned CoreX values.
+- Foreign pointers remain raw handles unless explicitly wrapped.
+- Native ownership/borrowing and foreign residency are separate semantic axes.
+- Safe wrappers can be built on top of raw foreign interfaces.
+- Domains without supported call convention implementation are not first-class FFI.
+
+Note: Foreign domains are identified through call convention attributes. The `extern` block library name is symbolic and does not encode domain.
+
+Example:
+
+```text
+@call(.C)
+extern libSystem {
+    fn strlen(s: *void) -> usize;
+}
+
+@call(.ObjC)
+extern libObjC {
+    fn objc_msgSend(obj: *mut void, selector: *const char) -> *mut void;
+}
+```
+
+### 10.2 Extern Block
+
+Foreign blocks use call convention attributes to identify the FFI domain.
 
 ```ebnf
 extern_block       = { attribute }, "extern", identifier, "{",
@@ -828,7 +878,27 @@ extern_block       = { attribute }, "extern", identifier, "{",
                      "}" ;
 ```
 
-### 10.2 Foreign Function Declaration
+Calling convention attributes:
+- `@call(.C)` - Identifies C calling convention and FFI domain
+- `@call(.ObjC)` - Identifies Objective-C calling convention and FFI domain
+- Function-level `@call(...)` overrides block-level attribute
+
+Example:
+
+```text
+@call(.C)
+extern libSystem {
+    fn strlen(s: *void) -> usize;
+    fn pid = getpid() -> i32;
+}
+
+@call(.ObjC)
+extern libObjC {
+    fn objc_msgSend(obj: *mut void, selector: *const char) -> *mut void;
+}
+```
+
+### 10.3 Foreign Function Declaration
 
 ```ebnf
 extern_member      = { attribute },
@@ -838,7 +908,7 @@ extern_member      = { attribute },
                      ";" ;
 ```
 
-### 10.3 Foreign Parameter Forms
+### 10.4 Foreign Parameter Forms
 
 ```ebnf
 extern_param_list  = extern_param, { ",", extern_param } ;
@@ -846,7 +916,7 @@ extern_param_list  = extern_param, { ",", extern_param } ;
 extern_param       = labeled_param ;
 ```
 
-### 10.4 Supported Foreign Type Surface (Current Parser)
+### 10.5 Supported Foreign Type Surface (Current Parser)
 
 Foreign declarations currently reuse the frontend `type` parser surface. The
 common FFI subset used by examples includes:
@@ -879,61 +949,464 @@ Semantic notes:
 4. If no explicit call convention is provided, the default foreign calling convention is `C`.
 5. `fn local = symbol(...) -> T;` declares a local imported name distinct from the native symbol name.
 
-## 11. Attributes and Macro-Like Forms
+## 11. Unified Declarative Macro System
 
-### 11.1 Attributes
+CoreX macros use one unified compile-time syntax expansion model.
 
-```ebnf
-attribute = "@", identifier, [ macro_args ] ;
-```
+### 11.1 Design goals
 
-### 11.2 Macro Argument Forms
+CoreX macros are designed to cover:
 
-```ebnf
-macro_args = "(", [ argument_list ], ")"
-           | block
-           ;
-```
+- simple declarative syntax rewriting
+- derive-style item expansion
+- structured compile-time AST reflection
+- hygienic syntax generation
 
-### 11.3 Attribute placement and macro interpretation
+Core principles:
 
-```ebnf
-macro_expr      = "@", identifier, [ macro_args ] ;
-macro_expr_stmt = macro_expr, ";" ;
-```
+- macros expand before HIR lowering
+- macros operate on syntax, not semantic/type information
+- macros are hygienic by default
+- macros emit syntax, not direct semantic IR
+- macros use a declarative surface syntax
+- structured AST reflection is allowed, but read-only
 
-Context rules:
+This model is intentionally aimed at covering most practical `macro_rules!` and many proc-macro-style use cases without requiring an immediate heavyweight procedural macro plugin system.
 
-- Declaration prefixes use this order: outer doc comments first, then attributes,
-  then the declaration head.
-- Attribute placement currently includes:
-  - top-level declaration items except `use` and `scope` in the current parser stage
-  - function and initializer declarations
-  - struct/enum/impl/protocol members that are declaration-shaped (`fn`, `init`)
-  - struct fields
-  - enum variants / enum cases
-  - extern members
-  - protocol members
-- Outer doc comments may precede and attach to the same declaration positions.
-- In attribute slots before declarations/items, `@name`, `@name(...)`, and `@name { ... }` are parsed as `attribute`.
-- In expression position, the same surface syntax is parsed as `macro_expr`.
-- In statement position, macro invocation is parsed through normal expression-statement rules and therefore requires `;`.
-- Attributes are not allowed on ordinary statements, patterns, or arbitrary non-macro expressions.
-- Ordinary comments remain trivia and are not attached as docs.
+### 11.2 Compiler pipeline placement
 
-### 11.4 Context examples
+Frontend pipeline:
 
 ```text
-@call(.C)
-
-extern libSystem {
-    fn strlen(_ s: *void) -> usize;
-}
-
-let s = @format("value \(x)");
-
-@log("hello");
+AST
+→ Expanded AST
+→ HIR / desugar
+→ semantic analysis
+→ later typed / borrow-checked lowering
 ```
+
+Macro expansion runs between parsed AST and HIR lowering.
+
+Macros consume AST fragments and emit expanded AST fragments.
+
+Expansion must preserve source provenance so diagnostics, hover, inlay hints, and tooling can map expanded syntax back to original source locations.
+
+### 11.3 Invocation syntax
+
+Macros are invoked with `@`.
+
+```ebnf
+attribute       = "@", identifier, [ macro_args ] ;
+macro_expr      = "@", identifier, [ macro_args ] ;
+macro_expr_stmt = macro_expr, ";" ;
+
+macro_args      = "(", [ argument_list ], ")"
+                | block
+                ;
+```
+
+Supported invocation families:
+
+A. Attached/item-position invocation
+
+```text
+@derive
+struct Foo { ... }
+
+@derive(Debug, Clone)
+enum Color { ... }
+```
+
+B. Call-style invocation
+
+```text
+@unless(x > 0, {
+    print("non-positive");
+})
+```
+
+C. Block-style invocation
+
+```text
+@sql {
+    select * from users
+}
+```
+
+The `@` prefix keeps macro invocation visually distinct from runtime calls.
+
+### 11.4 Macro definition syntax
+
+Macros are declared with `macro`.
+
+```ebnf
+macro_decl   = "macro", identifier, "{", { macro_clause }, "}" ;
+macro_clause = rule_clause | reflect_clause ;
+
+rule_clause    = "rule", "(", macro_param_list, ")", "=>", block, ";" ;
+reflect_clause = "reflect", "(", macro_param_list, ")", "=>", block, ";" ;
+
+macro_param_list = [ macro_param, { ",", macro_param } ] ;
+macro_param      = identifier, ":", macro_input_kind ;
+```
+
+Unified form:
+
+```text
+macro name {
+    rule(input: Tokens) => {
+        ...
+    };
+
+    reflect(item: Item) => {
+        ...
+    };
+
+    reflect(item: Item, args: MacroArgs) => {
+        ...
+    };
+}
+```
+
+Clause order is significant only if dispatch uses first-match behavior for overlap.
+
+### 11.5 Clause kinds
+
+#### 11.5.1 `rule`
+
+`rule` is for ordinary declarative syntax rewriting.
+
+```text
+macro unless {
+    rule(cond: Expr, body: Block) => {
+        if !cond body
+    };
+}
+```
+
+Typical use:
+
+- lightweight syntax sugar
+- expression/block rewrites
+- token/block wrappers
+- small local syntax DSLs
+
+#### 11.5.2 `reflect`
+
+`reflect` is for declarative expansion requiring structured AST inspection.
+
+```text
+macro derive_debug {
+    reflect(item: Item) => {
+        if item.kind == .Enum {
+            ...
+        } else if item.kind == .Struct {
+            ...
+        } else {
+            error("derive_debug only supports enum or struct");
+        }
+    };
+}
+```
+
+Typical use:
+
+- derive-like expansion
+- enum/struct/function shape inspection
+- boilerplate generation
+- compile-time branching on syntax structure
+
+`reflect` remains syntax-oriented and declarative; it is not a general compiler plugin API.
+
+### 11.5.1 Supported Macro Forms
+
+The CoreX macro system currently supports a well-defined subset of macro forms:
+
+**Expression Macros (Rule Clauses)**:
+- Call-style: `@macro(arg1, arg2)` with `rule(...: Expr)`
+- Block-style: `@macro { tokens }` with `rule(...: Tokens)`
+
+**Item Macros (Reflect Clauses)**:
+- Attached: `@macro struct Foo { ... }` with `reflect(...: Item)`
+
+**Not Yet Supported**:
+- Attached rule macros: `rule(...: Item)` - use `reflect(...: Item)` instead
+- Expression reflection: `reflect(...: Expr)` - use `rule(...: Expr)` instead
+- Block reflection: `reflect(...: Tokens)` - use `rule(...: Tokens)` instead
+- Statement/Type/Pattern inputs: Declared but not implemented
+- MacroArgs parameter: Declared but not implemented
+
+Attempting to use unsupported forms will result in clear, actionable error messages that guide you to the correct alternative.
+
+### 11.6 Input kinds
+
+Supported macro input classes:
+
+#### 11.6.1 Structured syntax inputs
+
+- `Item`
+- `Expr`
+- `Stmt`
+- `Block`
+- `Type`
+- `Pattern`
+
+These are available in `reflect(...)`, and may later be available for richer `rule(...)` matching.
+
+#### 11.6.2 Raw-ish syntax inputs
+
+- `Tokens`
+- `MacroArgs`
+
+`Tokens` is a raw syntax bundle for catch-all rewriting.
+
+`MacroArgs` models parsed macro argument lists (for example `@derive(Debug, Clone)`), initially as a structured sequence of simple arguments, extensible over time.
+
+### 11.7 Suggested dispatch model
+
+Dispatch is by invocation form and compatible clause signature.
+
+Examples:
+
+- `@derive struct Foo { ... }` -> compatible `reflect(item: Item)`
+- `@derive(Debug, Clone) struct Foo { ... }` -> compatible `reflect(item: Item, args: MacroArgs)`
+- `@unless(...)` or `@sql { ... }` -> compatible `rule(...)`
+
+When multiple clauses are compatible, first applicable clause may be selected; otherwise expansion fails with a macro expansion error.
+
+### 11.8 Reflection model
+
+`reflect(...)` receives a read-only syntax reflection view.
+
+Must NOT expose:
+
+- inferred types
+- resolved imports
+- semantic item ids
+- borrow information
+- dataflow/ownership facts
+
+May expose:
+
+- syntactic kind
+- name
+- visibility
+- attributes
+- generics
+- parameters
+- fields
+- variants
+- bodies (where allowed)
+- spans/provenance metadata
+
+Conceptual API:
+
+```text
+item.kind
+item.name
+item.visibility
+item.attrs
+
+item.as_struct().fields
+field.name
+field.ty
+
+item.as_enum().variants
+variant.name
+variant.payload
+
+item.as_function().params
+item.as_function().return_type
+```
+
+### 11.9 Syntax generation model
+
+Macro clauses emit syntax fragments appropriate to invocation position.
+
+Examples:
+
+- item-position invocation emits items/item fragments
+- expression-position invocation emits expressions
+- statement/block-position invocation emits statements/blocks
+
+Expanded output re-enters the standard pipeline as Expanded AST.
+
+### 11.10 Hygiene model
+
+Macros are hygienic by default.
+
+#### 11.10.1 Macro-introduced bindings
+
+Macro-introduced names are freshened to avoid collisions.
+
+```text
+let tmp = ...
+```
+
+may expand to an internal fresh binding conceptually like:
+
+```text
+let tmp#generated123 = ...
+```
+
+#### 11.10.2 Reflected/input names
+
+Names originating from macro input preserve call-site identity.
+
+#### 11.10.3 Literal names in macro definitions
+
+Literal names written in macro definitions resolve in macro-definition scope by default.
+
+This yields a predictable split:
+
+- generated internals are hygienically fresh
+- user-provided names preserve user identity
+- literal references in macro definitions are definition-scoped
+
+### 11.11 Relationship to future procedural macros
+
+This unified declarative+reflection model is intended to absorb many proc-macro-like use cases:
+
+- derive-like item generation
+- syntax introspection of enum/struct/function items
+- boilerplate generation
+- lightweight syntax DSLs
+- surface syntax sugar expansion
+
+Full procedural macros may be added later, but are not required for initial macro architecture.
+
+### 11.12 Examples
+
+#### 11.12.1 Simple rule macro
+
+```text
+macro unless {
+    rule(cond: Expr, body: Block) => {
+        if !cond body
+    };
+}
+```
+
+Use:
+
+```text
+@unless(x == 0, {
+    print("nonzero");
+});
+```
+
+#### 11.12.2 Attached derive-style macro without args
+
+```text
+macro derive_debug {
+    reflect(item: Item) => {
+        if item.kind == .Enum {
+            ...
+        } else if item.kind == .Struct {
+            ...
+        } else {
+            error("derive_debug only supports enum or struct");
+        }
+    };
+}
+```
+
+Use:
+
+```text
+@derive_debug
+enum Color { Red, Green, Blue }
+```
+
+#### 11.12.3 Attached derive-style macro with args
+
+```text
+macro derive {
+    reflect(item: Item, args: MacroArgs) => {
+        for arg in args {
+            ...
+        }
+    };
+}
+```
+
+Use:
+
+```text
+@derive(Debug, Clone, Eq)
+struct Point { x: i32, y: i32 }
+```
+
+#### 11.12.4 Token/block-style macro
+
+```text
+macro sql {
+    rule(input: Tokens) => {
+        ...
+    };
+}
+```
+
+Use:
+
+```text
+@sql {
+    select * from users
+}
+```
+
+### 11.13 Source provenance requirements
+
+Expanded AST nodes should retain origin metadata such as:
+
+- direct source node
+- expanded-from source node
+- synthetic/generated for source node
+
+This preserves usability for diagnostics and tooling.
+
+### 11.14 Desugar interaction
+
+Macro expansion runs before desugar.
+
+Desugar consumes Expanded AST.
+
+Responsibility split:
+
+- macro expansion: syntax generation
+- desugar: surface normalization
+- semantic analysis: meaning
+
+### 11.15 Non-goals for first version
+
+Not included initially:
+
+- full semantic reflection
+- inferred type queries inside macros
+- borrow-checker data inside macros
+- arbitrary compiler plugin execution
+- full Rust-style token-tree complexity
+- advanced hygiene control surface
+- full procedural macro ABI
+
+### 11.16 Summary
+
+CoreX uses one unified macro model:
+
+```text
+macro name {
+    rule(...) => ...;
+    reflect(...) => ...;
+}
+```
+
+Invocation forms:
+
+- `@name`
+- `@name(...)`
+- `@name { ... }`
+
+The system provides declarative rewriting, structured compile-time AST reflection, hygienic expansion, and syntax output into Expanded AST.
 
 ## 12. Patterns
 
@@ -986,6 +1459,27 @@ Pattern notes:
 - Variant shorthand forms like `.none`, `.some(x)`, and `.some(..)` are part of source pattern surface.
 - Tuple patterns require at least one comma; `(x)` is not tuple-pattern syntax.
 - Array/variant/struct rest marker `..` is allowed at most once and must be final.
+
+#### Match Exhaustiveness
+
+`match` expressions must be exhaustive: all possible values must be handled.
+
+```text
+enum Color {
+    red,
+    green,
+    blue,
+}
+
+let c = Color.red;
+// Error: non-exhaustive match
+let name = match c {
+    .red => "red",
+    .green => "green",
+};
+```
+
+The `_` wildcard pattern can cover unmatched cases:
 
 ## 13. Blocks and Statements
 
@@ -1313,7 +1807,7 @@ Expression-form notes:
 ### 15.10 Closures
 
 ```ebnf
-closure_expr       = "{", [ closure_signature ], closure_body, "}" ;
+closure_expr       = [ "unsafe" ], "{", [ closure_signature ], closure_body, "}" ;
 
 closure_signature  = closure_param_list, "in" ;
 closure_param_list = closure_param, { ",", closure_param } ;
@@ -1323,6 +1817,8 @@ closure_param      = identifier
 
 closure_body       = { stmt }, [ expr ] ;
 ```
+
+`unsafe { ... }` marks a closure body requiring unsafe operations. This is distinct from `unsafe fn` which marks the function implementation as trusted.
 
 Examples:
 
@@ -1360,9 +1856,8 @@ protocol_fn_req      = modifier_list, "fn", identifier, [ generic_params ],
                        [ return_type ], [ where_clause ],
                        ( ";" | block ) ;
 
-protocol_init_req    = modifier_list, "init", [ init_kind ],
-                       "(", [ protocol_param_list ], ")",
-                       ( ";" | block ) ;
+protocol_init_req    = modifier_list, "init", "(", [ protocol_param_list ], ")",
+                        ( ";" | block ) ;
 
 protocol_assoc_type  = "type", identifier, [ ":", type_bound_list ], ";" ;
 
@@ -1398,15 +1893,146 @@ Semantic notes:
 4. `impl Protocol for Type { ... }` is the conformance form.
 5. Property requirements are declaration-only contracts; storage is not part of protocol syntax.
 
-## 17. Semantic Notes (Non-EBNF)
+## 17. Option and Result Types
+
+CoreX provides generic types `Option<T>` and `Result<T, E>` for optional and fallible initialization. These are ordinary generic types, not special built-in types.
+
+### 17.1 Option Type
+
+The `Option<T>` type represents optional values.
+
+```text
+enum Option<T> {
+    Some(T),
+    None,
+}
+```
+
+Semantic behavior:
+- `Option<T>` is a generic type wrapping any type `T`.
+- `None` represents absence of value.
+- `Some(T)` represents presence of value.
+- Pattern matching on `Option<T>` extracts values safely.
+
+### 17.2 Result Type
+
+The `Result<T, E>` type represents fallible operations.
+
+```text
+enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+```
+
+Semantic behavior:
+- `Result<T, E>` wraps success with `Ok(T)` and error with `Err(E)`.
+- `Ok(T)` represents successful computation with value `T`.
+- `Err(E)` represents failed computation with error `E`.
+- Pattern matching on `Result<T, E>` handles success and error cases.
+- Commonly used for operations that may fail.
+
+### 17.3 Initializer Signatures
+
+Initializers have different result types based on their initialization mode.
+
+Infallible initializer:
+```text
+init() -> Self {
+    Self { }
+}
+```
+
+Optional initializer:
+```text
+init() -> Option<Self> {
+    if condition { Self { } else { None }
+}
+```
+
+Fallible initializer:
+```text
+init() -> Result<Self, E> {
+    if condition { Self { } } else { Err(error) }
+}
+```
+
+#### Init Sugar
+
+When the return type is `Self`, the `-> Self` may be omitted:
+
+```text
+init() {     // desugars to: init() -> Self {
+    Self { }
+}
+```
+
+This sugar applies only to initializers returning `Self`.
+
+## 18. Operators for Optionals and Results
+
+### 18.1 `?` Operator (Error to Option)
+
+The `?` operator propagates errors from `Result<T, E>` to `Option<T>`.
+
+```text
+// Converts Result to Option
+fn get_user(id: i32) -> Result<User, Error> {
+    ...
+}
+
+let user = get_user(id)?;  // Result<User, Error> -> Option<User>
+```
+
+Semantic rules:
+- When applied to `Result<T, E>`, converts `Ok(T)` to `Some(T)`.
+- When applied to `Err(E)`, returns `None`.
+- Only valid on `Result<T, E>` types.
+- Chainable for sequential error propagation.
+
+Optional access shorthand:
+```text
+let user = db.get(id)?.name;  // Option<User> -> Option<string>
+```
+
+### 18.2 `!` Operator (Unwrap Error)
+
+The `!` operator extracts values from `Option<T>` or `Result<T, E>`, panicking if empty.
+
+```text
+let value = some_option;  // Some(T)
+let name = value!;     // panics if value is None
+```
+
+Semantic rules:
+- On `Option<T>`, panics if value is `None`.
+- On `Result<T, E>`, panics if value is `Err(E)`.
+- `??` (`??`) provides non-panicking alternative.
+- Intentional panic, not error handling.
+
+### 18.3 `??` Operator (Null Coalescing)
+
+The `??` operator provides a default value when left-hand side is empty or invalid.
+
+```text
+let maybe_value: Option<i32> = None;
+let value = maybe_value ?? 0;  // value is 0
+```
+
+Semantic rules:
+- Left-hand side must have type `Option<T>`.
+- Right-hand side type must match `T` from left-hand side.
+- Not valid on `Result<T, E>` types.
+- Non-panicking alternative to `!` operator.
+
+## 19. Semantic Notes (Non-EBNF)
 
 - Function aliasing in foreign declarations uses `fn local = native(...)`.
 - In foreign lowering, function-level call convention overrides block-level.
 - When no foreign call-convention attribute is present, default is C.
 - Grammar here specifies syntax shape; runtime ABI truth is validated separately.
 
-## 18. Example Fragment
-
+Example:
 ```text
 @call(.C)
 extern libSystem {
@@ -1423,3 +2049,233 @@ fn demo() -> i32 {
     if x > 0 { x } else { 0 }
 }
 ```
+
+## 20. Memory Model and Ownership
+
+### 20.1 Native Value Ownership
+
+CoreX uses Rust-style ownership semantics for native values.
+
+Core principles:
+- Every native value has exactly one owner at any time.
+- When a value is assigned to a new binding, ownership transfers unless the type is `Copy`.
+- When the owner goes out of scope, the value is dropped deterministically.
+- No tracing garbage collection.
+Move vs Copy:
+- Types implementing `Copy` are implicitly copied on assignment.
+- Non-`Copy` types are moved on assignment.
+- After a move, the source binding is no longer usable.
+
+Examples:
+
+```text
+let a = String("hello");
+let b = a;  // moves a to b; a is no longer valid
+// a.c_str();  // error: use of moved value
+
+let x = 42;
+let y = x;  // copies x; both x and y remain valid
+```
+
+### 20.2 Borrowed References
+
+CoreX distinguishes borrowed references from raw pointers.
+
+Borrow forms:
+- `&T` - shared borrow, allows reading but not modification
+- `&mut T` - exclusive mutable borrow, allows both reading and writing
+
+Borrow rules:
+- Borrows are validated at compile time.
+- Multiple shared borrows (`&T`) can coexist.
+- Only one exclusive borrow (`&mut T`) can exist, and no other borrows can coexist with it.
+- Borrows must not outlive the value they borrow.
+
+Example:
+
+```text
+fn shared_borrow(s: &String) -> usize {
+    s.len()
+}
+
+fn exclusive_borrow(s: &mut String) {
+    s.push('!')
+}
+```
+
+### 20.3 Raw Pointers
+
+Raw pointers provide manual memory control without borrow checking.
+
+Raw pointer forms:
+- `*T` - raw const pointer
+- `*mut T` - raw mutable pointer
+
+Raw pointer rules:
+- No lifetime guarantees.
+- No automatic dereferencing or bounds checking.
+- Dereference requires `unsafe`.
+- Used for FFI, custom allocators, and unsafe low-level operations.
+
+Example:
+
+```text
+unsafe fn raw_ptr_example(ptr: *mut i32) {
+    *ptr = 42;
+}
+```
+
+### 20.4 Drop Behavior
+
+The `Drop` compiler-recognized protocol defines cleanup behavior.
+
+`Drop` semantics:
+- When a value goes out of scope, its `drop` method is called.
+- `Drop` is called exactly once per value.
+- `drop` order is reverse of construction order.
+- Types implementing `NoDrop` are not dropped and can be bulk-freed.
+
+Example:
+
+```text
+protocol Drop {
+    fn drop(&mut self);
+}
+
+struct Buffer {
+    ptr: *mut u8,
+    len: usize,
+}
+
+impl Drop for Buffer {
+    fn drop(&mut self) {
+        // free memory
+    }
+}
+```
+
+### 20.5 Allocator Awareness
+
+CoreX design leaves room for allocator-aware destruction without specifying allocator parameters.
+
+`NoDrop` for arena-style allocation:
+- `NoDrop` types can be safely destroyed by freeing their arena.
+- Arena allocators can track allocations and drop-free.
+- `NoDrop` is a compiler-recognized protocol, distinct from `Drop`.
+
+## 21. Compiler-Recognized Protocols (Lang Items)
+
+CoreX recognizes a set of foundational protocols as compiler lang items.
+
+Lang item protocols are distinguished from ordinary protocols:
+- They have compiler-known semantic effects.
+- They cannot be used as general traits for arbitrary types.
+- Implementations may require `unsafe` where soundness requires explicit trust.
+
+### 21.1 Drop
+
+The `Drop` protocol defines custom cleanup logic.
+
+```text
+protocol Drop {
+    fn drop(&mut self);
+}
+```
+
+Semantic effect:
+- Called deterministically when value goes out of scope.
+- Must not panic or abort in normal operation.
+
+### 21.2 Copy
+
+The `Copy` protocol marks types that can be implicitly copied.
+
+```text
+protocol Copy {}
+```
+
+Semantic effect:
+- Assignment copies instead of moves.
+- Function arguments are copied instead of moved.
+- Return values are copied instead of moved.
+- Trivial types (primitives) implement `Copy` by default.
+
+### 21.3 Clone
+
+The `Clone` protocol defines explicit cloning semantics.
+
+```text
+protocol Clone {
+    fn clone(&self) -> Self;
+}
+```
+
+Semantic effect:
+- Provides explicit `clone()` method for deep copying.
+- Unlike `Copy`, `clone()` is an explicit method call.
+- Non-`Copy` types should implement `Clone`.
+
+### 21.4 NoDrop
+
+The `NoDrop` protocol marks types safe for bulk destruction.
+
+```text
+protocol NoDrop {}
+```
+
+Semantic effect:
+- Values are not dropped individually.
+- Arena allocators can free entire arenas without calling drop.
+- Types with manual memory management may implement `NoDrop`.
+
+### 21.5 Sized
+
+The `Sized` protocol marks types with known size at compile time.
+
+```text
+protocol Sized {}
+```
+
+Semantic effect:
+- Used by generic bounds to require compile-time known size.
+- Most types implement `Sized` by default.
+- Dynamically-sized types (slices) may not implement `Sized`.
+
+### 21.6 Deref
+
+The `Deref` protocol defines pointer-like behavior.
+
+```text
+protocol Deref {
+    fn deref(&self) -> &Self::Target;
+}
+```
+
+Semantic effect:
+- Enables smart pointer behavior via `*expr` operator.
+- Used for custom pointer types, iterators, and wrappers.
+
+### 21.7 Move
+
+The `Move` protocol marks types with explicit move semantics (optional).
+
+```text
+protocol Move {}
+```
+
+Semantic effect:
+- Used by generic bounds to require move-only types.
+- `Copy` and `Move` are mutually exclusive.
+- Non-`Copy` types are implicitly move-only.
+
+## 22. Implementation Intent
+
+CoreX semantics follow Rust-style ownership and borrowing principles.
+
+Implementation characteristics:
+- Deterministic destruction without tracing GC.
+- Foreign domains (C, Objective-C) are first-class and distinct from native ownership.
+- Unsafe boundaries are explicit and well-defined.
+- Compiler-recognized protocols are surgical lang items, not general abstractions.
+- Implementation architecture aims for cleaner compiler design than rustc, with incremental and query-friendly construction.
+

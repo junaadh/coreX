@@ -2,7 +2,7 @@ use super::import_resolver::{ImportBindingKind, ResolvedImports};
 use super::item_ids::ItemId;
 use super::item_table::GlobalItemTable;
 use super::model::ScopeGraph;
-use crate::frontend::ParsedFile;
+use crate::frontend::ExpandedFile;
 use crate::frontend::ast::{
     EnumCaseParam, EnumMember, FunctionDecl, ImplDecl, ImplMember, Item,
     ParamDecl, ProtocolMember, StructMember, Type,
@@ -172,7 +172,7 @@ impl ResolvedDeclarationTable {
 #[must_use]
 pub fn resolve_declaration_types(
     graph: &ScopeGraph,
-    parsed_files: &[ParsedFile],
+    parsed_files: &[ExpandedFile],
     imports: &BTreeMap<FileId, ResolvedImports>,
     item_table: &GlobalItemTable,
 ) -> ResolvedDeclarationTable {
@@ -191,7 +191,7 @@ pub fn resolve_declaration_types(
 
 struct DeclarationResolver<'a> {
     graph: &'a ScopeGraph,
-    parsed_by_id: BTreeMap<FileId, &'a ParsedFile>,
+    parsed_by_id: BTreeMap<FileId, &'a ExpandedFile>,
     imports: &'a BTreeMap<FileId, ResolvedImports>,
     item_table: &'a GlobalItemTable,
     unresolved_paths: Vec<UnresolvedDeclarationPath>,

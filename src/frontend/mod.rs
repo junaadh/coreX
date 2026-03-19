@@ -6,6 +6,7 @@
 
 pub mod ast;
 pub mod diagnostics;
+pub mod expansion;
 pub mod lexer;
 pub mod parse_session;
 pub mod parsed_file;
@@ -21,6 +22,12 @@ pub use diagnostics::{
     diagnostic_from_file_parse_error, diagnostic_from_import_resolve_error,
     diagnostic_from_parse_error, diagnostic_from_resolve_error,
     diagnostics_from_semantic_checks,
+};
+pub use expansion::{
+    ExpandedFile, ExpansionOptions, MacroClause, MacroClauseKind,
+    MacroDefinition, MacroInputSignature, MacroInvocation,
+    MacroInvocationShape, MacroParam, MacroTable, SelectedMacroClause,
+    dispatch_macro, expand_file, expand_parsed_files,
 };
 pub use parse_session::ParseSession;
 pub use parsed_file::{FileParseError, ParseSessionError, ParsedFile};

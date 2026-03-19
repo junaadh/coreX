@@ -1,5 +1,6 @@
 //! Expression-level source AST nodes.
 
+use super::decl::MacroBlock;
 use super::pattern::Pattern;
 use super::span::Spanned;
 use super::stmt::{Block, ClauseList};
@@ -121,7 +122,7 @@ pub struct ClosureParam {
 #[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MacroExprArgs {
     Paren(Vec<CallArg>),
-    Braced(Block),
+    Braced(MacroBlock),
 }
 
 /// Source expressions.
@@ -161,6 +162,7 @@ pub enum Expr {
         fields: Vec<StructLiteralField>,
     },
     Block(Block),
+    UnsafeBlock(Block),
     If {
         clauses: ClauseList,
         then_branch: Block,
@@ -176,6 +178,7 @@ pub enum Expr {
         params: Vec<ClosureParam>,
         body: Block,
         uses_shorthand_params: bool,
+        is_unsafe: bool,
     },
     Macro {
         name: String,

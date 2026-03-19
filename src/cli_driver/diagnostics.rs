@@ -1,6 +1,6 @@
 use crate::cli_driver::project::{ProjectContext, parsed_by_id};
 use core_x::frontend::source::SourceDb;
-use core_x::frontend::{DiagnosticRenderer, DiagnosticsBag, ParsedFile};
+use core_x::frontend::{DiagnosticRenderer, DiagnosticsBag, ExpandedFile};
 
 pub fn emit_diagnostics_bag(db: &SourceDb, bag: &DiagnosticsBag) {
     if bag.is_empty() {
@@ -13,7 +13,7 @@ pub fn emit_diagnostics_bag(db: &SourceDb, bag: &DiagnosticsBag) {
     }
 }
 
-pub fn emit_file_diagnostics(db: &SourceDb, parsed: &ParsedFile) {
+pub fn emit_file_diagnostics(db: &SourceDb, parsed: &ExpandedFile) {
     if parsed.diagnostics.is_empty() {
         return;
     }

@@ -16,11 +16,12 @@ use core_x::frontend::resolver::{
 use core_x::frontend::source::{FileId, SourceDb, SourceFile};
 use core_x::frontend::{
     DefinitionLocation, DefinitionTarget, Diagnostic, DiagnosticsBag,
-    ExternalSemanticLookup, GlobalItem, GlobalItemTable, ImportRootKind,
-    ParsedFile, ProjectLoader, SemanticAnalysis, SemanticCompletionKind,
-    analyze_semantics_with_external_lookup, build_external_semantic_lookup,
-    build_target_roots, collect_item_definition_locations,
-    completion_candidates_for_file, load_local_dependency_project_graph,
+    ExpansionOptions, ExpandedFile, ExternalSemanticLookup, GlobalItem, GlobalItemTable,
+    ImportRootKind, ProjectLoader, SemanticAnalysis,
+    SemanticCompletionKind, analyze_semantics_with_external_lookup,
+    build_external_semantic_lookup, build_target_roots,
+    collect_item_definition_locations, completion_candidates_for_file,
+    expand_parsed_files, load_local_dependency_project_graph,
     local_binding_type, lookup_definition_target,
 };
 use serde_json::{Value, json};
@@ -33,7 +34,7 @@ use std::sync::Arc;
 pub struct DocumentAnalysis {
     pub uri: String,
     pub db: SourceDb,
-    pub parsed_files: Vec<ParsedFile>,
+    pub parsed_files: Vec<ExpandedFile>,
     pub primary_file_id: FileId,
     pub diagnostics: DiagnosticsBag,
     pub imports: BTreeMap<FileId, core_x::frontend::ResolvedImports>,
@@ -287,7 +288,8 @@ pub fn completion_for_position(
 
     for keyword in [
         "fn", "struct", "enum", "protocol", "scope", "use", "let", "var", "if",
-        "else", "while", "for", "return", "root", "super",
+        "else", "while", "for", "return", "async", "unsafe", "await", "root",
+        "super",
     ] {
         insert_completion_item(
             &mut items,
@@ -425,7 +427,8 @@ fn analyze_standalone(
     };
     let parsed = parse_source_file_from_source_file_with_recovery(file)
         .map_err(|error| format!("failed to initialize parser: {error}"))?;
-    let parsed_files = vec![parsed];
+    let parsed_files =
+        expand_parsed_files(&db, &[parsed], ExpansionOptions::default());
 
     let mut diagnostics = DiagnosticsBag::new();
     for parsed in &parsed_files {
@@ -524,7 +527,7 @@ fn analyze_in_project(
     }
 
     let mut db = SourceDb::new();
-    let mut parsed_files = Vec::with_capacity(files.len());
+    let mut parsed = Vec::with_capacity(files.len());
     let mut path_by_file_id = BTreeMap::new();
     let mut file_id_by_path = BTreeMap::new();
 
@@ -543,31 +546,34 @@ fn analyze_in_project(
         let Some(file) = db.file(file_id) else {
             return Err(format!("missing source file id {}", file_id.raw()));
         };
-        let parsed = parse_source_file_from_source_file_with_recovery(file)
+        let parsed_file = parse_source_file_from_source_file_with_recovery(file)
             .map_err(|error| format!("failed to initialize parser: {error}"))?;
-        parsed_files.push(parsed);
+        parsed.push(parsed_file);
         path_by_file_id.insert(file_id, normalized.clone());
         file_id_by_path.insert(normalized, file_id);
     }
+
+    let expanded_files =
+        expand_parsed_files(&db, &parsed, ExpansionOptions::default());
 
     let Some(primary_file_id) = file_id_by_path.get(&path).copied() else {
         return analyze_standalone(uri, path, open_text.to_string());
     };
 
     let mut diagnostics = DiagnosticsBag::new();
-    for parsed in &parsed_files {
-        diagnostics.extend(parsed.diagnostics.as_slice().iter().cloned());
+    for expanded in &expanded_files {
+        diagnostics.extend(expanded.diagnostics.as_slice().iter().cloned());
     }
 
     let (root_kind, root_file_id) =
         select_target_for_file(&manifest, &path, &file_id_by_path)?;
 
-    let scope_resolver = ScopeResolver::new(&db, &parsed_files);
+    let scope_resolver = ScopeResolver::new(&db, &expanded_files);
     let (graph, scope_diagnostics) =
         resolve_target_scope_graph_with_diagnostics(
             &scope_resolver,
             &db,
-            &parsed_files,
+            &expanded_files,
             root_file_id,
             root_kind,
         );
@@ -582,7 +588,7 @@ fn analyze_in_project(
             root_kind,
             &scope_resolver,
             &db,
-            &parsed_files,
+            &expanded_files,
             &file_id_by_path,
             &project_graph,
             &target_roots,
@@ -592,7 +598,7 @@ fn analyze_in_project(
         let (symbols, resolved_imports, import_diagnostics) =
             resolve_project_imports_with_named_roots_and_diagnostics(
                 graph,
-                &parsed_files,
+                &expanded_files,
                 &named_roots,
                 &db,
             );
@@ -604,12 +610,12 @@ fn analyze_in_project(
             &db,
             &named_roots,
             graph,
-            &parsed_files,
+            &expanded_files,
         );
         let semantic_result = analyze_semantics_with_external_lookup(
             &db,
             graph,
-            &parsed_files,
+            &expanded_files,
             &imports,
             &external_lookup,
         );
@@ -617,7 +623,7 @@ fn analyze_in_project(
             .extend(semantic_result.diagnostics.as_slice().iter().cloned());
         item_definitions = collect_item_definition_locations(
             graph,
-            &parsed_files,
+            &expanded_files,
             &semantic_result.global_items,
         );
         semantic = Some(semantic_result);
@@ -626,7 +632,7 @@ fn analyze_in_project(
     Ok(DocumentAnalysis {
         uri,
         db,
-        parsed_files,
+        parsed_files: expanded_files,
         primary_file_id,
         diagnostics,
         imports,
@@ -698,7 +704,7 @@ fn build_named_roots_for_project_analysis(
     root_kind: ResolvedScopeKind,
     scope_resolver: &ScopeResolver<'_>,
     db: &SourceDb,
-    parsed_files: &[ParsedFile],
+    parsed_files: &[ExpandedFile],
     file_id_by_path: &BTreeMap<PathBuf, FileId>,
     project_graph: &core_x::frontend::ProjectGraph,
     target_roots: &core_x::frontend::TargetRoots,
@@ -799,13 +805,13 @@ fn build_named_roots_for_project_analysis(
 
 fn parse_loaded_project_files(
     project: &core_x::frontend::LoadedProject,
-) -> Result<(SourceDb, Vec<ParsedFile>, BTreeMap<PathBuf, FileId>), String> {
+) -> Result<(SourceDb, Vec<ExpandedFile>, BTreeMap<PathBuf, FileId>), String> {
     let project_files =
         collect_project_cx_files(&project.manifest).map_err(|error| {
             format!("failed collecting dependency files: {error}")
         })?;
     let mut db = SourceDb::new();
-    let mut parsed_files = Vec::with_capacity(project_files.len());
+    let mut parsed = Vec::with_capacity(project_files.len());
     let mut file_id_by_path = BTreeMap::new();
 
     for absolute_path in project_files {
@@ -822,18 +828,21 @@ fn parse_loaded_project_files(
                 file_id.raw()
             ));
         };
-        let parsed = parse_source_file_from_source_file_with_recovery(file)
+        let parsed_file = parse_source_file_from_source_file_with_recovery(file)
             .map_err(|error| {
                 format!(
                     "failed to initialize parser for dependency file {}: {error}",
                     absolute_path.display()
                 )
             })?;
-        parsed_files.push(parsed);
+        parsed.push(parsed_file);
         file_id_by_path.insert(absolute_path, file_id);
     }
 
-    Ok((db, parsed_files, file_id_by_path))
+    let expanded_files =
+        expand_parsed_files(&db, &parsed, ExpansionOptions::default());
+
+    Ok((db, expanded_files, file_id_by_path))
 }
 
 fn diagnostic_to_lsp(

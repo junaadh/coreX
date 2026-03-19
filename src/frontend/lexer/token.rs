@@ -1,7 +1,7 @@
 //! Token definitions and keyword classification for the `coreX` lexer.
 
 /// Byte span in the original source buffer.
-#[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
@@ -45,6 +45,9 @@ pub enum CommentKind {
 /// Reserved keyword set for `coreX`.
 #[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Keyword {
+    Macro,
+    Rule,
+    Reflect,
     Use,
     Scope,
     Struct,
@@ -69,6 +72,8 @@ pub enum Keyword {
     SelfType,
     Pub,
     Async,
+    Await,
+    Unsafe,
     In,
     Where,
     True,
@@ -85,6 +90,9 @@ impl Keyword {
     #[must_use]
     pub const fn as_token_kind(self) -> TokenKind {
         match self {
+            Self::Macro => TokenKind::KwMacro,
+            Self::Rule => TokenKind::KwRule,
+            Self::Reflect => TokenKind::KwReflect,
             Self::Use => TokenKind::KwUse,
             Self::Scope => TokenKind::KwScope,
             Self::Struct => TokenKind::KwStruct,
@@ -109,6 +117,8 @@ impl Keyword {
             Self::SelfType => TokenKind::KwSelfType,
             Self::Pub => TokenKind::KwPub,
             Self::Async => TokenKind::KwAsync,
+            Self::Await => TokenKind::KwAwait,
+            Self::Unsafe => TokenKind::KwUnsafe,
             Self::In => TokenKind::KwIn,
             Self::Where => TokenKind::KwWhere,
             Self::True => TokenKind::KwTrue,
@@ -130,6 +140,9 @@ impl Keyword {
 #[must_use]
 pub fn classify_keyword(ident: &str) -> Option<Keyword> {
     match ident {
+        "macro" => Some(Keyword::Macro),
+        "rule" => Some(Keyword::Rule),
+        "reflect" => Some(Keyword::Reflect),
         "use" => Some(Keyword::Use),
         "scope" => Some(Keyword::Scope),
         "struct" => Some(Keyword::Struct),
@@ -154,6 +167,8 @@ pub fn classify_keyword(ident: &str) -> Option<Keyword> {
         "Self" => Some(Keyword::SelfType),
         "pub" => Some(Keyword::Pub),
         "async" => Some(Keyword::Async),
+        "await" => Some(Keyword::Await),
+        "unsafe" => Some(Keyword::Unsafe),
         "in" => Some(Keyword::In),
         "where" => Some(Keyword::Where),
         "true" => Some(Keyword::True),
@@ -204,6 +219,9 @@ pub enum TokenKind {
     InterpolationEnd,
 
     // Keywords
+    KwMacro,
+    KwRule,
+    KwReflect,
     KwUse,
     KwScope,
     KwStruct,
@@ -228,6 +246,8 @@ pub enum TokenKind {
     KwSelfType,
     KwPub,
     KwAsync,
+    KwAwait,
+    KwUnsafe,
     KwIn,
     KwWhere,
     KwTrue,

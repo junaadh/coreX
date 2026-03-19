@@ -91,12 +91,17 @@ mod tests {
     #[test]
     fn classifies_reserved_keywords() {
         let cases = [
+            ("macro", TokenKind::KwMacro),
+            ("rule", TokenKind::KwRule),
+            ("reflect", TokenKind::KwReflect),
             ("fn", TokenKind::KwFn),
             ("scope", TokenKind::KwScope),
             ("struct", TokenKind::KwStruct),
             ("self", TokenKind::KwSelfValue),
             ("Self", TokenKind::KwSelfType),
             ("try", TokenKind::KwTry),
+            ("unsafe", TokenKind::KwUnsafe),
+            ("await", TokenKind::KwAwait),
             ("as", TokenKind::KwAs),
             ("return", TokenKind::KwReturn),
         ];

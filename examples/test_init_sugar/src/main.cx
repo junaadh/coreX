@@ -1,0 +1,5 @@
+use root::Point;
+
+fn main() {
+  let p = Point(10, 20);
+}

@@ -1,0 +1,19 @@
+macro name {
+	rule (input: Tokens) => {};
+
+	reflect (item: Item) => {};
+
+	reflect (item: Item, args: MacroArgs) => {};
+}
+
+macro unless {
+	rule (cond: Expr, body: Block) => {
+		if !cond body
+	};
+}
+
+fn main() {
+	@unless(1 == 0, {
+		print("Hi");
+	});
+}

@@ -392,6 +392,34 @@ mod tests {
     }
 
     #[test]
+    fn did_open_reports_unknown_macro_diagnostic_in_standalone_analysis() {
+        let file_path = unique_temp_dir("did_open_unknown_macro")
+            .join("standalone_macro.cx");
+        let uri = path_to_uri(&file_path);
+        let messages = run_with_messages(&[
+            initialize_message(1),
+            initialized_message(),
+            did_open_message(&uri, "fn main() { @missing(1); }\n"),
+            shutdown_message(2),
+            exit_message(),
+        ]);
+        let diagnostics =
+            find_publish_diagnostics(&messages, &uri).expect("diagnostics");
+        let rendered = diagnostics["params"]["diagnostics"]
+            .as_array()
+            .expect("diagnostics array")
+            .iter()
+            .filter_map(|entry| entry.get("message").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(
+            rendered
+                .iter()
+                .any(|message| message.contains("unknown macro")),
+            "standalone LSP analysis should run expansion and report unknown macros"
+        );
+    }
+
+    #[test]
     fn did_change_updates_diagnostics_from_in_memory_text() {
         let file_path = unique_temp_dir("did_change").join("standalone.cx");
         let uri = path_to_uri(&file_path);
@@ -919,6 +947,48 @@ mod tests {
                 .iter()
                 .any(|message| message.contains("invalid call arity")),
             "namespaced extern call should not report arity mismatch"
+        );
+    }
+
+    #[test]
+    fn project_analysis_expands_macros_before_semantic_checks() {
+        let root = unique_temp_dir("project_macro_expansion_semantic");
+        write_file(&root.join("corex.toml"), "[project]\nname = \"app\"\n");
+        write_file(
+            &root.join("src/main.cx"),
+            "macro call_malloc {\n  rule(size: Expr) => { malloc(size) };\n}\n@call(.C)\nextern libc {\n  fn malloc(size: usize) -> *mut void;\n}\nfn main() { @call_malloc(1); }\n",
+        );
+        let main_path = root.join("src/main.cx");
+        let uri = path_to_uri(&main_path);
+        let source = fs::read_to_string(&main_path)
+            .expect("read main source for didOpen");
+
+        let messages = run_with_messages(&[
+            initialize_message(1),
+            initialized_message(),
+            did_open_message(&uri, &source),
+            shutdown_message(2),
+            exit_message(),
+        ]);
+        let diagnostics =
+            find_publish_diagnostics(&messages, &uri).expect("diagnostics");
+        let rendered = diagnostics["params"]["diagnostics"]
+            .as_array()
+            .expect("diagnostics array")
+            .iter()
+            .filter_map(|entry| entry.get("message").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(
+            rendered
+                .iter()
+                .any(|message| message.contains("invalid extern call target")),
+            "semantic analysis should observe expanded macro output in project mode"
+        );
+        assert!(
+            !rendered
+                .iter()
+                .any(|message| message.contains("unknown macro")),
+            "macro invocation should be consumed by expansion before semantic analysis"
         );
     }
 

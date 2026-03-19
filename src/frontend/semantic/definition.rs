@@ -3,7 +3,7 @@ use super::external_lookup::{
     ExternalDefinitionLocation, ExternalSemanticLookup,
 };
 use super::types::Type;
-use crate::frontend::ParsedFile;
+use crate::frontend::ExpandedFile;
 use crate::frontend::ast::{Item, Span};
 use crate::frontend::resolver::{
     GlobalItemTable, ImportBindingKind, ItemId, LocalId, ResolvedBodyRef,
@@ -433,10 +433,10 @@ pub fn local_binding_type(
 #[must_use]
 pub fn collect_item_definition_locations(
     graph: &ScopeGraph,
-    parsed_files: &[ParsedFile],
+    parsed_files: &[ExpandedFile],
     item_table: &GlobalItemTable,
 ) -> BTreeMap<ItemId, DefinitionLocation> {
-    let parsed_by_id: BTreeMap<FileId, &ParsedFile> = parsed_files
+    let parsed_by_id: BTreeMap<FileId, &ExpandedFile> = parsed_files
         .iter()
         .map(|parsed| (parsed.file_id, parsed))
         .collect();
@@ -459,7 +459,10 @@ pub fn collect_item_definition_locations(
                     Some(protocol_decl.node.name.clone())
                 }
                 Item::Scope(scope_decl) => Some(scope_decl.node.name.clone()),
-                Item::Use(_) | Item::Impl(_) | Item::ExternBlock(_) => None,
+                Item::Use(_)
+                | Item::Impl(_)
+                | Item::ExternBlock(_)
+                | Item::Macro(_) => None,
             };
             let Some(name) = name else {
                 continue;

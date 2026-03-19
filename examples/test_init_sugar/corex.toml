@@ -1,0 +1,9 @@
+[project]
+name = "test_init_sugar"
+
+[lib]
+name = "test_init_sugar"
+
+[[bin]]
+name = "test_init_sugar"
+path = "src/main.cx"
