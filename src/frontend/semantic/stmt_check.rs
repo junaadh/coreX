@@ -1,7 +1,7 @@
 use super::body_env::BodyTypeEnvironmentTable;
 use super::expr_check::{ExpressionTypeTable, check_expression_types};
 use super::{BuiltinType, Type, TypedItemTable};
-use crate::frontend::ExpandedFile;
+use crate::frontend::DesugaredFile;
 use crate::frontend::ast::{
     Block, Clause, Expr, Item, Pattern, Span, Stmt, StructMember,
 };
@@ -152,7 +152,7 @@ impl StatementTypeTable {
 #[must_use]
 pub fn check_statements(
     graph: &ScopeGraph,
-    parsed_files: &[ExpandedFile],
+    parsed_files: &[DesugaredFile],
     global_items: &GlobalItemTable,
     typed_items: &TypedItemTable,
     resolved_bodies: &ResolvedBodyTable,
@@ -179,13 +179,13 @@ pub fn check_statements(
 #[must_use]
 pub fn check_statements_with_expression_types(
     graph: &ScopeGraph,
-    parsed_files: &[ExpandedFile],
+    parsed_files: &[DesugaredFile],
     global_items: &GlobalItemTable,
     resolved_bodies: &ResolvedBodyTable,
     body_envs: &BodyTypeEnvironmentTable,
     expr_types: &ExpressionTypeTable,
 ) -> StatementTypeTable {
-    let parsed_by_id: BTreeMap<FileId, &ExpandedFile> = parsed_files
+    let parsed_by_id: BTreeMap<FileId, &DesugaredFile> = parsed_files
         .iter()
         .map(|parsed| (parsed.file_id, parsed))
         .collect();
@@ -248,7 +248,7 @@ struct BodyBlockEntry<'a> {
 
 fn collect_body_blocks<'a>(
     graph: &'a ScopeGraph,
-    parsed_by_id: &'a BTreeMap<FileId, &'a ExpandedFile>,
+    parsed_by_id: &'a BTreeMap<FileId, &'a DesugaredFile>,
     global_items: &'a GlobalItemTable,
 ) -> BTreeMap<DeclarationOwner, Vec<BodyBlockEntry<'a>>> {
     let mut result: BTreeMap<DeclarationOwner, Vec<BodyBlockEntry<'a>>> =

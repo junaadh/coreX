@@ -153,7 +153,9 @@
 
 mod provenance;
 
-pub use provenance::{Provenance, ProvenanceMap, Provenanced, SynthesisPurpose};
+pub use provenance::{
+    Provenance, ProvenanceMap, Provenanced, SynthesisPurpose,
+};
 
 use crate::frontend::ParsedFile;
 use crate::frontend::ast::{
@@ -164,7 +166,9 @@ use crate::frontend::ast::{
     MatchArmBody, Pattern, ProtocolDecl, ProtocolMember, Spanned, Stmt,
     StructDecl, StructMember, Type,
 };
-use crate::frontend::diagnostics::{Diagnostic, DiagnosticLabel, DiagnosticsBag, FileSpan};
+use crate::frontend::diagnostics::{
+    Diagnostic, DiagnosticLabel, DiagnosticsBag, FileSpan,
+};
 use crate::frontend::source::FileId;
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -481,7 +485,10 @@ pub fn dispatch_macro<'a>(
             ))
             .with_label(DiagnosticLabel::primary(
                 FileSpan::new(file_id, invocation.span),
-                format!("{} invocation selected unsupported clause", invocation.shape.as_str()),
+                format!(
+                    "{} invocation selected unsupported clause",
+                    invocation.shape.as_str()
+                ),
             ))
             .with_note(format!(
                 "input kind {} is {}",
@@ -492,33 +499,47 @@ pub fn dispatch_macro<'a>(
                 "supported macro forms:\n\
                  - rule(Expr) for call-style @macro(...)\n\
                  - rule(Tokens) for block-style @macro{...}\n\
-                 - reflect(Item) for attached @macro item"
+                 - reflect(Item) for attached @macro item",
             ));
         }
 
         // Validate clause kind and input signature compatibility
         match clause.kind {
-            MacroClauseKind::Rule if !clause.input_signature.supports_rule() => {
-                return Err(Diagnostic::error("rule clause has unsupported input kind")
-                    .with_label(DiagnosticLabel::primary(
-                        FileSpan::new(file_id, invocation.span),
-                        format!("rule clauses do not support {}", clause.input_signature.as_str()),
-                    ))
-                    .with_note(format!(
-                        "rule clauses support: Expr, Tokens (found {})",
+            MacroClauseKind::Rule
+                if !clause.input_signature.supports_rule() =>
+            {
+                return Err(Diagnostic::error(
+                    "rule clause has unsupported input kind",
+                )
+                .with_label(DiagnosticLabel::primary(
+                    FileSpan::new(file_id, invocation.span),
+                    format!(
+                        "rule clauses do not support {}",
                         clause.input_signature.as_str()
-                    )))
+                    ),
+                ))
+                .with_note(format!(
+                    "rule clauses support: Expr, Tokens (found {})",
+                    clause.input_signature.as_str()
+                )));
             }
-            MacroClauseKind::Reflect if !clause.input_signature.supports_reflect() => {
-                return Err(Diagnostic::error("reflect clause has unsupported input kind")
-                    .with_label(DiagnosticLabel::primary(
-                        FileSpan::new(file_id, invocation.span),
-                        format!("reflect clauses do not support {}", clause.input_signature.as_str()),
-                    ))
-                    .with_note(format!(
-                        "reflect clauses support: Item (found {})",
+            MacroClauseKind::Reflect
+                if !clause.input_signature.supports_reflect() =>
+            {
+                return Err(Diagnostic::error(
+                    "reflect clause has unsupported input kind",
+                )
+                .with_label(DiagnosticLabel::primary(
+                    FileSpan::new(file_id, invocation.span),
+                    format!(
+                        "reflect clauses do not support {}",
                         clause.input_signature.as_str()
-                    )))
+                    ),
+                ))
+                .with_note(format!(
+                    "reflect clauses support: Item (found {})",
+                    clause.input_signature.as_str()
+                )));
             }
             _ => {}
         }
@@ -594,7 +615,9 @@ impl MacroInputSignature {
             Self::Expr => "supported (rule clauses only)",
             Self::Tokens => "supported (rule clauses only)",
             Self::Item => "supported (reflect clauses only)",
-            Self::Stmt | Self::Block | Self::Type | Self::Pattern => "not implemented",
+            Self::Stmt | Self::Block | Self::Type | Self::Pattern => {
+                "not implemented"
+            }
             Self::MacroArgs => "declared but not implemented",
         }
     }
@@ -660,9 +683,21 @@ pub fn expand_file(
     macros: &MacroTable,
     options: ExpansionOptions,
 ) -> ExpandedFile {
-    expand_file_with_hook(db, parsed, macros, options, |invocation, macros, db, file_id, provenance_map| {
-        placeholder_expand_macro(invocation, macros, db, file_id, provenance_map)
-    })
+    expand_file_with_hook(
+        db,
+        parsed,
+        macros,
+        options,
+        |invocation, macros, db, file_id, provenance_map| {
+            placeholder_expand_macro(
+                invocation,
+                macros,
+                db,
+                file_id,
+                provenance_map,
+            )
+        },
+    )
 }
 
 /// Expands a parsed-file set as one project-level macro context.
@@ -1124,7 +1159,13 @@ fn expand_clause_list(
 
 fn expand_expr(expr: &mut Spanned<Expr>, pass: &mut ExpansionPass<'_, '_>) {
     let replacement = if matches!(&expr.node, Expr::Macro { .. }) {
-        let result = (pass.hook)(expr, pass.macros, pass.db, pass.file_id, pass.provenance_map);
+        let result = (pass.hook)(
+            expr,
+            pass.macros,
+            pass.db,
+            pass.file_id,
+            pass.provenance_map,
+        );
         if !result.diagnostics.is_empty() {
             pass.diagnostics.extend(result.diagnostics);
         }
@@ -1448,7 +1489,12 @@ fn execute_rule_clause(
             ))
     })?;
     let rendered = substitute_template_identifiers(template_source, &bindings);
-    let result = parse_expanded_expr(&rendered, invocation.span, file_id, provenance_map)?;
+    let result = parse_expanded_expr(
+        &rendered,
+        invocation.span,
+        file_id,
+        provenance_map,
+    )?;
 
     // Record provenance for the expanded expression
     let provenance = Provenance::ExpandedFrom {
@@ -1711,13 +1757,21 @@ fn execute_reflect_clause(
         })?;
 
     let result = match invocation.shape {
-        MacroInvocationShape::Attached => {
-            parse_expanded_item(&rendered, invocation.span, file_id, provenance_map)
-                .map(ExpandedAstFragment::Item)
-        }
+        MacroInvocationShape::Attached => parse_expanded_item(
+            &rendered,
+            invocation.span,
+            file_id,
+            provenance_map,
+        )
+        .map(ExpandedAstFragment::Item),
         MacroInvocationShape::CallStyle | MacroInvocationShape::BlockStyle => {
-            parse_expanded_expr(&rendered, invocation.span, file_id, provenance_map)
-                .map(ExpandedAstFragment::Expr)
+            parse_expanded_expr(
+                &rendered,
+                invocation.span,
+                file_id,
+                provenance_map,
+            )
+            .map(ExpandedAstFragment::Expr)
         }
     };
 
@@ -2277,7 +2331,14 @@ fn parse_expanded_item(
 
     // v1 provenance bridge: keep macro call-site span on expanded root as
     // ExpandedFrom origin until full origin metadata lands in AST.
-    apply_hygiene_to_item(&mut item, invocation_span, rendered, 0, file_id, provenance_map);
+    apply_hygiene_to_item(
+        &mut item,
+        invocation_span,
+        rendered,
+        0,
+        file_id,
+        provenance_map,
+    );
     item.span = invocation_span;
     Ok(item)
 }
@@ -2368,10 +2429,13 @@ impl HygieneContext {
         *name = fresh.clone();
 
         // Record provenance for the synthetic identifier
-        self.provenance_map.insert(span, Provenance::SyntheticFor {
-            purpose: SynthesisPurpose::HygieneRename,
-            related_span: Some((self.file_id, span)),
-        });
+        self.provenance_map.insert(
+            span,
+            Provenance::SyntheticFor {
+                purpose: SynthesisPurpose::HygieneRename,
+                related_span: Some((self.file_id, span)),
+            },
+        );
 
         if let Some(scope) = self.scopes.last_mut() {
             scope.renames.insert(original, fresh);
@@ -3053,7 +3117,7 @@ fn render_assign_op(op: crate::frontend::ast::AssignOp) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{ExpansionOptions, MacroTable, Provenance, SynthesisPurpose};
-    use crate::frontend::ast::{Expr, Item, Stmt};
+    use crate::frontend::ast::{BinaryOp, Expr, Item, Stmt};
     use crate::frontend::parser::{
         parse_source_file, parse_source_file_from_source_file,
     };
@@ -3124,7 +3188,9 @@ mod tests {
             .any(|diagnostic| diagnostic.message.contains(needle))
     }
 
-    fn main_expr_span(expanded: &super::ExpandedFile) -> crate::frontend::ast::Span {
+    fn main_expr_span(
+        expanded: &super::ExpandedFile,
+    ) -> crate::frontend::ast::Span {
         let function = expanded
             .ast
             .items
@@ -3271,7 +3337,7 @@ fn main() { @choose(2); }
 
         assert!(diagnostics_contain(
             &expanded,
-            "unsupported reflect input kind"
+            "reflect clause has unsupported input kind"
         ));
         let Expr::Macro { name, .. } = main_expr(&expanded) else {
             panic!("reflect selection should leave invocation unexpanded");
@@ -3414,7 +3480,10 @@ fn main() { @identity(42); }
                 } => {
                     assert_eq!(macro_name, "identity");
                     assert_eq!(*call_site_span, main_expr_span);
-                    assert!(definition_span.is_some(), "definition span should be recorded");
+                    assert!(
+                        definition_span.is_some(),
+                        "definition span should be recorded"
+                    );
                 }
                 _ => panic!("expected ExpandedFrom provenance, got {:?}", prov),
             }
@@ -3448,7 +3517,10 @@ fn main() { @outer(99); }
         if let Some(prov) = expanded.provenance_map.get(main_expr_span) {
             match prov {
                 Provenance::ExpandedFrom { macro_name, .. } => {
-                    assert_eq!(macro_name, "inner", "final expansion comes from inner macro");
+                    assert_eq!(
+                        macro_name, "inner",
+                        "final expansion comes from inner macro"
+                    );
                 }
                 _ => panic!("expected ExpandedFrom provenance, got {:?}", prov),
             }
@@ -3458,8 +3530,10 @@ fn main() { @outer(99); }
 
         // We should also have provenance for the outer macro expansion
         // Check that we have multiple provenance entries showing the expansion chain
-        assert!(expanded.provenance_map.len() >= 1,
-                "should have at least one provenance entry");
+        assert!(
+            expanded.provenance_map.len() >= 1,
+            "should have at least one provenance entry"
+        );
     }
 
     #[test]
@@ -3487,8 +3561,10 @@ struct MyStruct {
         // We expect some diagnostics about the derive syntax not being quite right,
         // but we should still get an expanded file
         // The key is that provenance should be recorded for any successful expansions
-        assert!(!expanded.provenance_map.is_empty(),
-                "provenance map should not be empty after reflect expansion");
+        assert!(
+            !expanded.provenance_map.is_empty(),
+            "provenance map should not be empty after reflect expansion"
+        );
     }
 
     #[test]
@@ -3515,9 +3591,11 @@ fn main() {
 
         // Should have provenance entries for both macro expansions
         // The exact count depends on how many spans are recorded, but we should have at least 2
-        assert!(expanded.provenance_map.len() >= 2,
-                "expected at least 2 provenance entries, got {}",
-                expanded.provenance_map.len());
+        assert!(
+            expanded.provenance_map.len() >= 2,
+            "expected at least 2 provenance entries, got {}",
+            expanded.provenance_map.len()
+        );
 
         // Verify that we have ExpandedFrom provenance for our macros
         let mut found_add_one = false;
@@ -3593,14 +3671,15 @@ fn main() {
 
         // The macro expansion has duplicate `y` identifiers that should be renamed by hygiene
         // Check that we have at least one SyntheticFor provenance entry
-        let has_synthetic_provenance = expanded
-            .provenance_map
-            .iter()
-            .any(|(_span, prov)| {
-                matches!(prov, Provenance::SyntheticFor {
-                    purpose: SynthesisPurpose::HygieneRename,
-                    ..
-                })
+        let has_synthetic_provenance =
+            expanded.provenance_map.iter().any(|(_span, prov)| {
+                matches!(
+                    prov,
+                    Provenance::SyntheticFor {
+                        purpose: SynthesisPurpose::HygieneRename,
+                        ..
+                    }
+                )
             });
 
         assert!(

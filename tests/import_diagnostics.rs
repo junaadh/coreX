@@ -2,23 +2,36 @@ use core_x::frontend::parser::parse_source_file_from_source_file;
 use core_x::frontend::resolver::{ImportResolver, ScopeResolver};
 use core_x::frontend::source::SourceDb;
 use core_x::frontend::{
-    DiagnosticRenderer, DiagnosticSeverity, ImportResolveError, ParsedFile,
+    DesugaredFile, DiagnosticRenderer, DiagnosticSeverity, ImportResolveError,
     diagnostic_from_import_resolve_error,
 };
 use std::collections::BTreeMap;
 
-fn add_and_parse(db: &mut SourceDb, path: &str, source: &str) -> ParsedFile {
+fn parsed_to_desugared(
+    parsed: core_x::frontend::ParsedFile,
+) -> core_x::frontend::DesugaredFile {
+    core_x::frontend::DesugaredFile {
+        file_id: parsed.file_id,
+        ast: parsed.ast,
+        diagnostics: parsed.diagnostics,
+        provenance_map: core_x::frontend::expansion::ProvenanceMap::new(
+            parsed.file_id,
+        ),
+    }
+}
+
+fn add_and_parse(db: &mut SourceDb, path: &str, source: &str) -> DesugaredFile {
     let file_id = db.add_file(path, source);
     let file = db.file(file_id).expect("file should exist");
     let parsed =
         parse_source_file_from_source_file(file).expect("parse should succeed");
     assert!(parsed.diagnostics.is_empty(), "expected clean parse");
-    parsed
+    parsed_to_desugared(parsed)
 }
 
 fn resolve_library_graph(
     db: &SourceDb,
-    parsed_files: &[ParsedFile],
+    parsed_files: &[DesugaredFile],
     root_file_id: core_x::frontend::source::FileId,
 ) -> core_x::frontend::ScopeGraph {
     ScopeResolver::new(db, parsed_files)
@@ -135,8 +148,9 @@ fn resolve_imports_with_diagnostics_continues_after_file_error() {
         .files()
         .iter()
         .map(|file| {
-            parse_source_file_from_source_file(file)
-                .expect("parse should succeed")
+            let parsed = parse_source_file_from_source_file(file)
+                .expect("parse should succeed");
+            parsed_to_desugared(parsed)
         })
         .collect::<Vec<_>>();
 
@@ -171,8 +185,9 @@ fn resolve_imports_with_diagnostics_continues_across_files() {
         .files()
         .iter()
         .map(|file| {
-            parse_source_file_from_source_file(file)
-                .expect("parse should succeed")
+            let parsed = parse_source_file_from_source_file(file)
+                .expect("parse should succeed");
+            parsed_to_desugared(parsed)
         })
         .collect::<Vec<_>>();
 

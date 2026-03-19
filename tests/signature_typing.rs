@@ -1,4 +1,4 @@
-use core_x::frontend::ParsedFile;
+use core_x::frontend::DesugaredFile;
 use core_x::frontend::parser::parse_source_file_from_source_file;
 use core_x::frontend::resolver::{
     GlobalItemTable, ItemId, ResolvedDeclarationTable, ScopeGraph,
@@ -10,7 +10,20 @@ use core_x::frontend::{
 };
 use std::collections::BTreeMap;
 
-fn add_and_parse(db: &mut SourceDb, path: &str, source: &str) -> ParsedFile {
+fn parsed_to_desugared(
+    parsed: core_x::frontend::ParsedFile,
+) -> core_x::frontend::DesugaredFile {
+    core_x::frontend::DesugaredFile {
+        file_id: parsed.file_id,
+        ast: parsed.ast,
+        diagnostics: parsed.diagnostics,
+        provenance_map: core_x::frontend::expansion::ProvenanceMap::new(
+            parsed.file_id,
+        ),
+    }
+}
+
+fn add_and_parse(db: &mut SourceDb, path: &str, source: &str) -> DesugaredFile {
     let file_id = db.add_file(path, source);
     let file = db.file(file_id).expect("file should exist");
     let parsed =
@@ -19,12 +32,12 @@ fn add_and_parse(db: &mut SourceDb, path: &str, source: &str) -> ParsedFile {
         parsed.diagnostics.is_empty(),
         "strict parse should not emit diagnostics"
     );
-    parsed
+    parsed_to_desugared(parsed)
 }
 
 fn resolve_library_graph(
     db: &SourceDb,
-    parsed_files: &[ParsedFile],
+    parsed_files: &[DesugaredFile],
     root_file_id: FileId,
 ) -> ScopeGraph {
     ScopeResolver::new(db, parsed_files)
@@ -34,7 +47,7 @@ fn resolve_library_graph(
 
 fn resolve_tables(
     graph: &ScopeGraph,
-    parsed_files: &[ParsedFile],
+    parsed_files: &[DesugaredFile],
 ) -> (
     GlobalItemTable,
     BTreeMap<FileId, core_x::frontend::ResolvedImports>,

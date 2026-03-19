@@ -1,5 +1,5 @@
+use crate::frontend::DesugaredFile;
 use crate::frontend::DiagnosticsBag;
-use crate::frontend::ExpandedFile;
 use crate::frontend::ast::{Item, UseTree};
 use crate::frontend::diagnostic_from_import_resolve_error;
 use crate::frontend::resolver::import_error::ImportResolveError;
@@ -66,7 +66,7 @@ impl ResolvedImports {
 pub enum NamedImportRoot {
     LoadedLibrary {
         graph: ScopeGraph,
-        parsed_files: Vec<ExpandedFile>,
+        parsed_files: Vec<crate::frontend::DesugaredFile>,
         path_by_file_id: BTreeMap<FileId, PathBuf>,
     },
     UnloadedDependency,
@@ -75,7 +75,7 @@ pub enum NamedImportRoot {
 /// Project-local import resolver over a resolved scope graph.
 pub struct ImportResolver<'a> {
     graph: &'a ScopeGraph,
-    parsed_files: &'a [ExpandedFile],
+    parsed_files: &'a [crate::frontend::DesugaredFile],
     scope_symbols: &'a BTreeMap<FileId, ScopeSymbols>,
     named_roots: BTreeMap<String, RegisteredNamedRoot<'a>>,
 }
@@ -85,7 +85,7 @@ impl<'a> ImportResolver<'a> {
     #[must_use]
     pub fn new(
         graph: &'a ScopeGraph,
-        parsed_files: &'a [ExpandedFile],
+        parsed_files: &'a [crate::frontend::DesugaredFile],
         scope_symbols: &'a BTreeMap<FileId, ScopeSymbols>,
     ) -> Self {
         Self {
@@ -198,7 +198,7 @@ impl<'a> ImportResolver<'a> {
             .insert(name, RegisteredNamedRoot::UnloadedDependency);
     }
 
-    fn parsed_file_by_id(&self) -> BTreeMap<FileId, &ExpandedFile> {
+    fn parsed_file_by_id(&self) -> BTreeMap<FileId, &DesugaredFile> {
         self.parsed_files
             .iter()
             .map(|parsed| (parsed.file_id, parsed))
@@ -759,7 +759,7 @@ fn named_root_name(root_source: &ResolvedRootSource) -> Option<String> {
 /// fails for any scope.
 pub fn resolve_project_imports(
     graph: &ScopeGraph,
-    parsed_files: &[ExpandedFile],
+    parsed_files: &[crate::frontend::DesugaredFile],
 ) -> Result<ProjectImportTables, ImportResolveError> {
     let named_roots = BTreeMap::new();
     resolve_project_imports_with_named_roots(graph, parsed_files, &named_roots)
@@ -772,7 +772,7 @@ pub fn resolve_project_imports(
 /// Returns `ImportResolveError` when any import resolution step fails.
 pub fn resolve_project_imports_with_named_roots(
     graph: &ScopeGraph,
-    parsed_files: &[ExpandedFile],
+    parsed_files: &[crate::frontend::DesugaredFile],
     named_roots: &BTreeMap<String, NamedImportRoot>,
 ) -> Result<ProjectImportTables, ImportResolveError> {
     let empty = BTreeMap::new();
@@ -810,7 +810,7 @@ pub fn resolve_project_imports_with_named_roots(
 #[must_use]
 pub fn resolve_project_imports_with_named_roots_and_diagnostics(
     graph: &ScopeGraph,
-    parsed_files: &[ExpandedFile],
+    parsed_files: &[crate::frontend::DesugaredFile],
     named_roots: &BTreeMap<String, NamedImportRoot>,
     db: &SourceDb,
 ) -> (

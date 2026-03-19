@@ -5,9 +5,9 @@ use core_x::frontend::resolver::{
 };
 use core_x::frontend::source::{FileId, SourceDb};
 use core_x::frontend::{
-    ImportRootKind, LoadedProject, ParsedFile, ProjectGraph, ProjectLoadError,
-    ProjectLoader, SymbolKind, TargetRoots, build_target_roots,
-    load_local_dependency_project_graph,
+    DesugaredFile, ImportRootKind, LoadedProject, ProjectGraph,
+    ProjectLoadError, ProjectLoader, SymbolKind, TargetRoots,
+    build_target_roots, load_local_dependency_project_graph,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -17,8 +17,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 struct ParsedProject {
     db: SourceDb,
-    parsed_files: Vec<ParsedFile>,
+    parsed_files: Vec<DesugaredFile>,
     file_id_by_absolute_path: BTreeMap<PathBuf, FileId>,
+}
+
+fn parsed_to_desugared(
+    parsed: core_x::frontend::ParsedFile,
+) -> core_x::frontend::DesugaredFile {
+    core_x::frontend::DesugaredFile {
+        file_id: parsed.file_id,
+        ast: parsed.ast,
+        diagnostics: parsed.diagnostics,
+        provenance_map: core_x::frontend::expansion::ProvenanceMap::new(
+            parsed.file_id,
+        ),
+    }
 }
 
 fn unique_temp_dir(name: &str) -> PathBuf {
@@ -110,7 +123,7 @@ fn parse_loaded_project(project: &LoadedProject) -> ParsedProject {
             parsed.diagnostics.is_empty(),
             "strict parse should not emit diagnostics"
         );
-        parsed_files.push(parsed);
+        parsed_files.push(parsed_to_desugared(parsed));
         file_id_by_absolute_path.insert(absolute_path, file_id);
     }
 

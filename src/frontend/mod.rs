@@ -5,6 +5,7 @@
 //! layers.
 
 pub mod ast;
+pub mod desugar;
 pub mod diagnostics;
 pub mod expansion;
 pub mod lexer;
@@ -16,6 +17,7 @@ pub mod resolver;
 pub mod semantic;
 pub mod source;
 
+pub use desugar::{DesugaredFile, desugar_file, desugar_files};
 pub use diagnostics::{
     Diagnostic, DiagnosticLabel, DiagnosticLabelKind, DiagnosticRenderer,
     DiagnosticSeverity, DiagnosticsBag, FileSpan,

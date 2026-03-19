@@ -42,28 +42,32 @@ fn create_test_project(name: &str, source: &str) -> TestProject {
     TestProject { main_file }
 }
 
-fn run_cxc_check(project: &TestProject) -> std::process::Output {
+fn run_cxc_semantic_dump(project: &TestProject) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_cxc"))
-        .args(["check", &project.main_file.to_string_lossy()])
+        .args(["dump", "semantic", &project.main_file.to_string_lossy()])
         .output()
-        .expect("run cxc check command")
+        .expect("run cxc dump semantic command")
 }
 
-fn assert_check_success(output: &std::process::Output) {
+fn assert_dump_success(output: &std::process::Output) {
     assert!(
         output.status.success(),
-        "cxc check failed:\nstdout:\n{}\nstderr:\n{}",
+        "cxc dump semantic failed:\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 }
 
-fn assert_check_failure_with_message(output: &std::process::Output, expected_msg: &str) {
+fn assert_dump_diagnostics_contain(
+    output: &std::process::Output,
+    expected_msg: &str,
+) {
+    assert_dump_success(output);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        !output.status.success(),
-        "expected cxc check to fail, but it succeeded:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        stdout.contains("semantic"),
+        "expected semantic dump output, got:\n{stdout}"
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -91,8 +95,8 @@ fn main() {
 "#,
     );
 
-    let output = run_cxc_check(&project);
-    assert_check_success(&output);
+    let output = run_cxc_semantic_dump(&project);
+    assert_dump_success(&output);
 }
 
 #[test]
@@ -115,8 +119,8 @@ macro print_tokens {
 "#,
     );
 
-    let output = run_cxc_check(&project);
-    assert_check_success(&output);
+    let output = run_cxc_semantic_dump(&project);
+    assert_dump_success(&output);
 }
 
 #[test]
@@ -146,8 +150,8 @@ fn main() {
 "#,
     );
 
-    let output = run_cxc_check(&project);
-    assert_check_success(&output);
+    let output = run_cxc_semantic_dump(&project);
+    assert_dump_success(&output);
 }
 
 #[test]
@@ -165,9 +169,15 @@ struct Foo {}
 "#,
     );
 
-    let output = run_cxc_check(&project);
-    assert_check_failure_with_message(&output, "attached rule macros are not supported");
-    assert_check_failure_with_message(&output, "change this macro clause from `rule(...)` to `reflect(item: Item)`");
+    let output = run_cxc_semantic_dump(&project);
+    assert_dump_diagnostics_contain(
+        &output,
+        "rule clause has unsupported input kind",
+    );
+    assert_dump_diagnostics_contain(
+        &output,
+        "rule clauses support: Expr, Tokens (found Item)",
+    );
 }
 
 #[test]
@@ -186,9 +196,15 @@ fn main() {
 "#,
     );
 
-    let output = run_cxc_check(&project);
-    assert_check_failure_with_message(&output, "reflect clauses only support Item input");
-    assert_check_failure_with_message(&output, "for expression macros, use a rule clause");
+    let output = run_cxc_semantic_dump(&project);
+    assert_dump_diagnostics_contain(
+        &output,
+        "reflect clause has unsupported input kind",
+    );
+    assert_dump_diagnostics_contain(
+        &output,
+        "reflect clauses support: Item (found Expr)",
+    );
 }
 
 #[test]
@@ -207,9 +223,12 @@ fn main() {
 "#,
     );
 
-    let output = run_cxc_check(&project);
-    assert_check_failure_with_message(&output, "macro `bad_stmt` clause has unsupported input kind");
-    assert_check_failure_with_message(&output, "input kind Stmt is");
+    let output = run_cxc_semantic_dump(&project);
+    assert_dump_diagnostics_contain(&output, "no matching macro clause");
+    assert_dump_diagnostics_contain(
+        &output,
+        "available clauses for `bad_stmt`: Rule(Stmt)",
+    );
 }
 
 #[test]
@@ -228,6 +247,9 @@ fn main() {
 "#,
     );
 
-    let output = run_cxc_check(&project);
-    assert_check_failure_with_message(&output, "reflect clauses only support Item input");
+    let output = run_cxc_semantic_dump(&project);
+    assert_dump_diagnostics_contain(
+        &output,
+        "reflect clause has unsupported input kind",
+    );
 }

@@ -343,18 +343,18 @@ mod tests {
 
     #[test]
     fn test_provenanced_map() {
-        let prov = Provenanced::new("original", Provenance::DirectSource {
-            file_id: FileId::new(0),
-            span: Span::new(0, 10),
-        });
+        let prov = Provenanced::new(
+            "original",
+            Provenance::DirectSource {
+                file_id: FileId::new(0),
+                span: Span::new(0, 10),
+            },
+        );
 
         let mapped = prov.map(|s| format!("{}-modified", s));
 
         assert_eq!(mapped.node, "original-modified");
-        assert!(matches!(
-            mapped.provenance,
-            Provenance::DirectSource { .. }
-        ));
+        assert!(matches!(mapped.provenance, Provenance::DirectSource { .. }));
     }
 
     #[test]
@@ -377,19 +377,37 @@ mod tests {
         let span1 = Span::new(10, 20);
         let span2 = Span::new(30, 40);
 
-        map.insert(span1, Provenance::DirectSource { file_id, span: span1 });
-        map.insert(span2, Provenance::DirectSource { file_id, span: span2 });
+        map.insert(
+            span1,
+            Provenance::DirectSource {
+                file_id,
+                span: span1,
+            },
+        );
+        map.insert(
+            span2,
+            Provenance::DirectSource {
+                file_id,
+                span: span2,
+            },
+        );
 
         // Offset within span1
         assert_eq!(
             map.find_containing(15),
-            Some(&Provenance::DirectSource { file_id, span: span1 })
+            Some(&Provenance::DirectSource {
+                file_id,
+                span: span1
+            })
         );
 
         // Offset within span2
         assert_eq!(
             map.find_containing(35),
-            Some(&Provenance::DirectSource { file_id, span: span2 })
+            Some(&Provenance::DirectSource {
+                file_id,
+                span: span2
+            })
         );
 
         // Offset not in any span
@@ -404,8 +422,20 @@ mod tests {
         let span1 = Span::new(10, 20);
         let span2 = Span::new(30, 40);
 
-        map.insert(span2, Provenance::DirectSource { file_id, span: span2 });
-        map.insert(span1, Provenance::DirectSource { file_id, span: span1 });
+        map.insert(
+            span2,
+            Provenance::DirectSource {
+                file_id,
+                span: span2,
+            },
+        );
+        map.insert(
+            span1,
+            Provenance::DirectSource {
+                file_id,
+                span: span1,
+            },
+        );
 
         let spans: Vec<_> = map.iter().map(|(s, _)| *s).collect();
         assert_eq!(spans, vec![span1, span2], "iteration is ordered by span");

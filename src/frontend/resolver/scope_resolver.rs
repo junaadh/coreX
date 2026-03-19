@@ -1,5 +1,5 @@
+use crate::frontend::DesugaredFile;
 use crate::frontend::DiagnosticsBag;
-use crate::frontend::ExpandedFile;
 use crate::frontend::ast::Item;
 use crate::frontend::diagnostic_from_resolve_error;
 use crate::frontend::resolver::error::ResolveError;
@@ -15,12 +15,12 @@ type ResolvedChildrenBundle = (Vec<FileId>, ResolvedChildMetadata);
 
 pub struct ScopeResolver<'a> {
     db: &'a SourceDb,
-    parsed_files: &'a [ExpandedFile],
+    parsed_files: &'a [DesugaredFile],
 }
 
 impl<'a> ScopeResolver<'a> {
     #[must_use]
-    pub fn new(db: &'a SourceDb, parsed_files: &'a [ExpandedFile]) -> Self {
+    pub fn new(db: &'a SourceDb, parsed_files: &'a [DesugaredFile]) -> Self {
         Self { db, parsed_files }
     }
 
@@ -186,7 +186,7 @@ impl<'a> ScopeResolver<'a> {
         )
     }
 
-    fn parsed_by_id_map(&self) -> HashMap<FileId, &'a ExpandedFile> {
+    fn parsed_by_id_map(&self) -> HashMap<FileId, &'a DesugaredFile> {
         self.parsed_files.iter().map(|p| (p.file_id, p)).collect()
     }
 
@@ -201,7 +201,7 @@ impl<'a> ScopeResolver<'a> {
             .collect()
     }
 
-    fn parsed_file_by_id(&self, file_id: FileId) -> Option<&ExpandedFile> {
+    fn parsed_file_by_id(&self, file_id: FileId) -> Option<&DesugaredFile> {
         self.parsed_files
             .iter()
             .find(|parsed| parsed.file_id == file_id)
@@ -372,7 +372,7 @@ impl<'a> ScopeResolver<'a> {
         file_id: FileId,
         kind: ResolvedScopeKind,
         source_file: &SourceFile,
-        parsed: &ExpandedFile,
+        parsed: &DesugaredFile,
         scope_path: &[String],
         diag_ctx: &mut ResolveDiagnostics<'_>,
     ) -> Result<ResolvedChildrenBundle, ResolveError> {
@@ -448,7 +448,7 @@ impl<'a> ScopeResolver<'a> {
         Ok(())
     }
 
-    fn collect_declared_child_scopes(parsed: &ExpandedFile) -> Vec<String> {
+    fn collect_declared_child_scopes(parsed: &DesugaredFile) -> Vec<String> {
         parsed
             .ast
             .items
@@ -536,7 +536,7 @@ impl<'a> ScopeResolver<'a> {
 /// fails, or a scope cycle is detected.
 pub fn resolve_project_scopes(
     db: &SourceDb,
-    parsed_files: &[ExpandedFile],
+    parsed_files: &[DesugaredFile],
     root_file_id: FileId,
     kind: ResolvedScopeKind,
 ) -> Result<ScopeGraph, ResolveError> {
@@ -551,7 +551,7 @@ pub fn resolve_project_scopes(
 }
 
 struct ResolveContext<'a> {
-    parsed_by_id: HashMap<FileId, &'a ExpandedFile>,
+    parsed_by_id: HashMap<FileId, &'a DesugaredFile>,
     parsed_path_to_id: HashMap<PathBuf, FileId>,
     scopes: BTreeMap<FileId, ResolvedScope>,
     visiting_stack: Vec<FileId>,

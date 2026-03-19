@@ -5,7 +5,7 @@ use core_x::frontend::resolver::{
 };
 use core_x::frontend::source::{FileId, SourceDb};
 use core_x::frontend::{
-    ImportBindingKind, ParsedFile, ProjectLoader, SymbolKind,
+    DesugaredFile, ImportBindingKind, ProjectLoader, SymbolKind,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -16,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Debug)]
 struct ParsedProject {
     db: SourceDb,
-    parsed_files: Vec<ParsedFile>,
+    parsed_files: Vec<DesugaredFile>,
     file_id_by_abs_path: BTreeMap<PathBuf, FileId>,
 }
 
@@ -80,6 +80,19 @@ fn collect_cx_files_recursive(dir: &Path, out: &mut BTreeSet<PathBuf>) {
     }
 }
 
+fn parsed_to_desugared(
+    parsed: core_x::frontend::ParsedFile,
+) -> core_x::frontend::DesugaredFile {
+    core_x::frontend::DesugaredFile {
+        file_id: parsed.file_id,
+        ast: parsed.ast,
+        diagnostics: parsed.diagnostics,
+        provenance_map: core_x::frontend::expansion::ProvenanceMap::new(
+            parsed.file_id,
+        ),
+    }
+}
+
 fn parse_project(project_dir: &Path) -> ParsedProject {
     let mut files = BTreeSet::new();
     let src_dir = project_dir.join("src");
@@ -104,7 +117,7 @@ fn parse_project(project_dir: &Path) -> ParsedProject {
             parsed.diagnostics.is_empty(),
             "strict parse should not emit diagnostics"
         );
-        parsed_files.push(parsed);
+        parsed_files.push(parsed_to_desugared(parsed));
         file_id_by_abs_path.insert(abs_path, file_id);
     }
 

@@ -1,4 +1,4 @@
-use core_x::frontend::ParsedFile;
+use core_x::frontend::DesugaredFile;
 use core_x::frontend::parser::parse_source_file_from_source_file;
 use core_x::frontend::resolver::{
     GlobalItemTable, ItemId, ScopeGraph, ScopeResolver,
@@ -10,18 +10,31 @@ use core_x::frontend::{
     build_typed_item_table, type_declaration_signatures,
 };
 
-fn add_and_parse(db: &mut SourceDb, path: &str, source: &str) -> ParsedFile {
+fn parsed_to_desugared(
+    parsed: core_x::frontend::ParsedFile,
+) -> core_x::frontend::DesugaredFile {
+    core_x::frontend::DesugaredFile {
+        file_id: parsed.file_id,
+        ast: parsed.ast,
+        diagnostics: parsed.diagnostics,
+        provenance_map: core_x::frontend::expansion::ProvenanceMap::new(
+            parsed.file_id,
+        ),
+    }
+}
+
+fn add_and_parse(db: &mut SourceDb, path: &str, source: &str) -> DesugaredFile {
     let file_id = db.add_file(path, source);
     let file = db.file(file_id).expect("file should exist");
     let parsed =
         parse_source_file_from_source_file(file).expect("parse should succeed");
     assert!(parsed.diagnostics.is_empty(), "strict parse diagnostics");
-    parsed
+    parsed_to_desugared(parsed)
 }
 
 fn resolve_library_graph(
     db: &SourceDb,
-    parsed_files: &[ParsedFile],
+    parsed_files: &[DesugaredFile],
     root_file_id: FileId,
 ) -> ScopeGraph {
     ScopeResolver::new(db, parsed_files)
@@ -31,7 +44,7 @@ fn resolve_library_graph(
 
 fn build_tables(
     graph: &ScopeGraph,
-    parsed_files: &[ParsedFile],
+    parsed_files: &[DesugaredFile],
 ) -> (GlobalItemTable, core_x::frontend::TypedSignatureTable) {
     let global = GlobalItemTable::collect(graph, parsed_files);
     let (_, imports) =

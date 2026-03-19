@@ -137,8 +137,9 @@ impl ParseSession {
     #[must_use]
     pub fn parse_all_files_with_expansion(
         &self,
-    ) -> Vec<Result<crate::frontend::ExpandedFile, crate::frontend::FileParseError>>
-    {
+    ) -> Vec<
+        Result<crate::frontend::ExpandedFile, crate::frontend::FileParseError>,
+    > {
         self.parse_all_files_and_expand(false)
     }
 
@@ -169,16 +170,18 @@ impl ParseSession {
     #[must_use]
     pub fn parse_all_files_with_recovery_and_expansion(
         &self,
-    ) -> Vec<Result<crate::frontend::ExpandedFile, crate::frontend::FileParseError>>
-    {
+    ) -> Vec<
+        Result<crate::frontend::ExpandedFile, crate::frontend::FileParseError>,
+    > {
         self.parse_all_files_and_expand(true)
     }
 
     fn parse_all_files_and_expand(
         &self,
         with_recovery: bool,
-    ) -> Vec<Result<crate::frontend::ExpandedFile, crate::frontend::FileParseError>>
-    {
+    ) -> Vec<
+        Result<crate::frontend::ExpandedFile, crate::frontend::FileParseError>,
+    > {
         let parsed_results = if with_recovery {
             self.parse_all_files_with_recovery()
         } else {

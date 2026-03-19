@@ -2,7 +2,7 @@ use super::body_env::BodyTypeEnvironmentTable;
 use super::external_lookup::ExternalSemanticLookup;
 use super::signatures::TypedFunctionSignature;
 use super::{BuiltinType, Type, TypedItemData, TypedItemTable};
-use crate::frontend::ExpandedFile;
+use crate::frontend::DesugaredFile;
 use crate::frontend::ast::{
     BinaryOp, Block, Clause, Expr, Item, MatchArmBody, Span, Stmt,
     StructMember, UnaryOp,
@@ -142,7 +142,7 @@ impl ExpressionTypeTable {
 #[must_use]
 pub fn check_expression_types(
     graph: &ScopeGraph,
-    parsed_files: &[ExpandedFile],
+    parsed_files: &[DesugaredFile],
     global_items: &GlobalItemTable,
     typed_items: &TypedItemTable,
     resolved_bodies: &ResolvedBodyTable,
@@ -165,7 +165,7 @@ pub fn check_expression_types(
 #[must_use]
 pub fn check_expression_types_with_external_lookup(
     graph: &ScopeGraph,
-    parsed_files: &[ExpandedFile],
+    parsed_files: &[DesugaredFile],
     global_items: &GlobalItemTable,
     typed_items: &TypedItemTable,
     resolved_bodies: &ResolvedBodyTable,
@@ -173,7 +173,7 @@ pub fn check_expression_types_with_external_lookup(
     imports: &BTreeMap<FileId, ResolvedImports>,
     external_lookup: &ExternalSemanticLookup,
 ) -> ExpressionTypeTable {
-    let parsed_by_id: BTreeMap<FileId, &ExpandedFile> = parsed_files
+    let parsed_by_id: BTreeMap<FileId, &DesugaredFile> = parsed_files
         .iter()
         .map(|parsed| (parsed.file_id, parsed))
         .collect();
@@ -249,7 +249,7 @@ struct BodyBlockEntry<'a> {
 
 fn collect_body_blocks<'a>(
     graph: &'a ScopeGraph,
-    parsed_by_id: &'a BTreeMap<FileId, &'a ExpandedFile>,
+    parsed_by_id: &'a BTreeMap<FileId, &'a DesugaredFile>,
     global_items: &'a GlobalItemTable,
 ) -> BTreeMap<DeclarationOwner, Vec<BodyBlockEntry<'a>>> {
     let mut result: BTreeMap<DeclarationOwner, Vec<BodyBlockEntry<'a>>> =

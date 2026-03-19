@@ -116,11 +116,21 @@ pub struct FunctionDecl {
     pub params: Vec<Spanned<ParamDecl>>,
     pub return_type: Option<Spanned<Type>>,
     pub where_clause: Option<Spanned<WhereClause>>,
+    #[serde(skip_serializing)]
+    pub init_origin: Option<InitOriginKind>,
     pub body: Block,
 }
 
 #[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InitKind {
+    Plain,
+    Optional,
+    Fallible,
+}
+
+/// Internal origin metadata for function-like declarations lowered from `init`.
+#[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InitOriginKind {
     Plain,
     Optional,
     Fallible,
@@ -310,6 +320,8 @@ pub struct ProtocolFunctionMember {
     pub params: Vec<Spanned<ParamDecl>>,
     pub return_type: Option<Spanned<Type>>,
     pub where_clause: Option<Spanned<WhereClause>>,
+    #[serde(skip_serializing)]
+    pub init_origin: Option<InitOriginKind>,
     /// `None` means requirement-only (`;` form).
     pub default_body: Option<Block>,
 }

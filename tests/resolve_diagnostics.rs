@@ -2,17 +2,30 @@ use core_x::frontend::parser::parse_source_file_from_source_file;
 use core_x::frontend::resolver::ScopeResolver;
 use core_x::frontend::source::SourceDb;
 use core_x::frontend::{
-    DiagnosticRenderer, DiagnosticSeverity, ParsedFile,
+    DesugaredFile, DiagnosticRenderer, DiagnosticSeverity,
     diagnostic_from_resolve_error,
 };
 
-fn add_and_parse(db: &mut SourceDb, path: &str, source: &str) -> ParsedFile {
+fn parsed_to_desugared(
+    parsed: core_x::frontend::ParsedFile,
+) -> core_x::frontend::DesugaredFile {
+    core_x::frontend::DesugaredFile {
+        file_id: parsed.file_id,
+        ast: parsed.ast,
+        diagnostics: parsed.diagnostics,
+        provenance_map: core_x::frontend::expansion::ProvenanceMap::new(
+            parsed.file_id,
+        ),
+    }
+}
+
+fn add_and_parse(db: &mut SourceDb, path: &str, source: &str) -> DesugaredFile {
     let file_id = db.add_file(path, source);
     let file = db.file(file_id).expect("file should exist");
     let parsed =
         parse_source_file_from_source_file(file).expect("parse should succeed");
     assert!(parsed.diagnostics.is_empty(), "expected clean parse");
-    parsed
+    parsed_to_desugared(parsed)
 }
 
 #[test]
@@ -53,8 +66,9 @@ fn ambiguous_declared_scope_converts_to_structured_diagnostic() {
         .files()
         .iter()
         .map(|file| {
-            parse_source_file_from_source_file(file)
-                .expect("parse should succeed")
+            let parsed = parse_source_file_from_source_file(file)
+                .expect("parse should succeed");
+            parsed_to_desugared(parsed)
         })
         .collect::<Vec<_>>();
 
@@ -89,8 +103,9 @@ fn scope_cycle_converts_to_structured_diagnostic() {
         .files()
         .iter()
         .map(|file| {
-            parse_source_file_from_source_file(file)
-                .expect("parse should succeed")
+            let parsed = parse_source_file_from_source_file(file)
+                .expect("parse should succeed");
+            parsed_to_desugared(parsed)
         })
         .collect::<Vec<_>>();
 
@@ -135,8 +150,9 @@ fn resolve_with_diagnostics_skips_ambiguous_child_and_continues() {
         .files()
         .iter()
         .map(|file| {
-            parse_source_file_from_source_file(file)
-                .expect("parse should succeed")
+            let parsed = parse_source_file_from_source_file(file)
+                .expect("parse should succeed");
+            parsed_to_desugared(parsed)
         })
         .collect::<Vec<_>>();
 
@@ -160,8 +176,9 @@ fn resolve_with_diagnostics_returns_none_on_cycle() {
         .files()
         .iter()
         .map(|file| {
-            parse_source_file_from_source_file(file)
-                .expect("parse should succeed")
+            let parsed = parse_source_file_from_source_file(file)
+                .expect("parse should succeed");
+            parsed_to_desugared(parsed)
         })
         .collect::<Vec<_>>();
 

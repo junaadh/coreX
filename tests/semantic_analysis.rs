@@ -3,6 +3,19 @@ use core_x::frontend::resolver::{ScopeResolver, resolve_project_imports};
 use core_x::frontend::source::SourceDb;
 use core_x::frontend::{NamedTypeKind, Type, analyze_semantics};
 
+fn parsed_to_desugared(
+    parsed: core_x::frontend::ParsedFile,
+) -> core_x::frontend::DesugaredFile {
+    core_x::frontend::DesugaredFile {
+        file_id: parsed.file_id,
+        ast: parsed.ast,
+        diagnostics: parsed.diagnostics,
+        provenance_map: core_x::frontend::expansion::ProvenanceMap::new(
+            parsed.file_id,
+        ),
+    }
+}
+
 fn analyze_sources(
     sources: &[(&str, &str)],
     root_path: &str,
@@ -20,7 +33,7 @@ fn analyze_sources(
         let parsed = parse_source_file_from_source_file(file)
             .expect("parse should work");
         assert!(parsed.diagnostics.is_empty(), "strict parse diagnostics");
-        parsed_files.push(parsed);
+        parsed_files.push(parsed_to_desugared(parsed));
     }
 
     let root_file_id = root_file_id.expect("root file should be present");

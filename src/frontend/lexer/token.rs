@@ -1,7 +1,9 @@
 //! Token definitions and keyword classification for the `coreX` lexer.
 
 /// Byte span in the original source buffer.
-#[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 pub struct Span {
     pub start: usize,
     pub end: usize,

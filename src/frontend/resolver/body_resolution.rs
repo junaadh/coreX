@@ -7,7 +7,7 @@ use super::item_ids::ItemId;
 use super::item_table::GlobalItemTable;
 use super::local_ids::LocalId;
 use super::model::ScopeGraph;
-use crate::frontend::ExpandedFile;
+use crate::frontend::DesugaredFile;
 use crate::frontend::ast::{
     ArrayElement, Clause, Expr, ForStmt, FunctionDecl, IfStmt, IfStmtElse,
     ImplMember, Item, MatchArmBody, Pattern, ProtocolMember, ReceiverKind,
@@ -114,7 +114,7 @@ impl ResolvedBodyTable {
 #[must_use]
 pub fn resolve_bodies(
     graph: &ScopeGraph,
-    parsed_files: &[ExpandedFile],
+    parsed_files: &[DesugaredFile],
     imports: &BTreeMap<FileId, ResolvedImports>,
     item_table: &GlobalItemTable,
     declarations: &ResolvedDeclarationTable,
@@ -135,7 +135,7 @@ pub fn resolve_bodies(
 
 struct BodyResolver<'a> {
     graph: &'a ScopeGraph,
-    parsed_by_id: BTreeMap<FileId, &'a ExpandedFile>,
+    parsed_by_id: BTreeMap<FileId, &'a DesugaredFile>,
     imports: &'a BTreeMap<FileId, ResolvedImports>,
     item_table: &'a GlobalItemTable,
     declarations: &'a ResolvedDeclarationTable,
@@ -201,17 +201,35 @@ impl<'a> BodyResolver<'a> {
                                     let body_index = by_owner
                                         .get(&owner)
                                         .map_or(0, Vec::len);
+                                    let is_desugared_init = function_decl
+                                        .node
+                                        .init_origin
+                                        .is_some();
                                     let body = self.resolve_function_body(
                                         owner.clone(),
                                         body_index,
-                                        method_signature_index,
-                                        BodyKind::Function,
+                                        if is_desugared_init {
+                                            initializer_signature_index
+                                        } else {
+                                            method_signature_index
+                                        },
+                                        if is_desugared_init {
+                                            BodyKind::Initializer
+                                        } else {
+                                            BodyKind::Function
+                                        },
                                         *scope_file_id,
                                         &function_decl.node,
                                     );
-                                    method_signature_index =
-                                        method_signature_index
-                                            .saturating_add(1);
+                                    if is_desugared_init {
+                                        initializer_signature_index =
+                                            initializer_signature_index
+                                                .saturating_add(1);
+                                    } else {
+                                        method_signature_index =
+                                            method_signature_index
+                                                .saturating_add(1);
+                                    }
                                     by_owner
                                         .entry(owner.clone())
                                         .or_default()
@@ -264,17 +282,35 @@ impl<'a> BodyResolver<'a> {
                                     let body_index = by_owner
                                         .get(&owner)
                                         .map_or(0, Vec::len);
+                                    let is_desugared_init = function_decl
+                                        .node
+                                        .init_origin
+                                        .is_some();
                                     let body = self.resolve_function_body(
                                         owner.clone(),
                                         body_index,
-                                        method_signature_index,
-                                        BodyKind::Function,
+                                        if is_desugared_init {
+                                            initializer_signature_index
+                                        } else {
+                                            method_signature_index
+                                        },
+                                        if is_desugared_init {
+                                            BodyKind::Initializer
+                                        } else {
+                                            BodyKind::Function
+                                        },
                                         *scope_file_id,
                                         &function_decl.node,
                                     );
-                                    method_signature_index =
-                                        method_signature_index
-                                            .saturating_add(1);
+                                    if is_desugared_init {
+                                        initializer_signature_index =
+                                            initializer_signature_index
+                                                .saturating_add(1);
+                                    } else {
+                                        method_signature_index =
+                                            method_signature_index
+                                                .saturating_add(1);
+                                    }
                                     by_owner
                                         .entry(owner.clone())
                                         .or_default()
@@ -324,11 +360,24 @@ impl<'a> BodyResolver<'a> {
                         for member in &protocol_decl.node.members {
                             match &member.node {
                                 ProtocolMember::Function(function_member) => {
-                                    let signature_index =
-                                        method_signature_index;
-                                    method_signature_index =
+                                    let is_desugared_init = function_member
+                                        .node
+                                        .init_origin
+                                        .is_some();
+                                    let signature_index = if is_desugared_init {
+                                        initializer_signature_index
+                                    } else {
                                         method_signature_index
-                                            .saturating_add(1);
+                                    };
+                                    if is_desugared_init {
+                                        initializer_signature_index =
+                                            initializer_signature_index
+                                                .saturating_add(1);
+                                    } else {
+                                        method_signature_index =
+                                            method_signature_index
+                                                .saturating_add(1);
+                                    }
                                     if function_member
                                         .node
                                         .default_body
@@ -344,6 +393,11 @@ impl<'a> BodyResolver<'a> {
                                             owner.clone(),
                                             body_index,
                                             signature_index,
+                                            if is_desugared_init {
+                                                BodyKind::ProtocolDefaultInitializer
+                                            } else {
+                                                BodyKind::ProtocolDefaultFunction
+                                            },
                                             *scope_file_id,
                                             &function_member.node,
                                         );
@@ -404,17 +458,35 @@ impl<'a> BodyResolver<'a> {
                                     let body_index = by_owner
                                         .get(&owner)
                                         .map_or(0, Vec::len);
+                                    let is_desugared_init = function_decl
+                                        .node
+                                        .init_origin
+                                        .is_some();
                                     let body = self.resolve_function_body(
                                         owner.clone(),
                                         body_index,
-                                        method_signature_index,
-                                        BodyKind::Function,
+                                        if is_desugared_init {
+                                            initializer_signature_index
+                                        } else {
+                                            method_signature_index
+                                        },
+                                        if is_desugared_init {
+                                            BodyKind::Initializer
+                                        } else {
+                                            BodyKind::Function
+                                        },
                                         *scope_file_id,
                                         &function_decl.node,
                                     );
-                                    method_signature_index =
-                                        method_signature_index
-                                            .saturating_add(1);
+                                    if is_desugared_init {
+                                        initializer_signature_index =
+                                            initializer_signature_index
+                                                .saturating_add(1);
+                                    } else {
+                                        method_signature_index =
+                                            method_signature_index
+                                                .saturating_add(1);
+                                    }
                                     by_owner
                                         .entry(owner.clone())
                                         .or_default()
@@ -583,6 +655,7 @@ impl<'a> BodyResolver<'a> {
         owner: DeclarationOwner,
         body_index: usize,
         signature_index: usize,
+        kind: BodyKind,
         scope_file_id: FileId,
         function_member: &crate::frontend::ast::ProtocolFunctionMember,
     ) -> ResolvedBody {
@@ -590,7 +663,7 @@ impl<'a> BodyResolver<'a> {
             owner,
             body_index,
             signature_index,
-            kind: BodyKind::ProtocolDefaultFunction,
+            kind,
             containing_scope_file_id: scope_file_id,
             locals: Vec::new(),
             references: Vec::new(),

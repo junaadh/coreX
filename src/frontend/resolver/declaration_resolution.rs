@@ -2,7 +2,7 @@ use super::import_resolver::{ImportBindingKind, ResolvedImports};
 use super::item_ids::ItemId;
 use super::item_table::GlobalItemTable;
 use super::model::ScopeGraph;
-use crate::frontend::ExpandedFile;
+use crate::frontend::DesugaredFile;
 use crate::frontend::ast::{
     EnumCaseParam, EnumMember, FunctionDecl, ImplDecl, ImplMember, Item,
     ParamDecl, ProtocolMember, StructMember, Type,
@@ -172,7 +172,7 @@ impl ResolvedDeclarationTable {
 #[must_use]
 pub fn resolve_declaration_types(
     graph: &ScopeGraph,
-    parsed_files: &[ExpandedFile],
+    parsed_files: &[DesugaredFile],
     imports: &BTreeMap<FileId, ResolvedImports>,
     item_table: &GlobalItemTable,
 ) -> ResolvedDeclarationTable {
@@ -191,7 +191,7 @@ pub fn resolve_declaration_types(
 
 struct DeclarationResolver<'a> {
     graph: &'a ScopeGraph,
-    parsed_by_id: BTreeMap<FileId, &'a ExpandedFile>,
+    parsed_by_id: BTreeMap<FileId, &'a DesugaredFile>,
     imports: &'a BTreeMap<FileId, ResolvedImports>,
     item_table: &'a GlobalItemTable,
     unresolved_paths: Vec<UnresolvedDeclarationPath>,
@@ -370,14 +370,22 @@ impl<'a> DeclarationResolver<'a> {
                     });
                 }
                 StructMember::Function(function_decl) => {
-                    methods.push(ResolvedNamedFunctionSignature {
-                        name: function_decl.node.name.clone(),
-                        signature: self.resolve_function_signature(
+                    if function_decl.node.init_origin.is_some() {
+                        initializers.push(self.resolve_init_signature(
                             owner,
                             scope_file_id,
-                            &function_decl.node,
-                        ),
-                    });
+                            &function_decl.node.params,
+                        ));
+                    } else {
+                        methods.push(ResolvedNamedFunctionSignature {
+                            name: function_decl.node.name.clone(),
+                            signature: self.resolve_function_signature(
+                                owner,
+                                scope_file_id,
+                                &function_decl.node,
+                            ),
+                        });
+                    }
                 }
                 StructMember::Init(init_decl) => {
                     initializers.push(self.resolve_init_signature(
@@ -442,14 +450,22 @@ impl<'a> DeclarationResolver<'a> {
                     });
                 }
                 EnumMember::Function(function_decl) => {
-                    methods.push(ResolvedNamedFunctionSignature {
-                        name: function_decl.node.name.clone(),
-                        signature: self.resolve_function_signature(
+                    if function_decl.node.init_origin.is_some() {
+                        initializers.push(self.resolve_init_signature(
                             owner,
                             scope_file_id,
-                            &function_decl.node,
-                        ),
-                    });
+                            &function_decl.node.params,
+                        ));
+                    } else {
+                        methods.push(ResolvedNamedFunctionSignature {
+                            name: function_decl.node.name.clone(),
+                            signature: self.resolve_function_signature(
+                                owner,
+                                scope_file_id,
+                                &function_decl.node,
+                            ),
+                        });
+                    }
                 }
                 EnumMember::Init(init_decl) => {
                     initializers.push(self.resolve_init_signature(
@@ -490,15 +506,24 @@ impl<'a> DeclarationResolver<'a> {
         for member in &protocol_decl.members {
             match &member.node {
                 ProtocolMember::Function(function_member) => {
-                    methods.push(ResolvedNamedFunctionSignature {
-                        name: function_member.node.name.clone(),
-                        signature: self.resolve_function_signature_from_parts(
+                    if function_member.node.init_origin.is_some() {
+                        initializers.push(self.resolve_init_signature(
                             owner,
                             scope_file_id,
                             &function_member.node.params,
-                            function_member.node.return_type.as_ref(),
-                        ),
-                    });
+                        ));
+                    } else {
+                        methods.push(ResolvedNamedFunctionSignature {
+                            name: function_member.node.name.clone(),
+                            signature: self
+                                .resolve_function_signature_from_parts(
+                                    owner,
+                                    scope_file_id,
+                                    &function_member.node.params,
+                                    function_member.node.return_type.as_ref(),
+                                ),
+                        });
+                    }
                 }
                 ProtocolMember::Initializer(init_member) => {
                     initializers.push(self.resolve_init_signature(
@@ -563,14 +588,22 @@ impl<'a> DeclarationResolver<'a> {
         for member in &impl_decl.members {
             match &member.node {
                 ImplMember::Function(function_decl) => {
-                    methods.push(ResolvedNamedFunctionSignature {
-                        name: function_decl.node.name.clone(),
-                        signature: self.resolve_function_signature(
+                    if function_decl.node.init_origin.is_some() {
+                        initializers.push(self.resolve_init_signature(
                             owner,
                             scope_file_id,
-                            &function_decl.node,
-                        ),
-                    });
+                            &function_decl.node.params,
+                        ));
+                    } else {
+                        methods.push(ResolvedNamedFunctionSignature {
+                            name: function_decl.node.name.clone(),
+                            signature: self.resolve_function_signature(
+                                owner,
+                                scope_file_id,
+                                &function_decl.node,
+                            ),
+                        });
+                    }
                 }
                 ImplMember::Init(init_decl) => {
                     initializers.push(self.resolve_init_signature(

@@ -21,7 +21,6 @@ use super::stmt_check::{
 use super::typed_bodies::{
     TypedBodyTable, TypedBodyTableIssue, build_typed_body_table,
 };
-use crate::frontend::ExpandedFile;
 use crate::frontend::diagnostics::{
     DiagnosticsBag, diagnostics_from_semantic_checks,
 };
@@ -94,7 +93,7 @@ impl SemanticAnalysis {
 pub fn analyze_semantics(
     db: &SourceDb,
     graph: &ScopeGraph,
-    parsed_files: &[ExpandedFile],
+    parsed_files: &[crate::frontend::DesugaredFile],
     imports: &BTreeMap<FileId, ResolvedImports>,
 ) -> SemanticAnalysis {
     let external_lookup = ExternalSemanticLookup::default();
@@ -112,7 +111,7 @@ pub fn analyze_semantics(
 pub fn analyze_semantics_with_external_lookup(
     db: &SourceDb,
     graph: &ScopeGraph,
-    parsed_files: &[ExpandedFile],
+    parsed_files: &[crate::frontend::DesugaredFile],
     imports: &BTreeMap<FileId, ResolvedImports>,
     external_lookup: &ExternalSemanticLookup,
 ) -> SemanticAnalysis {

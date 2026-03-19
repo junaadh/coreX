@@ -6,17 +6,30 @@ use core_x::frontend::resolver::{
 };
 use core_x::frontend::source::{FileId, SourceDb};
 use core_x::frontend::{
-    DefinitionTarget, ExternalDefinitionLocation, ExternalSemanticLookup,
-    ParsedFile, analyze_semantics_with_external_lookup,
+    DefinitionTarget, DesugaredFile, ExternalDefinitionLocation,
+    ExternalSemanticLookup, analyze_semantics_with_external_lookup,
     build_external_semantic_lookup, collect_item_definition_locations,
     completion_candidates_for_file, lookup_definition_target,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+fn parsed_to_desugared(
+    parsed: core_x::frontend::ParsedFile,
+) -> core_x::frontend::DesugaredFile {
+    core_x::frontend::DesugaredFile {
+        file_id: parsed.file_id,
+        ast: parsed.ast,
+        diagnostics: parsed.diagnostics,
+        provenance_map: core_x::frontend::expansion::ProvenanceMap::new(
+            parsed.file_id,
+        ),
+    }
+}
+
 fn parse_sources(
     sources: &[(&str, &str)],
-) -> (SourceDb, Vec<ParsedFile>, BTreeMap<String, FileId>) {
+) -> (SourceDb, Vec<DesugaredFile>, BTreeMap<String, FileId>) {
     let mut db = SourceDb::new();
     let mut parsed_files = Vec::with_capacity(sources.len());
     let mut file_ids = BTreeMap::new();
@@ -26,7 +39,7 @@ fn parse_sources(
         let file = db.file(file_id).expect("source file should exist");
         let parsed = parse_source_file_from_source_file(file)
             .expect("source should parse");
-        parsed_files.push(parsed);
+        parsed_files.push(parsed_to_desugared(parsed));
         file_ids.insert(path.to_string(), file_id);
     }
 

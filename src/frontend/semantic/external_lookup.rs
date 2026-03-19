@@ -1,7 +1,7 @@
 use super::analysis::analyze_semantics_with_external_lookup;
 use super::signatures::TypedFunctionSignature;
 use super::types::Type;
-use crate::frontend::ExpandedFile;
+use crate::frontend::DesugaredFile;
 use crate::frontend::ast::{ExternMember, Item, Span};
 use crate::frontend::resolver::{
     NamedImportRoot, ScopeGraph,
@@ -203,7 +203,7 @@ pub fn build_external_semantic_lookup(
     db: &SourceDb,
     named_roots: &BTreeMap<String, NamedImportRoot>,
     graph: &ScopeGraph,
-    parsed_files: &[ExpandedFile],
+    parsed_files: &[DesugaredFile],
 ) -> ExternalSemanticLookup {
     let mut lookup = ExternalSemanticLookup::new();
 
@@ -269,7 +269,7 @@ pub fn build_external_semantic_lookup(
         }
     }
 
-    let parsed_by_id: BTreeMap<FileId, &ExpandedFile> = parsed_files
+    let parsed_by_id: BTreeMap<FileId, &DesugaredFile> = parsed_files
         .iter()
         .map(|parsed| (parsed.file_id, parsed))
         .collect();
@@ -324,10 +324,10 @@ fn definition_location_from_file_id(
 
 fn collect_item_definition_locations(
     graph: &ScopeGraph,
-    parsed_files: &[ExpandedFile],
+    parsed_files: &[DesugaredFile],
     item_table: &crate::frontend::resolver::GlobalItemTable,
 ) -> BTreeMap<crate::frontend::resolver::ItemId, (FileId, Span)> {
-    let parsed_by_id: BTreeMap<FileId, &ExpandedFile> = parsed_files
+    let parsed_by_id: BTreeMap<FileId, &DesugaredFile> = parsed_files
         .iter()
         .map(|parsed| (parsed.file_id, parsed))
         .collect();

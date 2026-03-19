@@ -4,6 +4,19 @@ use core_x::frontend::source::SourceDb;
 use core_x::frontend::{Diagnostic, DiagnosticsBag, analyze_semantics};
 use std::collections::BTreeMap;
 
+fn parsed_to_desugared(
+    parsed: core_x::frontend::ParsedFile,
+) -> core_x::frontend::DesugaredFile {
+    core_x::frontend::DesugaredFile {
+        file_id: parsed.file_id,
+        ast: parsed.ast,
+        diagnostics: parsed.diagnostics,
+        provenance_map: core_x::frontend::expansion::ProvenanceMap::new(
+            parsed.file_id,
+        ),
+    }
+}
+
 fn semantic_diagnostics_for_source(source: &str) -> DiagnosticsBag {
     let mut db = SourceDb::new();
     let file_id = db.add_file("src/root.cx", source);
@@ -11,7 +24,7 @@ fn semantic_diagnostics_for_source(source: &str) -> DiagnosticsBag {
     let parsed =
         parse_source_file_from_source_file(file).expect("parse should succeed");
     assert!(parsed.diagnostics.is_empty(), "strict parse diagnostics");
-    let parsed_files = vec![parsed];
+    let parsed_files = vec![parsed_to_desugared(parsed)];
 
     let graph = ScopeResolver::new(&db, &parsed_files)
         .resolve_library_root(file_id)

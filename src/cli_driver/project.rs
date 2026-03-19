@@ -1,26 +1,26 @@
 use crate::cli_driver::DynError;
-use core_x::frontend::{ExpandedFile, ParsedFile};
 use core_x::frontend::parser::{
     parse_source_file_from_source_file_with_recovery,
     parse_source_file_with_recovery,
 };
 use core_x::frontend::resolver::{ResolvedScopeKind, resolve_project_scopes};
 use core_x::frontend::source::{FileId, SourceDb};
+use core_x::frontend::{DesugaredFile, ParsedFile};
 use core_x::frontend::{
     ExpansionOptions, ImportRootKind, NamedImportRoot, ProjectGraph,
     ProjectLoader, ProjectManifest, TargetRoots, build_target_roots,
-    expand_parsed_files, load_local_dependency_project_graph,
+    desugar_files, expand_parsed_files, load_local_dependency_project_graph,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 type ParsedProjectFiles =
-    (SourceDb, Vec<ExpandedFile>, BTreeMap<PathBuf, FileId>);
+    (SourceDb, Vec<DesugaredFile>, BTreeMap<PathBuf, FileId>);
 
 pub struct ProjectContext {
     pub db: SourceDb,
-    pub parsed_files: Vec<ExpandedFile>,
+    pub parsed_files: Vec<DesugaredFile>,
     pub ordered_file_ids: Vec<FileId>,
     pub path_by_file_id: BTreeMap<FileId, PathBuf>,
     pub library_target: Option<TargetSelection>,
@@ -45,7 +45,7 @@ enum ReachableScopeFileKind {
 
 pub fn parse_single_file(
     path: &Path,
-) -> Result<(SourceDb, ExpandedFile, FileId), DynError> {
+) -> Result<(SourceDb, DesugaredFile, FileId), DynError> {
     let source = fs::read_to_string(path)?;
     let mut db = SourceDb::new();
     let file_id = db.add_file(path.to_path_buf(), source);
@@ -59,8 +59,11 @@ pub fn parse_single_file(
                 path.display()
             )
         })?;
-    let expanded = expand_parsed_files(&db, &[parsed], ExpansionOptions::default());
-    Ok((db, expanded.into_iter().next().unwrap(), file_id))
+    // Pipeline: parse -> expand -> desugar
+    let expanded =
+        expand_parsed_files(&db, &[parsed], ExpansionOptions::default());
+    let desugared = desugar_files(&expanded);
+    Ok((db, desugared.into_iter().next().unwrap(), file_id))
 }
 
 pub fn load_project_context(
@@ -93,13 +96,15 @@ pub fn load_project_context(
         let file = db.file(file_id).ok_or_else(|| {
             format!("missing source file id {}", file_id.raw())
         })?;
-        let parsed_file = parse_source_file_from_source_file_with_recovery(file)
-            .map_err(|error| {
-                format!(
-                    "failed to initialize parser for project file {}: {error}",
-                    display_path.display()
-                )
-            })?;
+        let parsed_file = parse_source_file_from_source_file_with_recovery(
+            file,
+        )
+        .map_err(|error| {
+            format!(
+                "failed to initialize parser for project file {}: {error}",
+                display_path.display()
+            )
+        })?;
 
         ordered_file_ids.push(file_id);
         path_by_file_id.insert(file_id, display_path);
@@ -107,8 +112,10 @@ pub fn load_project_context(
         parsed.push(parsed_file);
     }
 
+    // Pipeline: parse -> expand -> desugar
     let expanded_files =
         expand_parsed_files(&db, &parsed, ExpansionOptions::default());
+    let desugared_files = desugar_files(&expanded_files);
 
     let library_target = if let Some(target) = manifest.library.as_ref() {
         let file_id =
@@ -148,7 +155,7 @@ pub fn load_project_context(
 
     Ok(ProjectContext {
         db,
-        parsed_files: expanded_files,
+        parsed_files: desugared_files,
         ordered_file_ids,
         path_by_file_id,
         library_target,
@@ -369,22 +376,26 @@ fn parse_loaded_project_files(
         let file = db.file(file_id).ok_or_else(|| {
             format!("missing dependency source file id {}", file_id.raw())
         })?;
-        let parsed_file = parse_source_file_from_source_file_with_recovery(file)
-            .map_err(|error| {
-                format!(
-                    "failed to initialize parser for dependency file {}: {error}",
-                    absolute_path.display()
-                )
-            })?;
+        let parsed_file = parse_source_file_from_source_file_with_recovery(
+            file,
+        )
+        .map_err(|error| {
+            format!(
+                "failed to initialize parser for dependency file {}: {error}",
+                absolute_path.display()
+            )
+        })?;
 
         parsed.push(parsed_file);
         file_id_by_path.insert(absolute_path, file_id);
     }
 
+    // Pipeline: parse -> expand -> desugar
     let expanded_files =
         expand_parsed_files(&db, &parsed, ExpansionOptions::default());
+    let desugared_files = desugar_files(&expanded_files);
 
-    Ok((db, expanded_files, file_id_by_path))
+    Ok((db, desugared_files, file_id_by_path))
 }
 
 pub fn classify_single_root_target(
@@ -464,8 +475,8 @@ pub fn targets_from_context(
 }
 
 pub fn parsed_by_id(
-    parsed_files: &[ExpandedFile],
-) -> BTreeMap<FileId, &ExpandedFile> {
+    parsed_files: &[DesugaredFile],
+) -> BTreeMap<FileId, &DesugaredFile> {
     parsed_files
         .iter()
         .map(|parsed| (parsed.file_id, parsed))
@@ -482,7 +493,7 @@ pub fn path_for_file_id(context: &ProjectContext, file_id: FileId) -> String {
 pub fn resolve_target_scope_graph_with_diagnostics(
     resolver: &core_x::frontend::ScopeResolver<'_>,
     db: &SourceDb,
-    parsed_files: &[ExpandedFile],
+    parsed_files: &[DesugaredFile],
     root_file_id: FileId,
     kind: ResolvedScopeKind,
 ) -> (
