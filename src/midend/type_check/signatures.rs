@@ -1,4 +1,4 @@
-use super::hir_input::SemanticHirInput;
+use crate::frontend::semantic::hir_input::SemanticHirInput;
 use super::{BuiltinType, Mutability, NamedTypeKind, Type};
 use crate::frontend::hir::{
     HirFunction, HirFunctionSignature, HirItemKind, HirModule,

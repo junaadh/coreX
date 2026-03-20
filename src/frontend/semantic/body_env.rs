@@ -1,5 +1,5 @@
 use super::hir_input::SemanticHirInput;
-use super::signatures::TypedFunctionSignature;
+use crate::midend::type_check::signatures::TypedFunctionSignature;
 use super::{BuiltinType, Mutability, NamedTypeKind, Type, TypedItemData, TypedItemTable};
 use crate::frontend::resolver::{
     BodyKind, DeclarationOwner, ItemId, LocalId, LocalKind, LocalMutability,

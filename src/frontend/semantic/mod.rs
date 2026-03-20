@@ -1,15 +1,11 @@
 mod analysis;
-mod body_env;
-mod control_flow;
+pub mod body_env;
+pub mod control_flow;
 mod definition;
-mod expr_check;
-mod external_lookup;
-mod hir_input;
-mod item_table;
-mod signatures;
-mod stmt_check;
-mod typed_bodies;
-mod types;
+pub mod external_lookup;
+pub mod hir_input;
+pub mod item_table;
+pub mod types;
 
 pub use analysis::{
     ResolvedHirSemanticInput, SemanticAnalysis, SemanticAnalysisIssues,
@@ -31,10 +27,6 @@ pub use definition::{
     collect_item_definition_locations, completion_candidates_for_file,
     local_binding_type, lookup_definition_target,
 };
-pub use expr_check::{
-    BodyExprId, ExprCheckIssue, ExprCheckIssueKind, ExpressionTypeTable,
-    check_expression_types, check_expression_types_with_external_lookup,
-};
 pub use external_lookup::{
     ExternalDefinitionLocation, ExternalSemanticLookup,
     build_external_semantic_lookup,
@@ -44,21 +36,19 @@ pub use item_table::{
     TypedImplAttachment, TypedItemData, TypedItemKind, TypedItemTable,
     TypedItemTableIssue, TypedItemTableIssueKind, build_typed_item_table,
 };
-pub use signatures::{
-    SignatureTypingIssue, SignatureTypingIssueKind, TypedAssociatedTypeBounds,
-    TypedEnumCaseSignature, TypedEnumSignatureData, TypedFunctionSignature,
-    TypedImplSignature, TypedNamedFunctionSignature, TypedProtocolProperty,
-    TypedProtocolSignatureData, TypedSignatureTable, TypedStructField,
-    TypedStructSignatureData, type_declaration_signatures,
-};
-pub use stmt_check::{
-    BodyStmtId, StatementKind, StatementTypeEntry, StatementTypeTable,
-    StmtCheckIssue, StmtCheckIssueKind, check_statements,
-    check_statements_with_expression_types,
-};
-pub use typed_bodies::{
+pub use types::{BuiltinType, Mutability, NamedTypeKind, Type};
+
+// Re-export from midend for backward compatibility
+pub use crate::midend::type_check::{
+    ExprCheckIssue, ExprCheckIssueKind, ExpressionTypeTable, StmtCheckIssue,
+    StmtCheckIssueKind, StatementKind, StatementTypeEntry, StatementTypeTable,
     TypedBody, TypedBodyId, TypedBodyIssueKind, TypedBodyIssueMarker,
     TypedBodyTable, TypedBodyTableIssue, TypedBodyTableIssueKind,
-    build_typed_body_table,
+    TypedEnumCaseSignature, TypedEnumSignatureData, TypedFunctionSignature,
+    TypedImplSignature, TypedNamedFunctionSignature, TypedProtocolProperty,
+    TypedProtocolSignatureData, TypedSignatureTable, TypedStructSignatureData,
+    SignatureTypingIssue, SignatureTypingIssueKind,
+    check_expression_types, check_expression_types_with_external_lookup,
+    check_statements, check_statements_with_expression_types,
+    type_declaration_signatures, build_typed_body_table,
 };
-pub use types::{BuiltinType, Mutability, NamedTypeKind, Type};

@@ -1,7 +1,7 @@
 use super::analysis::{
     analyze_semantics_with_external_lookup, resolve_hir_semantic_input,
 };
-use super::signatures::TypedFunctionSignature;
+use crate::midend::type_check::signatures::TypedFunctionSignature;
 use super::types::Type;
 use crate::frontend::DesugaredFile;
 use crate::frontend::ast::{ExternMember, Item, Span};

@@ -1,5 +1,5 @@
 use super::Type;
-use super::signatures::{
+use crate::midend::type_check::signatures::{
     TypedEnumSignatureData, TypedFunctionSignature, TypedImplSignature,
     TypedProtocolSignatureData, TypedSignatureTable, TypedStructSignatureData,
 };

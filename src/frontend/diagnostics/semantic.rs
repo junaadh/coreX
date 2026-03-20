@@ -7,10 +7,10 @@ use crate::frontend::resolver::{
 use crate::frontend::semantic::{
     BodyTypeEnvironmentTable, ControlFlowIssue, ControlFlowIssueKind,
     ControlFlowTable, ExprCheckIssue, ExprCheckIssueKind, ExpressionTypeTable,
-    SignatureTypingIssue, StatementTypeTable, StmtCheckIssue,
-    StmtCheckIssueKind, TypedItemTable, TypedItemTableIssue,
-    TypedItemTableIssueKind,
+    StatementTypeTable, StmtCheckIssue, StmtCheckIssueKind, TypedItemTable,
+    TypedItemTableIssue, TypedItemTableIssueKind,
 };
+use crate::midend::type_check::SignatureTypingIssue;
 use crate::frontend::source::{FileId, SourceDb};
 
 /// Converts full semantic checker outputs into structured diagnostics.

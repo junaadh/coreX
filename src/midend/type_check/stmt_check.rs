@@ -1,7 +1,8 @@
-use super::body_env::BodyTypeEnvironmentTable;
 use super::expr_check::{ExpressionTypeTable, check_expression_types};
-use super::hir_input::{SemanticBodyRef, SemanticHirInput};
-use super::{BuiltinType, Type, TypedItemTable};
+use crate::frontend::semantic::body_env::BodyTypeEnvironmentTable;
+use crate::frontend::semantic::hir_input::{SemanticBodyRef, SemanticHirInput};
+use crate::frontend::semantic::TypedItemTable;
+use super::{BuiltinType, Type};
 use crate::frontend::ast::Span;
 use crate::frontend::hir::{
     HirBodyId, HirExprId, HirExprKind, HirModule, HirMutability, HirPatId,

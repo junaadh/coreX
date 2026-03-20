@@ -1,8 +1,9 @@
-use super::body_env::BodyTypeEnvironmentTable;
-use super::external_lookup::ExternalSemanticLookup;
-use super::hir_input::{SemanticBodyRef, SemanticHirInput};
+use crate::frontend::semantic::body_env::BodyTypeEnvironmentTable;
+use crate::frontend::semantic::external_lookup::ExternalSemanticLookup;
+use crate::frontend::semantic::hir_input::{SemanticBodyRef, SemanticHirInput};
+use crate::frontend::semantic::{TypedItemData, TypedItemTable};
 use super::signatures::TypedFunctionSignature;
-use super::{BuiltinType, Type, TypedItemData, TypedItemTable};
+use super::{BuiltinType, Type};
 use crate::frontend::ast::Span;
 use crate::frontend::hir::{
     HirArrayElement, HirBinaryOp, HirBodyId, HirExprId, HirExprKind,
@@ -275,7 +276,7 @@ struct BodyExprChecker<'a> {
     module: &'a HirModule,
     hir_input: &'a SemanticHirInput,
     local_types: BTreeMap<LocalId, Type>,
-    local_bindings: BTreeMap<LocalId, super::body_env::BodyLocalBindingInfo>,
+    local_bindings: BTreeMap<LocalId, crate::frontend::semantic::body_env::BodyLocalBindingInfo>,
     imports: &'a BTreeMap<FileId, ResolvedImports>,
     external_lookup: &'a ExternalSemanticLookup,
     expr_ids_by_span:
@@ -291,7 +292,7 @@ impl<'a> BodyExprChecker<'a> {
         local_types: BTreeMap<LocalId, Type>,
         local_bindings: BTreeMap<
             LocalId,
-            super::body_env::BodyLocalBindingInfo,
+            crate::frontend::semantic::body_env::BodyLocalBindingInfo,
         >,
         imports: &'a BTreeMap<FileId, ResolvedImports>,
         external_lookup: &'a ExternalSemanticLookup,

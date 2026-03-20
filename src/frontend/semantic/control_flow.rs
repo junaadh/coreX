@@ -1,14 +1,11 @@
 use super::body_env::BodyTypeEnvironmentTable;
-use super::expr_check::{
-    ExprCheckIssue, ExprCheckIssueKind, ExpressionTypeTable,
-    check_expression_types,
-};
 use super::hir_input::SemanticHirInput;
-use super::stmt_check::{
-    BodyStmtId, StatementKind, StatementTypeEntry, StatementTypeTable,
-    check_statements_with_expression_types,
-};
 use super::{BuiltinType, Type, TypedItemTable};
+use crate::midend::type_check::{
+    ExprCheckIssue, ExprCheckIssueKind, ExpressionTypeTable,
+    check_expression_types, BodyStmtId, StatementKind, StatementTypeEntry,
+    StatementTypeTable, check_statements_with_expression_types,
+};
 use crate::frontend::ast::Span;
 use crate::frontend::hir::HirBodyId;
 use crate::frontend::resolver::{DeclarationOwner, ResolvedBodyTable};

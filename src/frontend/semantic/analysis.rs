@@ -4,22 +4,16 @@ use super::body_env::{
 use super::control_flow::{
     ControlFlowIssue, ControlFlowTable, check_control_flow_with_tables,
 };
-use super::expr_check::{
-    ExprCheckIssue, ExpressionTypeTable,
-    check_expression_types_with_external_lookup,
-};
 use super::external_lookup::ExternalSemanticLookup;
 use super::hir_input::SemanticHirInput;
 use super::item_table::{
     TypedItemTable, TypedItemTableIssue, build_typed_item_table,
 };
-use super::signatures::{
+use crate::midend::type_check::{
+    ExprCheckIssue, ExpressionTypeTable,
+    check_expression_types_with_external_lookup,
     SignatureTypingIssue, TypedSignatureTable, type_declaration_signatures,
-};
-use super::stmt_check::{
     StatementTypeTable, StmtCheckIssue, check_statements_with_expression_types,
-};
-use super::typed_bodies::{
     TypedBodyTable, TypedBodyTableIssue, build_typed_body_table,
 };
 use crate::frontend::DesugaredFile;
