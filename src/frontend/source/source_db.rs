@@ -2,7 +2,7 @@ use super::{FileId, SourceFile};
 use std::path::PathBuf;
 
 /// In-memory database of source files keyed by stable [`FileId`].
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SourceDb {
     files: Vec<SourceFile>,
 }
@@ -38,6 +38,37 @@ impl SourceDb {
         usize::try_from(id.raw())
             .ok()
             .and_then(|index| self.files.get(index))
+    }
+
+    /// Returns a mutable file by id.
+    #[must_use]
+    pub fn file_mut(&mut self, id: FileId) -> Option<&mut SourceFile> {
+        usize::try_from(id.raw())
+            .ok()
+            .and_then(|index| self.files.get_mut(index))
+    }
+
+    /// Replaces source text for an existing file id while preserving id/path.
+    ///
+    /// Returns `true` when the file existed and was updated.
+    pub fn update_file_source(
+        &mut self,
+        id: FileId,
+        source: impl Into<String>,
+    ) -> bool {
+        let Some(existing) = self.file(id) else {
+            return false;
+        };
+        let updated = SourceFile::new(
+            id,
+            existing.path().to_path_buf(),
+            source.into(),
+        );
+        let Some(slot) = self.file_mut(id) else {
+            return false;
+        };
+        *slot = updated;
+        true
     }
 
     /// Returns all files in insertion order.

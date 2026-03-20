@@ -16,21 +16,12 @@ use crate::cli_driver::dump::model::{
 };
 use crate::cli_driver::project::{
     classify_single_root_target, load_project_context, parse_single_file,
-    parsed_by_id, path_for_file_id,
-    resolve_target_scope_graph_with_diagnostics, single_target_from_context,
+    parsed_by_id, path_for_file_id, single_target_from_context,
     targets_from_context,
 };
 use clap::{Args, ValueEnum};
-use core_x::frontend::NamedImportRoot;
 use core_x::frontend::lexer::Lexer;
-use core_x::frontend::resolver::{
-    ResolvedScopeKind, resolve_project_imports_with_named_roots_and_diagnostics,
-};
-use core_x::frontend::{
-    analyze_semantics_with_external_lookup, build_external_semantic_lookup,
-};
 use serde_json::json;
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Args)]
@@ -312,22 +303,15 @@ fn dump_scopes(
         }
     };
 
+    emit_diagnostics_bag(&context.db, &context.analysis.diagnostics);
     let mut resolved = Vec::new();
-    let scope_resolver = core_x::frontend::ScopeResolver::new(
-        &context.db,
-        &context.parsed_files,
-    );
     for target in targets {
-        let (graph, scope_diagnostics) =
-            resolve_target_scope_graph_with_diagnostics(
-                &scope_resolver,
-                &context.db,
-                &context.parsed_files,
-                target.root_file_id,
-                target.kind,
-            );
-        emit_diagnostics_bag(&context.db, &scope_diagnostics);
-        let graph = graph.ok_or_else(|| {
+        let graph = context
+            .analysis
+            .resolution_tables
+            .get(&target.root_file_id)
+            .map(|resolution| resolution.graph.clone())
+            .ok_or_else(|| {
             format!(
                 "failed to build {} scope graph for {}",
                 target.label,
@@ -384,51 +368,26 @@ fn dump_imports(
         }
     };
 
+    emit_diagnostics_bag(&context.db, &context.analysis.diagnostics);
     let mut resolved = Vec::new();
-    let scope_resolver = core_x::frontend::ScopeResolver::new(
-        &context.db,
-        &context.parsed_files,
-    );
     for target in targets {
-        let (graph, scope_diagnostics) =
-            resolve_target_scope_graph_with_diagnostics(
-                &scope_resolver,
-                &context.db,
-                &context.parsed_files,
-                target.root_file_id,
-                target.kind,
-            );
-        emit_diagnostics_bag(&context.db, &scope_diagnostics);
-        let graph = graph.ok_or_else(|| {
+        let resolution = context
+            .analysis
+            .resolution_tables
+            .get(&target.root_file_id)
+            .ok_or_else(|| {
             format!(
-                "failed to build {} scope graph for {}",
+                "failed to build {} import tables for {}",
                 target.label,
                 path_for_file_id(&context, target.root_file_id)
             )
         })?;
 
-        let mut named_roots = context.dependency_named_roots.clone();
-        maybe_add_current_library_root_for_binary(
-            &context,
-            &scope_resolver,
-            &target,
-            &mut named_roots,
-        )?;
-
-        let (symbols, imports, import_diagnostics) =
-            resolve_project_imports_with_named_roots_and_diagnostics(
-                &graph,
-                &context.parsed_files,
-                &named_roots,
-                &context.db,
-            );
-        emit_diagnostics_bag(&context.db, &import_diagnostics);
-
         resolved.push(ResolvedImportDump {
             target,
-            graph,
-            symbols,
-            imports,
+            graph: resolution.graph.clone(),
+            symbols: resolution.symbols.clone(),
+            imports: resolution.imports.clone(),
         });
     }
 
@@ -481,66 +440,38 @@ fn dump_semantic(
         }
     };
 
+    emit_diagnostics_bag(&context.db, &context.analysis.diagnostics);
     let mut resolved = Vec::new();
-    let scope_resolver = core_x::frontend::ScopeResolver::new(
-        &context.db,
-        &context.parsed_files,
-    );
     for target in targets {
-        let (graph, scope_diagnostics) =
-            resolve_target_scope_graph_with_diagnostics(
-                &scope_resolver,
-                &context.db,
-                &context.parsed_files,
-                target.root_file_id,
-                target.kind,
-            );
-        emit_diagnostics_bag(&context.db, &scope_diagnostics);
-        let graph = graph.ok_or_else(|| {
+        let resolution = context
+            .analysis
+            .resolution_tables
+            .get(&target.root_file_id)
+            .ok_or_else(|| {
             format!(
-                "failed to build {} scope graph for {}",
+                "failed to build {} semantic tables for {}",
                 target.label,
                 path_for_file_id(&context, target.root_file_id)
             )
         })?;
-
-        let mut named_roots = context.dependency_named_roots.clone();
-        maybe_add_current_library_root_for_binary(
-            &context,
-            &scope_resolver,
-            &target,
-            &mut named_roots,
-        )?;
-
-        let (symbols, imports, import_diagnostics) =
-            resolve_project_imports_with_named_roots_and_diagnostics(
-                &graph,
-                &context.parsed_files,
-                &named_roots,
-                &context.db,
-            );
-        emit_diagnostics_bag(&context.db, &import_diagnostics);
-
-        let external_lookup = build_external_semantic_lookup(
-            &context.db,
-            &named_roots,
-            &graph,
-            &context.parsed_files,
-        );
-        let semantic = analyze_semantics_with_external_lookup(
-            &context.db,
-            &graph,
-            &context.parsed_files,
-            &imports,
-            &external_lookup,
-        );
-        emit_diagnostics_bag(&context.db, &semantic.diagnostics);
+        let semantic = context
+            .analysis
+            .semantic_tables
+            .get(&target.root_file_id)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "missing semantic tables for {} ({})",
+                    target.label,
+                    path_for_file_id(&context, target.root_file_id)
+                )
+            })?;
 
         resolved.push(ResolvedSemanticDump {
             target,
-            graph,
-            symbols,
-            imports,
+            graph: resolution.graph.clone(),
+            symbols: resolution.symbols.clone(),
+            imports: resolution.imports.clone(),
             semantic,
         });
     }
@@ -578,49 +509,6 @@ fn dump_semantic(
             }))?)
         }
     }
-}
-
-fn maybe_add_current_library_root_for_binary(
-    context: &crate::cli_driver::project::ProjectContext,
-    scope_resolver: &core_x::frontend::ScopeResolver<'_>,
-    target: &crate::cli_driver::project::TargetSelection,
-    named_roots: &mut BTreeMap<String, NamedImportRoot>,
-) -> Result<(), DynError> {
-    if target.kind != ResolvedScopeKind::BinaryRoot {
-        return Ok(());
-    }
-
-    let (Some(root_name), Some(library_target)) = (
-        context.current_library_import_root.as_ref(),
-        context.library_target.as_ref(),
-    ) else {
-        return Ok(());
-    };
-
-    let (library_graph, library_diagnostics) =
-        resolve_target_scope_graph_with_diagnostics(
-            scope_resolver,
-            &context.db,
-            &context.parsed_files,
-            library_target.root_file_id,
-            ResolvedScopeKind::Root,
-        );
-    emit_diagnostics_bag(&context.db, &library_diagnostics);
-    let library_graph = library_graph.ok_or_else(|| {
-        format!(
-            "failed to build library scope graph for {}",
-            path_for_file_id(context, library_target.root_file_id)
-        )
-    })?;
-    named_roots.insert(
-        root_name.clone(),
-        NamedImportRoot::LoadedLibrary {
-            graph: library_graph,
-            parsed_files: context.parsed_files.clone(),
-            path_by_file_id: context.path_by_file_id.clone(),
-        },
-    );
-    Ok(())
 }
 
 fn dump_tokens_for_file_path(path: &Path) -> Result<FileTokenDump, DynError> {

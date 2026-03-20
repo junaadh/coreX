@@ -1,22 +1,22 @@
 use super::body_env::BodyTypeEnvironmentTable;
 use super::expr_check::{ExpressionTypeTable, check_expression_types};
+use super::hir_input::{SemanticBodyRef, SemanticHirInput};
 use super::{BuiltinType, Type, TypedItemTable};
-use crate::frontend::DesugaredFile;
-use crate::frontend::ast::{
-    Block, Clause, Expr, Item, Pattern, Span, Stmt, StructMember,
+use crate::frontend::ast::Span;
+use crate::frontend::hir::{
+    HirBodyId, HirExprId, HirExprKind, HirModule, HirMutability, HirPatId,
+    HirStmtId,
 };
 use crate::frontend::resolver::{
-    DeclarationOwner, GlobalItemTable, LocalId, ResolvedBody,
-    ResolvedBodyTable, ScopeGraph,
+    DeclarationOwner, LocalId, ResolvedBody, ResolvedBodyTable,
 };
-use crate::frontend::source::FileId;
 use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct BodyStmtId {
     pub owner: DeclarationOwner,
     pub body_index: usize,
-    pub stmt_index: u32,
+    pub hir_stmt_id: HirStmtId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,8 +85,10 @@ pub struct StmtCheckIssue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatementTypeTable {
     by_stmt_id: BTreeMap<BodyStmtId, StatementTypeEntry>,
-    locals_by_body:
+    local_types_by_hir_id_by_body:
         BTreeMap<(DeclarationOwner, usize), BTreeMap<LocalId, Type>>,
+    hir_local_id_by_resolved_local_id_by_body:
+        BTreeMap<(DeclarationOwner, usize), BTreeMap<LocalId, LocalId>>,
     pub issues: Vec<StmtCheckIssue>,
 }
 
@@ -118,11 +120,28 @@ impl StatementTypeTable {
         owner: &DeclarationOwner,
         body_index: usize,
     ) -> Option<&BTreeMap<LocalId, Type>> {
-        self.locals_by_body.get(&(owner.clone(), body_index))
+        self.local_types_by_hir_id_by_body
+            .get(&(owner.clone(), body_index))
     }
 
     #[must_use]
     pub fn local_type(
+        &self,
+        owner: &DeclarationOwner,
+        body_index: usize,
+        local_id: LocalId,
+    ) -> Option<&Type> {
+        let body_key = (owner.clone(), body_index);
+        let hir_local_id = self
+            .hir_local_id_by_resolved_local_id_by_body
+            .get(&body_key)?
+            .get(&local_id)?;
+        self.local_types_for_body(owner, body_index)?
+            .get(hir_local_id)
+    }
+
+    #[must_use]
+    pub fn local_type_for_hir_local(
         &self,
         owner: &DeclarationOwner,
         body_index: usize,
@@ -151,25 +170,19 @@ impl StatementTypeTable {
 
 #[must_use]
 pub fn check_statements(
-    graph: &ScopeGraph,
-    parsed_files: &[DesugaredFile],
-    global_items: &GlobalItemTable,
+    hir_input: &SemanticHirInput,
     typed_items: &TypedItemTable,
     resolved_bodies: &ResolvedBodyTable,
     body_envs: &BodyTypeEnvironmentTable,
 ) -> StatementTypeTable {
     let expr_types = check_expression_types(
-        graph,
-        parsed_files,
-        global_items,
+        hir_input,
         typed_items,
         resolved_bodies,
         body_envs,
     );
     check_statements_with_expression_types(
-        graph,
-        parsed_files,
-        global_items,
+        hir_input,
         resolved_bodies,
         body_envs,
         &expr_types,
@@ -178,21 +191,14 @@ pub fn check_statements(
 
 #[must_use]
 pub fn check_statements_with_expression_types(
-    graph: &ScopeGraph,
-    parsed_files: &[DesugaredFile],
-    global_items: &GlobalItemTable,
+    hir_input: &SemanticHirInput,
     resolved_bodies: &ResolvedBodyTable,
     body_envs: &BodyTypeEnvironmentTable,
     expr_types: &ExpressionTypeTable,
 ) -> StatementTypeTable {
-    let parsed_by_id: BTreeMap<FileId, &DesugaredFile> = parsed_files
-        .iter()
-        .map(|parsed| (parsed.file_id, parsed))
-        .collect();
-    let body_blocks = collect_body_blocks(graph, &parsed_by_id, global_items);
-
     let mut by_stmt_id = BTreeMap::new();
-    let mut locals_by_body = BTreeMap::new();
+    let mut local_types_by_hir_id_by_body = BTreeMap::new();
+    let mut hir_local_id_by_resolved_local_id_by_body = BTreeMap::new();
     let mut issues = Vec::new();
 
     for body in resolved_bodies.iter() {
@@ -210,9 +216,7 @@ pub fn check_statements_with_expression_types(
             continue;
         };
 
-        let Some(block_entry) = body_blocks
-            .get(&body.owner)
-            .and_then(|entries| entries.get(body.body_index))
+        let Some(body_ref) = hir_input.body_ref(&body.owner, body.body_index)
         else {
             issues.push(StmtCheckIssue {
                 owner: body.owner.clone(),
@@ -223,259 +227,128 @@ pub fn check_statements_with_expression_types(
             continue;
         };
 
-        let mut checker = BodyStmtChecker::new(body, env.local_types.clone());
-        checker.check_block(
-            block_entry.block,
+        let Some(module) = hir_input.hir_modules.get(&body_ref.file_id) else {
+            issues.push(StmtCheckIssue {
+                owner: body.owner.clone(),
+                body_index: body.body_index,
+                span: Span::new(0, 0),
+                kind: StmtCheckIssueKind::MissingBodyAst,
+            });
+            continue;
+        };
+
+        if !module.bodies.contains_key(&body_ref.body_id) {
+            issues.push(StmtCheckIssue {
+                owner: body.owner.clone(),
+                body_index: body.body_index,
+                span: Span::new(0, 0),
+                kind: StmtCheckIssueKind::MissingBodyAst,
+            });
+            continue;
+        }
+
+        let mut checker = BodyStmtChecker::new(
+            body,
+            body_ref,
+            module,
+            hir_input,
+            env.local_types.clone(),
+            env.local_bindings_by_resolved_id()
+                .keys()
+                .filter_map(|resolved_local_id| {
+                    env.hir_local_id_for_resolved_local(*resolved_local_id)
+                        .map(|hir_local_id| (*resolved_local_id, hir_local_id))
+                })
+                .collect(),
+        );
+        checker.check_body(
+            body_ref.body_id,
             env.expected_return_type.clone(),
             expr_types,
             &mut by_stmt_id,
             &mut issues,
         );
-        locals_by_body
+        local_types_by_hir_id_by_body
             .insert((body.owner.clone(), body.body_index), checker.local_types);
+        hir_local_id_by_resolved_local_id_by_body.insert(
+            (body.owner.clone(), body.body_index),
+            checker.hir_local_id_by_resolved_local_id,
+        );
     }
 
     StatementTypeTable {
         by_stmt_id,
-        locals_by_body,
+        local_types_by_hir_id_by_body,
+        hir_local_id_by_resolved_local_id_by_body,
         issues,
     }
 }
 
-struct BodyBlockEntry<'a> {
-    block: &'a Block,
-}
-
-fn collect_body_blocks<'a>(
-    graph: &'a ScopeGraph,
-    parsed_by_id: &'a BTreeMap<FileId, &'a DesugaredFile>,
-    global_items: &'a GlobalItemTable,
-) -> BTreeMap<DeclarationOwner, Vec<BodyBlockEntry<'a>>> {
-    let mut result: BTreeMap<DeclarationOwner, Vec<BodyBlockEntry<'a>>> =
-        BTreeMap::new();
-
-    for (scope_file_id, scope) in &graph.scopes {
-        let Some(parsed) = parsed_by_id.get(scope_file_id) else {
-            continue;
-        };
-
-        let mut impl_index = 0usize;
-        for item in &parsed.ast.items {
-            match &item.node {
-                Item::Function(function_decl) => {
-                    if let Some(item_id) = item_id_for_top_level(
-                        global_items,
-                        *scope_file_id,
-                        &scope.scope_path,
-                        &function_decl.node.name,
-                    ) {
-                        result
-                            .entry(DeclarationOwner::Item(item_id))
-                            .or_default()
-                            .push(BodyBlockEntry {
-                                block: &function_decl.node.body,
-                            });
-                    }
-                }
-                Item::Struct(struct_decl) => {
-                    if let Some(item_id) = item_id_for_top_level(
-                        global_items,
-                        *scope_file_id,
-                        &scope.scope_path,
-                        &struct_decl.node.name,
-                    ) {
-                        let owner = DeclarationOwner::Item(item_id);
-                        for member in &struct_decl.node.members {
-                            match &member.node {
-                                StructMember::Function(function_decl) => {
-                                    result
-                                        .entry(owner.clone())
-                                        .or_default()
-                                        .push(BodyBlockEntry {
-                                            block: &function_decl.node.body,
-                                        });
-                                }
-                                StructMember::Init(init_decl) => {
-                                    result
-                                        .entry(owner.clone())
-                                        .or_default()
-                                        .push(BodyBlockEntry {
-                                            block: &init_decl.node.body,
-                                        });
-                                }
-                                StructMember::Field(_) => {}
-                            }
-                        }
-                    }
-                }
-                Item::Enum(enum_decl) => {
-                    if let Some(item_id) = item_id_for_top_level(
-                        global_items,
-                        *scope_file_id,
-                        &scope.scope_path,
-                        &enum_decl.node.name,
-                    ) {
-                        let owner = DeclarationOwner::Item(item_id);
-                        for member in &enum_decl.node.members {
-                            match &member.node {
-                                crate::frontend::ast::EnumMember::Function(
-                                    function_decl,
-                                ) => {
-                                    result
-                                        .entry(owner.clone())
-                                        .or_default()
-                                        .push(BodyBlockEntry {
-                                            block: &function_decl.node.body,
-                                        });
-                                }
-                                crate::frontend::ast::EnumMember::Init(
-                                    init_decl,
-                                ) => {
-                                    result
-                                        .entry(owner.clone())
-                                        .or_default()
-                                        .push(BodyBlockEntry {
-                                            block: &init_decl.node.body,
-                                        });
-                                }
-                                crate::frontend::ast::EnumMember::Case(_) => {}
-                            }
-                        }
-                    }
-                }
-                Item::Protocol(protocol_decl) => {
-                    if let Some(item_id) = item_id_for_top_level(
-                        global_items,
-                        *scope_file_id,
-                        &scope.scope_path,
-                        &protocol_decl.node.name,
-                    ) {
-                        let owner = DeclarationOwner::Item(item_id);
-                        for member in &protocol_decl.node.members {
-                            match &member.node {
-                                crate::frontend::ast::ProtocolMember::Function(
-                                    function_member,
-                                ) => {
-                                    if let Some(default_body) =
-                                        &function_member.node.default_body
-                                    {
-                                        result.entry(owner.clone()).or_default().push(
-                                            BodyBlockEntry {
-                                                block: default_body,
-                                            },
-                                        );
-                                    }
-                                }
-                                crate::frontend::ast::ProtocolMember::Initializer(
-                                    init_member,
-                                ) => {
-                                    if let Some(default_body) =
-                                        &init_member.node.default_body
-                                    {
-                                        result.entry(owner.clone()).or_default().push(
-                                            BodyBlockEntry {
-                                                block: default_body,
-                                            },
-                                        );
-                                    }
-                                }
-                                crate::frontend::ast::ProtocolMember::AssociatedType(_)
-                                | crate::frontend::ast::ProtocolMember::Property(_) => {}
-                            }
-                        }
-                    }
-                }
-                Item::Impl(impl_decl) => {
-                    let owner = DeclarationOwner::Impl {
-                        scope_file_id: *scope_file_id,
-                        impl_index,
-                    };
-                    impl_index = impl_index.saturating_add(1);
-                    for member in &impl_decl.node.members {
-                        match &member.node {
-                            crate::frontend::ast::ImplMember::Function(
-                                function_decl,
-                            ) => {
-                                result.entry(owner.clone()).or_default().push(
-                                    BodyBlockEntry {
-                                        block: &function_decl.node.body,
-                                    },
-                                );
-                            }
-                            crate::frontend::ast::ImplMember::Init(
-                                init_decl,
-                            ) => {
-                                result.entry(owner.clone()).or_default().push(
-                                    BodyBlockEntry {
-                                        block: &init_decl.node.body,
-                                    },
-                                );
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    result
-}
-
-fn item_id_for_top_level(
-    global_items: &GlobalItemTable,
-    scope_file_id: FileId,
-    scope_path: &[String],
-    name: &str,
-) -> Option<crate::frontend::resolver::ItemId> {
-    let mut full_path = scope_path.to_vec();
-    full_path.push(name.to_string());
-    let item_id = global_items.item_id_by_full_path(&full_path)?;
-    let item = global_items.get(item_id)?;
-    (item.containing_scope_file_id == scope_file_id).then_some(item_id)
-}
-
 struct BodyStmtChecker<'a> {
     body: &'a ResolvedBody,
+    body_ref: SemanticBodyRef,
+    module: &'a HirModule,
+    hir_input: &'a SemanticHirInput,
     local_types: BTreeMap<LocalId, Type>,
-    next_stmt_index: u32,
-    missing_expr_spans: HashSet<(usize, usize)>,
+    hir_local_id_by_resolved_local_id: BTreeMap<LocalId, LocalId>,
+    declared_type_hir_locals: HashSet<LocalId>,
+    missing_expr_ids: HashSet<HirExprId>,
 }
 
 impl<'a> BodyStmtChecker<'a> {
     fn new(
         body: &'a ResolvedBody,
+        body_ref: SemanticBodyRef,
+        module: &'a HirModule,
+        hir_input: &'a SemanticHirInput,
         local_types: BTreeMap<LocalId, Type>,
+        hir_local_id_by_resolved_local_id: BTreeMap<LocalId, LocalId>,
     ) -> Self {
+        let declared_type_hir_locals = hir_local_id_by_resolved_local_id
+            .iter()
+            .filter_map(|(resolved_local_id, hir_local_id)| {
+                body.locals
+                    .iter()
+                    .find(|local| local.id == *resolved_local_id)
+                    .is_some_and(|local| local.declared_type.is_some())
+                    .then_some(*hir_local_id)
+            })
+            .collect();
         Self {
             body,
+            body_ref,
+            module,
+            hir_input,
             local_types,
-            next_stmt_index: 0,
-            missing_expr_spans: HashSet::new(),
+            hir_local_id_by_resolved_local_id,
+            declared_type_hir_locals,
+            missing_expr_ids: HashSet::new(),
         }
     }
 
-    fn allocate_stmt_id(&mut self) -> BodyStmtId {
-        let stmt_index = self.next_stmt_index;
-        self.next_stmt_index = self.next_stmt_index.saturating_add(1);
+    fn stmt_id(&self, hir_stmt_id: HirStmtId) -> BodyStmtId {
         BodyStmtId {
             owner: self.body.owner.clone(),
             body_index: self.body.body_index,
-            stmt_index,
+            hir_stmt_id,
         }
     }
 
-    fn check_block(
+    fn check_body(
         &mut self,
-        block: &Block,
+        body_id: HirBodyId,
         expected_return_type: Type,
         expr_types: &ExpressionTypeTable,
         by_stmt_id: &mut BTreeMap<BodyStmtId, StatementTypeEntry>,
         issues: &mut Vec<StmtCheckIssue>,
     ) {
-        for stmt in &block.statements {
+        let Some(body) = self.module.bodies.get(&body_id) else {
+            return;
+        };
+
+        for stmt_id in &body.stmts {
             self.check_stmt(
-                stmt,
+                *stmt_id,
                 expected_return_type.clone(),
                 expr_types,
                 by_stmt_id,
@@ -486,329 +359,357 @@ impl<'a> BodyStmtChecker<'a> {
 
     fn check_stmt(
         &mut self,
-        stmt: &crate::frontend::ast::Spanned<Stmt>,
+        stmt_id: crate::frontend::HirStmtId,
         expected_return_type: Type,
         expr_types: &ExpressionTypeTable,
         by_stmt_id: &mut BTreeMap<BodyStmtId, StatementTypeEntry>,
         issues: &mut Vec<StmtCheckIssue>,
     ) {
-        let stmt_id = self.allocate_stmt_id();
-        match &stmt.node {
-            Stmt::Let(let_stmt) => {
-                if let Some(value) = &let_stmt.node.value {
+        let Some(stmt) = self.module.stmts.get(&stmt_id) else {
+            return;
+        };
+        let stmt_span = stmt.origin.span;
+        let entry_id = self.stmt_id(stmt_id);
+
+        match &stmt.kind {
+            crate::frontend::HirStmtKind::Let(let_stmt) => {
+                if let Some(value) = let_stmt.value {
                     let init_ty =
-                        self.expr_type_or_error(value.span, expr_types, issues);
-                    self.apply_binding_type(
-                        &let_stmt.node.pattern,
-                        init_ty,
-                        issues,
-                    );
+                        self.expr_type_or_error(value, expr_types, issues);
+                    self.apply_binding_type(let_stmt.pat, init_ty, issues);
                 }
+
                 by_stmt_id.insert(
-                    stmt_id,
+                    entry_id,
                     StatementTypeEntry {
-                        kind: StatementKind::Let,
-                        span: stmt.span,
+                        kind: if let_stmt.mutability == HirMutability::Mutable {
+                            StatementKind::Var
+                        } else {
+                            StatementKind::Let
+                        },
+                        span: stmt_span,
                         ty: Type::void(),
                     },
                 );
             }
-            Stmt::Var(var_stmt) => {
-                if let Some(value) = &var_stmt.node.value {
-                    let init_ty =
-                        self.expr_type_or_error(value.span, expr_types, issues);
-                    self.apply_binding_type(
-                        &var_stmt.node.pattern,
-                        init_ty,
-                        issues,
+            crate::frontend::HirStmtKind::Expr { expr }
+            | crate::frontend::HirStmtKind::Semi { expr } => {
+                let Some(expression) = self.module.exprs.get(expr) else {
+                    by_stmt_id.insert(
+                        entry_id,
+                        StatementTypeEntry {
+                            kind: StatementKind::Expr,
+                            span: stmt_span,
+                            ty: Type::error(),
+                        },
                     );
-                }
-                by_stmt_id.insert(
-                    stmt_id,
-                    StatementTypeEntry {
-                        kind: StatementKind::Var,
-                        span: stmt.span,
-                        ty: Type::void(),
-                    },
-                );
-            }
-            Stmt::Expr { expr, .. } => {
-                let expr_ty =
-                    self.expr_type_or_error(expr.span, expr_types, issues);
-                if let Expr::Assignment { target, value, .. } = &expr.node {
-                    let target_ty = self.expr_type_or_error(
-                        target.span,
-                        expr_types,
-                        issues,
-                    );
-                    let value_ty =
-                        self.expr_type_or_error(value.span, expr_types, issues);
-                    if !target_ty.is_error()
-                        && !value_ty.is_error()
-                        && target_ty != value_ty
-                    {
-                        issues.push(StmtCheckIssue {
-                            owner: self.body.owner.clone(),
-                            body_index: self.body.body_index,
-                            span: expr.span,
-                            kind: StmtCheckIssueKind::AssignmentTypeMismatch {
-                                target: target_ty,
-                                value: value_ty,
+                    return;
+                };
+
+                match &expression.kind {
+                    HirExprKind::Return { value } => {
+                        let return_ty = value
+                            .and_then(|expr_id| {
+                                self.expr_type_or_error(
+                                    expr_id, expr_types, issues,
+                                )
+                                .into()
+                            })
+                            .unwrap_or_else(Type::void);
+
+                        if value.is_none()
+                            && expected_return_type != Type::void()
+                            && !expected_return_type.is_error()
+                        {
+                            issues.push(StmtCheckIssue {
+                                owner: self.body.owner.clone(),
+                                body_index: self.body.body_index,
+                                span: stmt_span,
+                                kind: StmtCheckIssueKind::MissingReturnValue {
+                                    expected: expected_return_type.clone(),
+                                },
+                            });
+                        } else if value.is_some()
+                            && expected_return_type == Type::void()
+                            && !return_ty.is_error()
+                        {
+                            issues.push(StmtCheckIssue {
+                                owner: self.body.owner.clone(),
+                                body_index: self.body.body_index,
+                                span: stmt_span,
+                                kind:
+                                    StmtCheckIssueKind::UnexpectedReturnValue {
+                                        found: return_ty.clone(),
+                                    },
+                            });
+                        } else if value.is_some()
+                            && !expected_return_type.is_error()
+                            && !return_ty.is_error()
+                            && expected_return_type != return_ty
+                        {
+                            issues.push(StmtCheckIssue {
+                                owner: self.body.owner.clone(),
+                                body_index: self.body.body_index,
+                                span: stmt_span,
+                                kind: StmtCheckIssueKind::ReturnTypeMismatch {
+                                    expected: expected_return_type.clone(),
+                                    found: return_ty.clone(),
+                                },
+                            });
+                        }
+
+                        by_stmt_id.insert(
+                            entry_id,
+                            StatementTypeEntry {
+                                kind: StatementKind::Return,
+                                span: stmt_span,
+                                ty: return_ty,
                             },
-                        });
+                        );
+                    }
+                    HirExprKind::If {
+                        condition,
+                        then_body,
+                        else_expr,
+                    } => {
+                        self.check_condition_expr(
+                            *condition,
+                            expr_types,
+                            issues,
+                            expression.origin.span,
+                        );
+                        self.check_body(
+                            *then_body,
+                            expected_return_type.clone(),
+                            expr_types,
+                            by_stmt_id,
+                            issues,
+                        );
+                        if let Some(else_expr) = else_expr {
+                            self.check_else_branch(
+                                *else_expr,
+                                expected_return_type,
+                                expr_types,
+                                by_stmt_id,
+                                issues,
+                            );
+                        }
+
+                        let kind = if is_lowered_guard_if(self.module, *expr) {
+                            StatementKind::Guard
+                        } else {
+                            StatementKind::If
+                        };
+                        by_stmt_id.insert(
+                            entry_id,
+                            StatementTypeEntry {
+                                kind,
+                                span: stmt_span,
+                                ty: Type::void(),
+                            },
+                        );
+                    }
+                    HirExprKind::While { condition, body } => {
+                        self.check_condition_expr(
+                            *condition,
+                            expr_types,
+                            issues,
+                            expression.origin.span,
+                        );
+                        self.check_body(
+                            *body,
+                            expected_return_type,
+                            expr_types,
+                            by_stmt_id,
+                            issues,
+                        );
+                        by_stmt_id.insert(
+                            entry_id,
+                            StatementTypeEntry {
+                                kind: StatementKind::While,
+                                span: stmt_span,
+                                ty: Type::void(),
+                            },
+                        );
+                    }
+                    HirExprKind::For { body, .. } => {
+                        self.check_body(
+                            *body,
+                            expected_return_type,
+                            expr_types,
+                            by_stmt_id,
+                            issues,
+                        );
+                        by_stmt_id.insert(
+                            entry_id,
+                            StatementTypeEntry {
+                                kind: StatementKind::For,
+                                span: stmt_span,
+                                ty: Type::void(),
+                            },
+                        );
+                    }
+                    HirExprKind::Break => {
+                        by_stmt_id.insert(
+                            entry_id,
+                            StatementTypeEntry {
+                                kind: StatementKind::Break,
+                                span: stmt_span,
+                                ty: Type::void(),
+                            },
+                        );
+                    }
+                    HirExprKind::Continue => {
+                        by_stmt_id.insert(
+                            entry_id,
+                            StatementTypeEntry {
+                                kind: StatementKind::Continue,
+                                span: stmt_span,
+                                ty: Type::void(),
+                            },
+                        );
+                    }
+                    HirExprKind::Assign { target, value, .. } => {
+                        let expr_ty =
+                            self.expr_type_or_error(*expr, expr_types, issues);
+                        let target_ty = self
+                            .expr_type_or_error(*target, expr_types, issues);
+                        let value_ty =
+                            self.expr_type_or_error(*value, expr_types, issues);
+                        if !target_ty.is_error()
+                            && !value_ty.is_error()
+                            && target_ty != value_ty
+                        {
+                            issues.push(StmtCheckIssue {
+                                owner: self.body.owner.clone(),
+                                body_index: self.body.body_index,
+                                span: expression.origin.span,
+                                kind:
+                                    StmtCheckIssueKind::AssignmentTypeMismatch {
+                                        target: target_ty,
+                                        value: value_ty,
+                                    },
+                            });
+                        }
+                        by_stmt_id.insert(
+                            entry_id,
+                            StatementTypeEntry {
+                                kind: StatementKind::Expr,
+                                span: stmt_span,
+                                ty: expr_ty,
+                            },
+                        );
+                    }
+                    _ => {
+                        let expr_ty =
+                            self.expr_type_or_error(*expr, expr_types, issues);
+                        by_stmt_id.insert(
+                            entry_id,
+                            StatementTypeEntry {
+                                kind: StatementKind::Expr,
+                                span: stmt_span,
+                                ty: expr_ty,
+                            },
+                        );
                     }
                 }
-                by_stmt_id.insert(
-                    stmt_id,
-                    StatementTypeEntry {
-                        kind: StatementKind::Expr,
-                        span: stmt.span,
-                        ty: expr_ty,
-                    },
-                );
             }
-            Stmt::Return(value) => {
-                let return_ty = value
-                    .as_ref()
-                    .map(|expr| {
-                        self.expr_type_or_error(expr.span, expr_types, issues)
-                    })
-                    .unwrap_or_else(Type::void);
-                if value.is_none()
-                    && expected_return_type != Type::void()
-                    && !expected_return_type.is_error()
-                {
-                    issues.push(StmtCheckIssue {
-                        owner: self.body.owner.clone(),
-                        body_index: self.body.body_index,
-                        span: stmt.span,
-                        kind: StmtCheckIssueKind::MissingReturnValue {
-                            expected: expected_return_type.clone(),
-                        },
-                    });
-                } else if value.is_some()
-                    && expected_return_type == Type::void()
-                    && !return_ty.is_error()
-                {
-                    issues.push(StmtCheckIssue {
-                        owner: self.body.owner.clone(),
-                        body_index: self.body.body_index,
-                        span: stmt.span,
-                        kind: StmtCheckIssueKind::UnexpectedReturnValue {
-                            found: return_ty.clone(),
-                        },
-                    });
-                } else if value.is_some()
-                    && !expected_return_type.is_error()
-                    && !return_ty.is_error()
-                    && expected_return_type != return_ty
-                {
-                    issues.push(StmtCheckIssue {
-                        owner: self.body.owner.clone(),
-                        body_index: self.body.body_index,
-                        span: stmt.span,
-                        kind: StmtCheckIssueKind::ReturnTypeMismatch {
-                            expected: expected_return_type.clone(),
-                            found: return_ty.clone(),
-                        },
-                    });
-                }
-                by_stmt_id.insert(
-                    stmt_id,
-                    StatementTypeEntry {
-                        kind: StatementKind::Return,
-                        span: stmt.span,
-                        ty: return_ty,
-                    },
-                );
-            }
-            Stmt::If(if_stmt) => {
-                self.check_clause_list(
-                    &if_stmt.node.clauses,
+            crate::frontend::HirStmtKind::Item { .. } => {}
+        }
+    }
+
+    fn check_else_branch(
+        &mut self,
+        else_expr: HirExprId,
+        expected_return_type: Type,
+        expr_types: &ExpressionTypeTable,
+        by_stmt_id: &mut BTreeMap<BodyStmtId, StatementTypeEntry>,
+        issues: &mut Vec<StmtCheckIssue>,
+    ) {
+        let Some(expr) = self.module.exprs.get(&else_expr) else {
+            return;
+        };
+
+        match &expr.kind {
+            HirExprKind::If {
+                condition,
+                then_body,
+                else_expr,
+            } => {
+                self.check_condition_expr(
+                    *condition,
                     expr_types,
                     issues,
+                    expr.origin.span,
                 );
-                self.check_block(
-                    &if_stmt.node.then_branch,
+                self.check_body(
+                    *then_body,
                     expected_return_type.clone(),
                     expr_types,
                     by_stmt_id,
                     issues,
                 );
-                if let Some(else_branch) = &if_stmt.node.else_branch {
-                    match else_branch {
-                        crate::frontend::ast::IfStmtElse::If(nested) => {
-                            let nested_stmt =
-                                crate::frontend::ast::Spanned::new(
-                                    Stmt::If(*nested.clone()),
-                                    nested.span,
-                                );
-                            self.check_stmt(
-                                &nested_stmt,
-                                expected_return_type,
-                                expr_types,
-                                by_stmt_id,
-                                issues,
-                            );
-                        }
-                        crate::frontend::ast::IfStmtElse::Block(block) => {
-                            self.check_block(
-                                block,
-                                expected_return_type,
-                                expr_types,
-                                by_stmt_id,
-                                issues,
-                            );
-                        }
-                    }
+                if let Some(else_expr) = else_expr {
+                    self.check_else_branch(
+                        *else_expr,
+                        expected_return_type,
+                        expr_types,
+                        by_stmt_id,
+                        issues,
+                    );
                 }
-                by_stmt_id.insert(
-                    stmt_id,
-                    StatementTypeEntry {
-                        kind: StatementKind::If,
-                        span: stmt.span,
-                        ty: Type::void(),
-                    },
-                );
             }
-            Stmt::Guard(guard_stmt) => {
-                self.check_clause_list(
-                    &guard_stmt.node.clauses,
-                    expr_types,
-                    issues,
-                );
-                self.check_block(
-                    &guard_stmt.node.else_block,
+            HirExprKind::Block { body } => {
+                self.check_body(
+                    *body,
                     expected_return_type,
                     expr_types,
                     by_stmt_id,
                     issues,
                 );
-                by_stmt_id.insert(
-                    stmt_id,
-                    StatementTypeEntry {
-                        kind: StatementKind::Guard,
-                        span: stmt.span,
-                        ty: Type::void(),
-                    },
-                );
             }
-            Stmt::While(while_stmt) => {
-                self.check_clause_list(
-                    &while_stmt.node.clauses,
-                    expr_types,
-                    issues,
-                );
-                self.check_block(
-                    &while_stmt.node.body,
-                    expected_return_type,
-                    expr_types,
-                    by_stmt_id,
-                    issues,
-                );
-                by_stmt_id.insert(
-                    stmt_id,
-                    StatementTypeEntry {
-                        kind: StatementKind::While,
-                        span: stmt.span,
-                        ty: Type::void(),
-                    },
-                );
-            }
-            Stmt::For(for_stmt) => {
-                let _ = self.expr_type_or_error(
-                    for_stmt.node.iterator.span,
-                    expr_types,
-                    issues,
-                );
-                self.check_block(
-                    &for_stmt.node.body,
-                    expected_return_type,
-                    expr_types,
-                    by_stmt_id,
-                    issues,
-                );
-                by_stmt_id.insert(
-                    stmt_id,
-                    StatementTypeEntry {
-                        kind: StatementKind::For,
-                        span: stmt.span,
-                        ty: Type::void(),
-                    },
-                );
-            }
-            Stmt::Break => {
-                by_stmt_id.insert(
-                    stmt_id,
-                    StatementTypeEntry {
-                        kind: StatementKind::Break,
-                        span: stmt.span,
-                        ty: Type::void(),
-                    },
-                );
-            }
-            Stmt::Continue => {
-                by_stmt_id.insert(
-                    stmt_id,
-                    StatementTypeEntry {
-                        kind: StatementKind::Continue,
-                        span: stmt.span,
-                        ty: Type::void(),
-                    },
-                );
-            }
+            _ => {}
         }
     }
 
-    fn check_clause_list(
+    fn check_condition_expr(
         &mut self,
-        clauses: &crate::frontend::ast::ClauseList,
+        expr_id: HirExprId,
         expr_types: &ExpressionTypeTable,
         issues: &mut Vec<StmtCheckIssue>,
+        span: Span,
     ) {
-        for clause in &clauses.clauses {
-            match &clause.node {
-                Clause::Expr(expr) => {
-                    let found =
-                        self.expr_type_or_error(expr.span, expr_types, issues);
-                    if found != Type::builtin(BuiltinType::Bool)
-                        && !found.is_error()
-                    {
-                        issues.push(StmtCheckIssue {
-                            owner: self.body.owner.clone(),
-                            body_index: self.body.body_index,
-                            span: clause.span,
-                            kind: StmtCheckIssueKind::InvalidConditionType {
-                                found,
-                            },
-                        });
-                    }
-                }
-                Clause::LetBinding(binding) | Clause::VarBinding(binding) => {
-                    let init_ty = self.expr_type_or_error(
-                        binding.value.span,
-                        expr_types,
-                        issues,
-                    );
-                    self.apply_binding_type(&binding.pattern, init_ty, issues);
-                }
-            }
+        let found = self.expr_type_or_error(expr_id, expr_types, issues);
+        if found != Type::builtin(BuiltinType::Bool) && !found.is_error() {
+            issues.push(StmtCheckIssue {
+                owner: self.body.owner.clone(),
+                body_index: self.body.body_index,
+                span,
+                kind: StmtCheckIssueKind::InvalidConditionType { found },
+            });
         }
     }
 
     fn apply_binding_type(
         &mut self,
-        pattern: &crate::frontend::ast::Spanned<Pattern>,
+        pat_id: HirPatId,
         initializer: Type,
         issues: &mut Vec<StmtCheckIssue>,
     ) {
-        let Some(local) = self.local_for_pattern(pattern) else {
+        let pattern_span = self
+            .module
+            .patterns
+            .get(&pat_id)
+            .map(|pattern| pattern.origin.span)
+            .unwrap_or_else(|| Span::new(0, 0));
+
+        let Some(local_id) = self.local_for_pattern(pat_id) else {
             issues.push(StmtCheckIssue {
                 owner: self.body.owner.clone(),
                 body_index: self.body.body_index,
-                span: pattern.span,
+                span: pattern_span,
                 kind: StmtCheckIssueKind::MissingPatternLocal {
-                    span: pattern.span,
+                    span: pattern_span,
                 },
             });
             return;
@@ -816,11 +717,11 @@ impl<'a> BodyStmtChecker<'a> {
 
         let current = self
             .local_types
-            .get(&local.id)
+            .get(&local_id)
             .cloned()
             .unwrap_or_else(Type::error);
 
-        if local.declared_type.is_some() {
+        if self.declared_type_hir_locals.contains(&local_id) {
             if !current.is_error()
                 && !initializer.is_error()
                 && current != initializer
@@ -828,9 +729,9 @@ impl<'a> BodyStmtChecker<'a> {
                 issues.push(StmtCheckIssue {
                     owner: self.body.owner.clone(),
                     body_index: self.body.body_index,
-                    span: pattern.span,
+                    span: pattern_span,
                     kind: StmtCheckIssueKind::AnnotatedLocalTypeMismatch {
-                        local_id: local.id,
+                        local_id,
                         annotated: current,
                         initializer,
                     },
@@ -840,48 +741,73 @@ impl<'a> BodyStmtChecker<'a> {
         }
 
         if current.is_error() && !initializer.is_error() {
-            self.local_types.insert(local.id, initializer);
+            self.local_types.insert(local_id, initializer);
         }
     }
 
-    fn local_for_pattern(
-        &self,
-        pattern: &crate::frontend::ast::Spanned<Pattern>,
-    ) -> Option<&crate::frontend::ResolvedLocalBinding> {
-        let Pattern::Identifier(name) = &pattern.node else {
-            return None;
-        };
-        self.body.locals.iter().find(|local| {
-            local.declared_span == pattern.span && local.name == *name
-        })
+    fn local_for_pattern(&self, pat_id: HirPatId) -> Option<LocalId> {
+        self.hir_input
+            .hir_local_bindings
+            .binding_for_pat(self.body_ref.file_id, pat_id)
     }
 
     fn expr_type_or_error(
         &mut self,
-        span: Span,
+        expr_id: HirExprId,
         expr_types: &ExpressionTypeTable,
         issues: &mut Vec<StmtCheckIssue>,
     ) -> Type {
-        match expr_types.expr_type_for_span(
+        if let Some(ty) = expr_types.expr_type_for_hir_expr(
             &self.body.owner,
             self.body.body_index,
-            span,
+            expr_id,
         ) {
-            Some(ty) => ty.clone(),
-            None => {
-                let span_key = (span.start, span.end);
-                if self.missing_expr_spans.insert(span_key) {
-                    issues.push(StmtCheckIssue {
-                        owner: self.body.owner.clone(),
-                        body_index: self.body.body_index,
-                        span,
-                        kind: StmtCheckIssueKind::MissingExpressionType {
-                            span,
-                        },
-                    });
-                }
-                Type::error()
-            }
+            return ty.clone();
         }
+
+        if !self.missing_expr_ids.insert(expr_id) {
+            return Type::error();
+        }
+
+        let span = self
+            .module
+            .exprs
+            .get(&expr_id)
+            .map(|expr| expr.origin.span)
+            .unwrap_or_else(|| Span::new(0, 0));
+        issues.push(StmtCheckIssue {
+            owner: self.body.owner.clone(),
+            body_index: self.body.body_index,
+            span,
+            kind: StmtCheckIssueKind::MissingExpressionType { span },
+        });
+        Type::error()
     }
+}
+
+fn is_lowered_guard_if(module: &HirModule, expr_id: HirExprId) -> bool {
+    let Some(expr) = module.exprs.get(&expr_id) else {
+        return false;
+    };
+    let HirExprKind::If {
+        then_body,
+        else_expr,
+        ..
+    } = expr.kind
+    else {
+        return false;
+    };
+    let Some(then_body_node) = module.bodies.get(&then_body) else {
+        return false;
+    };
+    if !then_body_node.stmts.is_empty() || then_body_node.tail_expr.is_some() {
+        return false;
+    }
+    let Some(else_expr_id) = else_expr else {
+        return false;
+    };
+    matches!(
+        module.exprs.get(&else_expr_id).map(|expr| &expr.kind),
+        Some(HirExprKind::Block { .. })
+    )
 }

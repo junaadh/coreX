@@ -4,7 +4,14 @@ extern libc {
   fn free(ptr: *void);
 }
 
+macro ffi {
+	rule (name: Expr) => {
+		libc::name(0)
+	};
+}
+
 fn main() {
     libc::malloc(10);
+    @ffi(malloc);
     let a = 0;
 }

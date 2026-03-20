@@ -1,4 +1,6 @@
-use super::analysis::analyze_semantics_with_external_lookup;
+use super::analysis::{
+    analyze_semantics_with_external_lookup, resolve_hir_semantic_input,
+};
 use super::signatures::TypedFunctionSignature;
 use super::types::Type;
 use crate::frontend::DesugaredFile;
@@ -227,9 +229,7 @@ pub fn build_external_semantic_lookup(
             );
         let semantic = analyze_semantics_with_external_lookup(
             db,
-            graph,
-            parsed_files,
-            &imports,
+            resolve_hir_semantic_input(graph, parsed_files, &imports),
             &ExternalSemanticLookup::new(),
         );
         let definitions = collect_item_definition_locations(

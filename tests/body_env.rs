@@ -49,6 +49,7 @@ fn resolve_library_graph(
 
 struct Pipeline {
     item_table: GlobalItemTable,
+    hir: core_x::frontend::SemanticHirInput,
     body_envs: BodyTypeEnvironmentTable,
 }
 
@@ -59,11 +60,16 @@ fn run_pipeline(
 ) -> Pipeline {
     let graph = resolve_library_graph(db, parsed_files, root_file_id);
     let item_table = GlobalItemTable::collect(&graph, parsed_files);
+    let hir = core_x::frontend::SemanticHirInput::build(
+        &graph,
+        parsed_files,
+        &item_table,
+    );
     let (_, imports) =
         resolve_project_imports(&graph, parsed_files).expect("imports");
     let declarations =
         resolve_declaration_types(&graph, parsed_files, &imports, &item_table);
-    let signatures = type_declaration_signatures(&declarations, &item_table);
+    let signatures = type_declaration_signatures(&hir, &item_table);
     let typed_items = build_typed_item_table(&item_table, &signatures);
     let bodies = resolve_bodies(
         &graph,
@@ -72,9 +78,10 @@ fn run_pipeline(
         &item_table,
         &declarations,
     );
-    let body_envs = build_body_type_environments(&bodies, &typed_items);
+    let body_envs = build_body_type_environments(&hir, &bodies, &typed_items);
     Pipeline {
         item_table,
+        hir,
         body_envs,
     }
 }
@@ -241,4 +248,42 @@ fn owner_keyed_storage_is_stable() {
     assert_eq!(first.body_envs.envs_for_owner(&a_owner).len(), 1);
     assert_eq!(first.body_envs.envs_for_owner(&b_owner).len(), 1);
     assert_eq!(first.body_envs.len(), 2);
+}
+
+#[test]
+fn local_variable_typing_from_resolved_hir() {
+    let mut db = SourceDb::new();
+    let root = add_and_parse(
+        &mut db,
+        "src/root.cx",
+        "fn f() -> i32 { let value: i32 = 1; value }",
+    );
+    let parsed_files = vec![root.clone()];
+    let pipeline = run_pipeline(&db, &parsed_files, root.file_id);
+
+    let owner = owner_for(&pipeline.item_table, &["f"]);
+    let env = &pipeline.body_envs.envs_for_owner(&owner)[0];
+    let body_ref = pipeline
+        .hir
+        .body_ref(&owner, 0)
+        .expect("HIR body for f should exist");
+
+    let hir_local_id = pipeline
+        .hir
+        .local_binding_ids_for_body(body_ref)
+        .iter()
+        .copied()
+        .find(|local_id| {
+            pipeline
+                .hir
+                .hir_local_bindings
+                .binding(*local_id)
+                .is_some_and(|binding| binding.name == "value")
+        })
+        .expect("value local should be present in HIR local table");
+
+    assert_eq!(
+        env.local_type_for_hir_local(hir_local_id),
+        Some(&Type::builtin(BuiltinType::I32))
+    );
 }

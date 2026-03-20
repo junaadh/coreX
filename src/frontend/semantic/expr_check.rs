@@ -1,17 +1,17 @@
 use super::body_env::BodyTypeEnvironmentTable;
 use super::external_lookup::ExternalSemanticLookup;
-use super::hir_input::SemanticHirInput;
+use super::hir_input::{SemanticBodyRef, SemanticHirInput};
 use super::signatures::TypedFunctionSignature;
 use super::{BuiltinType, Type, TypedItemData, TypedItemTable};
-use crate::frontend::DesugaredFile;
-use crate::frontend::ast::{
-    BinaryOp, Block, Clause, Expr, Item, MatchArmBody, Span, Stmt,
-    StructMember, UnaryOp,
+use crate::frontend::ast::Span;
+use crate::frontend::hir::{
+    HirArrayElement, HirBinaryOp, HirBodyId, HirExprId, HirExprKind,
+    HirLiteral, HirModule, HirMutability, HirPatId, HirPatKind,
+    HirStructExprField, HirUnaryOp,
 };
 use crate::frontend::resolver::{
-    DeclarationOwner, GlobalItemTable, ImportBindingKind, ItemId, LocalId,
-    LocalMutability, ResolvedBody, ResolvedBodyRef, ResolvedBodyTable,
-    ResolvedImports, ScopeGraph,
+    DeclarationOwner, ImportBindingKind, ItemId, LocalId, LocalMutability,
+    ResolvedBody, ResolvedBodyTable, ResolvedImports,
 };
 use crate::frontend::source::FileId;
 use std::collections::BTreeMap;
@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 pub struct BodyExprId {
     pub owner: DeclarationOwner,
     pub body_index: usize,
-    pub expr_index: u32,
+    pub hir_expr_id: HirExprId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +78,7 @@ pub struct ExprCheckIssue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpressionTypeTable {
     types_by_expr_id: BTreeMap<BodyExprId, Type>,
+    types_by_hir_expr_id: BTreeMap<(DeclarationOwner, usize, HirExprId), Type>,
     expr_ids_by_span:
         BTreeMap<(DeclarationOwner, usize, usize, usize), Vec<BodyExprId>>,
     root_types_by_body: BTreeMap<(DeclarationOwner, usize), Type>,
@@ -88,6 +89,17 @@ impl ExpressionTypeTable {
     #[must_use]
     pub fn expr_type(&self, expr_id: &BodyExprId) -> Option<&Type> {
         self.types_by_expr_id.get(expr_id)
+    }
+
+    #[must_use]
+    pub fn expr_type_for_hir_expr(
+        &self,
+        owner: &DeclarationOwner,
+        body_index: usize,
+        expr_id: HirExprId,
+    ) -> Option<&Type> {
+        self.types_by_hir_expr_id
+            .get(&(owner.clone(), body_index, expr_id))
     }
 
     #[must_use]
@@ -142,9 +154,7 @@ impl ExpressionTypeTable {
 
 #[must_use]
 pub fn check_expression_types(
-    graph: &ScopeGraph,
-    parsed_files: &[DesugaredFile],
-    global_items: &GlobalItemTable,
+    hir_input: &SemanticHirInput,
     typed_items: &TypedItemTable,
     resolved_bodies: &ResolvedBodyTable,
     body_envs: &BodyTypeEnvironmentTable,
@@ -152,9 +162,7 @@ pub fn check_expression_types(
     let empty_imports = BTreeMap::new();
     let empty_external_lookup = ExternalSemanticLookup::default();
     check_expression_types_with_external_lookup(
-        graph,
-        parsed_files,
-        global_items,
+        hir_input,
         typed_items,
         resolved_bodies,
         body_envs,
@@ -165,48 +173,15 @@ pub fn check_expression_types(
 
 #[must_use]
 pub fn check_expression_types_with_external_lookup(
-    graph: &ScopeGraph,
-    parsed_files: &[DesugaredFile],
-    global_items: &GlobalItemTable,
+    hir_input: &SemanticHirInput,
     typed_items: &TypedItemTable,
     resolved_bodies: &ResolvedBodyTable,
     body_envs: &BodyTypeEnvironmentTable,
     imports: &BTreeMap<FileId, ResolvedImports>,
     external_lookup: &ExternalSemanticLookup,
 ) -> ExpressionTypeTable {
-    check_expression_types_with_external_lookup_and_hir(
-        graph,
-        parsed_files,
-        global_items,
-        typed_items,
-        resolved_bodies,
-        body_envs,
-        imports,
-        external_lookup,
-        None,
-    )
-}
-
-#[must_use]
-pub fn check_expression_types_with_external_lookup_and_hir(
-    graph: &ScopeGraph,
-    parsed_files: &[DesugaredFile],
-    global_items: &GlobalItemTable,
-    typed_items: &TypedItemTable,
-    resolved_bodies: &ResolvedBodyTable,
-    body_envs: &BodyTypeEnvironmentTable,
-    imports: &BTreeMap<FileId, ResolvedImports>,
-    external_lookup: &ExternalSemanticLookup,
-    hir_input: Option<&SemanticHirInput>,
-) -> ExpressionTypeTable {
-    let parsed_by_id: BTreeMap<FileId, &DesugaredFile> = parsed_files
-        .iter()
-        .map(|parsed| (parsed.file_id, parsed))
-        .collect();
-
-    let body_blocks = collect_body_blocks(graph, &parsed_by_id, global_items);
-
     let mut types_by_expr_id = BTreeMap::new();
+    let mut types_by_hir_expr_id = BTreeMap::new();
     let mut expr_ids_by_span: BTreeMap<
         (DeclarationOwner, usize, usize, usize),
         Vec<BodyExprId>,
@@ -229,9 +204,7 @@ pub fn check_expression_types_with_external_lookup_and_hir(
             continue;
         };
 
-        let Some(block_entry) = body_blocks
-            .get(&body.owner)
-            .and_then(|entries| entries.get(body.body_index))
+        let Some(body_ref) = hir_input.body_ref(&body.owner, body.body_index)
         else {
             issues.push(ExprCheckIssue {
                 owner: body.owner.clone(),
@@ -242,19 +215,44 @@ pub fn check_expression_types_with_external_lookup_and_hir(
             continue;
         };
 
+        let Some(module) = hir_input.hir_modules.get(&body_ref.file_id) else {
+            issues.push(ExprCheckIssue {
+                owner: body.owner.clone(),
+                body_index: body.body_index,
+                span: Span::new(0, 0),
+                kind: ExprCheckIssueKind::MissingBodyAst,
+            });
+            continue;
+        };
+
+        if !module.bodies.contains_key(&body_ref.body_id) {
+            issues.push(ExprCheckIssue {
+                owner: body.owner.clone(),
+                body_index: body.body_index,
+                span: Span::new(0, 0),
+                kind: ExprCheckIssueKind::MissingBodyAst,
+            });
+            continue;
+        }
+
         let mut checker = BodyExprChecker::new(
             body,
+            body_ref,
+            module,
+            hir_input,
             env.local_types.clone(),
+            env.local_bindings.clone(),
             imports,
             external_lookup,
-            hir_input,
         );
-        let root_type = checker.check_block(
-            block_entry.block,
+        let root_type = checker.check_body(
+            body_ref.body_id,
             typed_items,
             &mut issues,
             &mut types_by_expr_id,
+            &mut types_by_hir_expr_id,
         );
+
         for (key, ids) in checker.expr_ids_by_span {
             expr_ids_by_span.entry(key).or_default().extend(ids);
         }
@@ -264,272 +262,106 @@ pub fn check_expression_types_with_external_lookup_and_hir(
 
     ExpressionTypeTable {
         types_by_expr_id,
+        types_by_hir_expr_id,
         expr_ids_by_span,
         root_types_by_body,
         issues,
     }
 }
 
-struct BodyBlockEntry<'a> {
-    block: &'a Block,
-}
-
-fn collect_body_blocks<'a>(
-    graph: &'a ScopeGraph,
-    parsed_by_id: &'a BTreeMap<FileId, &'a DesugaredFile>,
-    global_items: &'a GlobalItemTable,
-) -> BTreeMap<DeclarationOwner, Vec<BodyBlockEntry<'a>>> {
-    let mut result: BTreeMap<DeclarationOwner, Vec<BodyBlockEntry<'a>>> =
-        BTreeMap::new();
-
-    for (scope_file_id, scope) in &graph.scopes {
-        let Some(parsed) = parsed_by_id.get(scope_file_id) else {
-            continue;
-        };
-
-        let mut impl_index = 0usize;
-        for item in &parsed.ast.items {
-            match &item.node {
-                Item::Function(function_decl) => {
-                    if let Some(item_id) = item_id_for_top_level(
-                        global_items,
-                        *scope_file_id,
-                        &scope.scope_path,
-                        &function_decl.node.name,
-                    ) {
-                        result
-                            .entry(DeclarationOwner::Item(item_id))
-                            .or_default()
-                            .push(BodyBlockEntry {
-                                block: &function_decl.node.body,
-                            });
-                    }
-                }
-                Item::Struct(struct_decl) => {
-                    if let Some(item_id) = item_id_for_top_level(
-                        global_items,
-                        *scope_file_id,
-                        &scope.scope_path,
-                        &struct_decl.node.name,
-                    ) {
-                        let owner = DeclarationOwner::Item(item_id);
-                        for member in &struct_decl.node.members {
-                            match &member.node {
-                                StructMember::Function(function_decl) => {
-                                    result
-                                        .entry(owner.clone())
-                                        .or_default()
-                                        .push(BodyBlockEntry {
-                                            block: &function_decl.node.body,
-                                        });
-                                }
-                                StructMember::Init(init_decl) => {
-                                    result
-                                        .entry(owner.clone())
-                                        .or_default()
-                                        .push(BodyBlockEntry {
-                                            block: &init_decl.node.body,
-                                        });
-                                }
-                                StructMember::Field(_) => {}
-                            }
-                        }
-                    }
-                }
-                Item::Enum(enum_decl) => {
-                    if let Some(item_id) = item_id_for_top_level(
-                        global_items,
-                        *scope_file_id,
-                        &scope.scope_path,
-                        &enum_decl.node.name,
-                    ) {
-                        let owner = DeclarationOwner::Item(item_id);
-                        for member in &enum_decl.node.members {
-                            match &member.node {
-                                crate::frontend::ast::EnumMember::Function(
-                                    function_decl,
-                                ) => {
-                                    result
-                                        .entry(owner.clone())
-                                        .or_default()
-                                        .push(BodyBlockEntry {
-                                            block: &function_decl.node.body,
-                                        });
-                                }
-                                crate::frontend::ast::EnumMember::Init(
-                                    init_decl,
-                                ) => {
-                                    result
-                                        .entry(owner.clone())
-                                        .or_default()
-                                        .push(BodyBlockEntry {
-                                            block: &init_decl.node.body,
-                                        });
-                                }
-                                crate::frontend::ast::EnumMember::Case(_) => {}
-                            }
-                        }
-                    }
-                }
-                Item::Protocol(protocol_decl) => {
-                    if let Some(item_id) = item_id_for_top_level(
-                        global_items,
-                        *scope_file_id,
-                        &scope.scope_path,
-                        &protocol_decl.node.name,
-                    ) {
-                        let owner = DeclarationOwner::Item(item_id);
-                        for member in &protocol_decl.node.members {
-                            match &member.node {
-                                crate::frontend::ast::ProtocolMember::Function(
-                                    function_member,
-                                ) => {
-                                    if let Some(default_body) =
-                                        &function_member.node.default_body
-                                    {
-                                        result.entry(owner.clone()).or_default().push(
-                                            BodyBlockEntry {
-                                                block: default_body,
-                                            },
-                                        );
-                                    }
-                                }
-                                crate::frontend::ast::ProtocolMember::Initializer(
-                                    init_member,
-                                ) => {
-                                    if let Some(default_body) =
-                                        &init_member.node.default_body
-                                    {
-                                        result.entry(owner.clone()).or_default().push(
-                                            BodyBlockEntry {
-                                                block: default_body,
-                                            },
-                                        );
-                                    }
-                                }
-                                crate::frontend::ast::ProtocolMember::AssociatedType(_)
-                                | crate::frontend::ast::ProtocolMember::Property(_) => {}
-                            }
-                        }
-                    }
-                }
-                Item::Impl(impl_decl) => {
-                    let owner = DeclarationOwner::Impl {
-                        scope_file_id: *scope_file_id,
-                        impl_index,
-                    };
-                    impl_index = impl_index.saturating_add(1);
-                    for member in &impl_decl.node.members {
-                        match &member.node {
-                            crate::frontend::ast::ImplMember::Function(
-                                function_decl,
-                            ) => {
-                                result.entry(owner.clone()).or_default().push(
-                                    BodyBlockEntry {
-                                        block: &function_decl.node.body,
-                                    },
-                                );
-                            }
-                            crate::frontend::ast::ImplMember::Init(
-                                init_decl,
-                            ) => {
-                                result.entry(owner.clone()).or_default().push(
-                                    BodyBlockEntry {
-                                        block: &init_decl.node.body,
-                                    },
-                                );
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    result
-}
-
-fn item_id_for_top_level(
-    global_items: &GlobalItemTable,
-    scope_file_id: FileId,
-    scope_path: &[String],
-    name: &str,
-) -> Option<ItemId> {
-    let mut full_path = scope_path.to_vec();
-    full_path.push(name.to_string());
-    let item_id = global_items.item_id_by_full_path(&full_path)?;
-    let item = global_items.get(item_id)?;
-    (item.containing_scope_file_id == scope_file_id).then_some(item_id)
-}
-
 struct BodyExprChecker<'a> {
     body: &'a ResolvedBody,
+    body_ref: SemanticBodyRef,
+    module: &'a HirModule,
+    hir_input: &'a SemanticHirInput,
     local_types: BTreeMap<LocalId, Type>,
+    local_bindings: BTreeMap<LocalId, super::body_env::BodyLocalBindingInfo>,
     imports: &'a BTreeMap<FileId, ResolvedImports>,
     external_lookup: &'a ExternalSemanticLookup,
-    hir_view: Option<HirResolutionView<'a>>,
     expr_ids_by_span:
         BTreeMap<(DeclarationOwner, usize, usize, usize), Vec<BodyExprId>>,
-    next_expr_index: u32,
-}
-
-#[derive(Clone, Copy)]
-struct HirResolutionView<'a> {
-    hir_imports: &'a crate::frontend::resolver::HirImportTables,
-    item_id_by_hir_item_ref:
-        &'a BTreeMap<crate::frontend::resolver::HirItemRef, ItemId>,
 }
 
 impl<'a> BodyExprChecker<'a> {
     fn new(
         body: &'a ResolvedBody,
+        body_ref: SemanticBodyRef,
+        module: &'a HirModule,
+        hir_input: &'a SemanticHirInput,
         local_types: BTreeMap<LocalId, Type>,
+        local_bindings: BTreeMap<
+            LocalId,
+            super::body_env::BodyLocalBindingInfo,
+        >,
         imports: &'a BTreeMap<FileId, ResolvedImports>,
         external_lookup: &'a ExternalSemanticLookup,
-        hir_input: Option<&'a SemanticHirInput>,
     ) -> Self {
         Self {
             body,
+            body_ref,
+            module,
+            hir_input,
             local_types,
+            local_bindings,
             imports,
             external_lookup,
-            hir_view: hir_input.map(|input| HirResolutionView {
-                hir_imports: &input.hir_imports,
-                item_id_by_hir_item_ref: &input.item_id_by_hir_item_ref,
-            }),
             expr_ids_by_span: BTreeMap::new(),
-            next_expr_index: 0,
         }
     }
 
-    fn allocate_expr_id(&mut self) -> BodyExprId {
-        let expr_index = self.next_expr_index;
-        self.next_expr_index = self.next_expr_index.saturating_add(1);
-        BodyExprId {
-            owner: self.body.owner.clone(),
-            body_index: self.body.body_index,
-            expr_index,
+    fn branch_checker(&self) -> Self {
+        Self {
+            body: self.body,
+            body_ref: self.body_ref,
+            module: self.module,
+            hir_input: self.hir_input,
+            local_types: self.local_types.clone(),
+            local_bindings: self.local_bindings.clone(),
+            imports: self.imports,
+            external_lookup: self.external_lookup,
+            expr_ids_by_span: BTreeMap::new(),
         }
     }
 
-    fn check_block(
+    fn merge_branch(&mut self, branch: Self) {
+        for (key, ids) in branch.expr_ids_by_span {
+            self.expr_ids_by_span.entry(key).or_default().extend(ids);
+        }
+    }
+
+    fn check_body(
         &mut self,
-        block: &Block,
+        body_id: HirBodyId,
         typed_items: &TypedItemTable,
         issues: &mut Vec<ExprCheckIssue>,
         types_by_expr_id: &mut BTreeMap<BodyExprId, Type>,
+        types_by_hir_expr_id: &mut BTreeMap<
+            (DeclarationOwner, usize, HirExprId),
+            Type,
+        >,
     ) -> Type {
-        for statement in &block.statements {
+        let Some(body) = self.module.bodies.get(&body_id) else {
+            return Type::error();
+        };
+
+        for stmt_id in &body.stmts {
             self.check_stmt(
-                &statement.node,
+                *stmt_id,
                 typed_items,
                 issues,
                 types_by_expr_id,
+                types_by_hir_expr_id,
             );
         }
-        if let Some(tail_expr) = &block.tail_expr {
-            self.check_expr(tail_expr, typed_items, issues, types_by_expr_id)
+
+        if let Some(tail_expr) = body.tail_expr {
+            self.check_expr(
+                tail_expr,
+                typed_items,
+                issues,
+                types_by_expr_id,
+                types_by_hir_expr_id,
+            )
         } else {
             Type::void()
         }
@@ -537,253 +369,201 @@ impl<'a> BodyExprChecker<'a> {
 
     fn check_stmt(
         &mut self,
-        stmt: &Stmt,
+        stmt_id: crate::frontend::HirStmtId,
         typed_items: &TypedItemTable,
         issues: &mut Vec<ExprCheckIssue>,
         types_by_expr_id: &mut BTreeMap<BodyExprId, Type>,
+        types_by_hir_expr_id: &mut BTreeMap<
+            (DeclarationOwner, usize, HirExprId),
+            Type,
+        >,
     ) {
-        match stmt {
-            Stmt::Let(let_stmt) => {
+        let Some(stmt) = self.module.stmts.get(&stmt_id) else {
+            return;
+        };
+
+        match &stmt.kind {
+            crate::frontend::HirStmtKind::Let(let_stmt) => {
                 let value_type = let_stmt
-                    .node
                     .value
-                    .as_ref()
                     .map(|value| {
                         self.check_expr(
                             value,
                             typed_items,
                             issues,
                             types_by_expr_id,
+                            types_by_hir_expr_id,
                         )
                     })
                     .unwrap_or_else(Type::void);
                 self.infer_local_from_pattern(
-                    &let_stmt.node.pattern,
+                    let_stmt.pat,
                     value_type,
-                    false,
+                    let_stmt.mutability == HirMutability::Mutable,
                 );
             }
-            Stmt::Var(var_stmt) => {
-                let value_type = var_stmt
-                    .node
-                    .value
-                    .as_ref()
-                    .map(|value| {
-                        self.check_expr(
-                            value,
-                            typed_items,
-                            issues,
-                            types_by_expr_id,
-                        )
-                    })
-                    .unwrap_or_else(Type::void);
-                self.infer_local_from_pattern(
-                    &var_stmt.node.pattern,
-                    value_type,
-                    true,
-                );
-            }
-            Stmt::Expr { expr, .. } => {
-                self.check_expr(expr, typed_items, issues, types_by_expr_id);
-            }
-            Stmt::If(if_stmt) => {
-                self.check_clause_list(
-                    &if_stmt.node.clauses,
-                    typed_items,
-                    issues,
-                    types_by_expr_id,
-                );
-                self.check_block(
-                    &if_stmt.node.then_branch,
-                    typed_items,
-                    issues,
-                    types_by_expr_id,
-                );
-                if let Some(else_branch) = &if_stmt.node.else_branch {
-                    match else_branch {
-                        crate::frontend::ast::IfStmtElse::If(nested) => {
-                            self.check_stmt(
-                                &Stmt::If(*nested.clone()),
-                                typed_items,
-                                issues,
-                                types_by_expr_id,
-                            );
-                        }
-                        crate::frontend::ast::IfStmtElse::Block(block) => {
-                            self.check_block(
-                                block,
-                                typed_items,
-                                issues,
-                                types_by_expr_id,
-                            );
-                        }
-                    }
-                }
-            }
-            Stmt::Guard(guard_stmt) => {
-                self.check_clause_list(
-                    &guard_stmt.node.clauses,
-                    typed_items,
-                    issues,
-                    types_by_expr_id,
-                );
-                self.check_block(
-                    &guard_stmt.node.else_block,
-                    typed_items,
-                    issues,
-                    types_by_expr_id,
-                );
-            }
-            Stmt::While(while_stmt) => {
-                self.check_clause_list(
-                    &while_stmt.node.clauses,
-                    typed_items,
-                    issues,
-                    types_by_expr_id,
-                );
-                self.check_block(
-                    &while_stmt.node.body,
-                    typed_items,
-                    issues,
-                    types_by_expr_id,
-                );
-            }
-            Stmt::For(for_stmt) => {
+            crate::frontend::HirStmtKind::Expr { expr }
+            | crate::frontend::HirStmtKind::Semi { expr } => {
                 self.check_expr(
-                    &for_stmt.node.iterator,
+                    *expr,
                     typed_items,
                     issues,
                     types_by_expr_id,
-                );
-                self.check_block(
-                    &for_stmt.node.body,
-                    typed_items,
-                    issues,
-                    types_by_expr_id,
+                    types_by_hir_expr_id,
                 );
             }
-            Stmt::Return(value) => {
-                if let Some(value) = value {
-                    self.check_expr(
-                        value,
-                        typed_items,
-                        issues,
-                        types_by_expr_id,
-                    );
-                }
-            }
-            Stmt::Break | Stmt::Continue => {}
+            crate::frontend::HirStmtKind::Item { .. } => {}
         }
     }
 
     fn check_expr(
         &mut self,
-        expr: &crate::frontend::ast::Spanned<Expr>,
+        expr_id: HirExprId,
         typed_items: &TypedItemTable,
         issues: &mut Vec<ExprCheckIssue>,
         types_by_expr_id: &mut BTreeMap<BodyExprId, Type>,
+        types_by_hir_expr_id: &mut BTreeMap<
+            (DeclarationOwner, usize, HirExprId),
+            Type,
+        >,
     ) -> Type {
-        let expr_id = self.allocate_expr_id();
-        let ty = match &expr.node {
-            Expr::IntegerLiteral(_) => Type::builtin(BuiltinType::I32),
-            Expr::FloatLiteral(_) => Type::builtin(BuiltinType::F64),
-            Expr::CharLiteral(_) => Type::builtin(BuiltinType::Char),
-            Expr::BooleanLiteral(_) => Type::builtin(BuiltinType::Bool),
-            Expr::StringLiteral(_) => Type::builtin(BuiltinType::String),
-            Expr::Identifier(name) => self.type_for_path_reference(
-                expr.span,
-                vec![name.clone()],
+        let body_expr_id = BodyExprId {
+            owner: self.body.owner.clone(),
+            body_index: self.body.body_index,
+            hir_expr_id: expr_id,
+        };
+
+        let Some(expr) = self.module.exprs.get(&expr_id) else {
+            return self.store_and_return(
+                body_expr_id,
+                Span::new(0, 0),
+                Type::error(),
+                types_by_expr_id,
+                types_by_hir_expr_id,
+            );
+        };
+
+        let span = expr.origin.span;
+        let ty = match &expr.kind {
+            HirExprKind::Literal(HirLiteral::Integer(_)) => {
+                Type::builtin(BuiltinType::I32)
+            }
+            HirExprKind::Literal(HirLiteral::Float(_)) => {
+                Type::builtin(BuiltinType::F64)
+            }
+            HirExprKind::Literal(HirLiteral::Char(_)) => {
+                Type::builtin(BuiltinType::Char)
+            }
+            HirExprKind::Literal(HirLiteral::Boolean(_)) => {
+                Type::builtin(BuiltinType::Bool)
+            }
+            HirExprKind::Literal(HirLiteral::String(_)) => {
+                Type::builtin(BuiltinType::String)
+            }
+            HirExprKind::Path(path) => self.type_for_path_reference(
+                expr_id,
+                span,
+                path.segments.clone(),
                 typed_items,
                 issues,
             ),
-            Expr::SelfValue => self.type_for_path_reference(
-                expr.span,
-                vec!["self".to_string()],
-                typed_items,
-                issues,
-            ),
-            Expr::NamespaceAccess { .. } => {
-                let path = match Self::extract_namespace_path(&expr.node) {
-                    Some(path) => path,
-                    None => {
-                        return self.store_and_return(
-                            expr_id,
-                            expr.span,
-                            Type::error(),
-                            types_by_expr_id,
-                        );
-                    }
-                };
+            HirExprKind::NamespaceField { .. } => {
+                let path =
+                    match Self::extract_namespace_path(self.module, expr_id) {
+                        Some(path) => path,
+                        None => {
+                            return self.store_and_return(
+                                body_expr_id,
+                                span,
+                                Type::error(),
+                                types_by_expr_id,
+                                types_by_hir_expr_id,
+                            );
+                        }
+                    };
                 self.type_for_path_reference(
-                    expr.span,
+                    expr_id,
+                    span,
                     path,
                     typed_items,
                     issues,
                 )
             }
-            Expr::Grouped(inner) => {
-                self.check_expr(inner, typed_items, issues, types_by_expr_id)
-            }
-            Expr::Unary { op, expr: inner } => {
+            HirExprKind::Unary { op, expr: inner } => {
                 let operand = self.check_expr(
-                    inner,
+                    *inner,
                     typed_items,
                     issues,
                     types_by_expr_id,
+                    types_by_hir_expr_id,
                 );
-                self.type_unary(expr.span, op.clone(), operand, issues)
+                self.type_unary(span, *op, operand, issues)
             }
-            Expr::Binary { op, lhs, rhs } => {
-                let lhs_ty =
-                    self.check_expr(lhs, typed_items, issues, types_by_expr_id);
-                let rhs_ty =
-                    self.check_expr(rhs, typed_items, issues, types_by_expr_id);
-                self.type_binary(expr.span, *op, lhs_ty, rhs_ty, issues)
-            }
-            Expr::Assignment { target, value, .. } => {
-                let target_ty = self.check_expr(
-                    target,
+            HirExprKind::Binary { op, lhs, rhs } => {
+                let lhs_ty = self.check_expr(
+                    *lhs,
                     typed_items,
                     issues,
                     types_by_expr_id,
+                    types_by_hir_expr_id,
+                );
+                let rhs_ty = self.check_expr(
+                    *rhs,
+                    typed_items,
+                    issues,
+                    types_by_expr_id,
+                    types_by_hir_expr_id,
+                );
+                self.type_binary(span, *op, lhs_ty, rhs_ty, issues)
+            }
+            HirExprKind::Assign { target, value, .. } => {
+                let target_ty = self.check_expr(
+                    *target,
+                    typed_items,
+                    issues,
+                    types_by_expr_id,
+                    types_by_hir_expr_id,
                 );
                 let value_ty = self.check_expr(
-                    value,
+                    *value,
                     typed_items,
                     issues,
                     types_by_expr_id,
+                    types_by_hir_expr_id,
                 );
 
-                match self.assignment_target_status(target) {
+                match self.assignment_target_status(*target) {
                     AssignmentTargetStatus::MutableLocalOrNonPath => {}
                     AssignmentTargetStatus::ImmutableLocal(local_id) => {
                         issues.push(ExprCheckIssue {
                             owner: self.body.owner.clone(),
                             body_index: self.body.body_index,
-                            span: expr.span,
+                            span,
                             kind: ExprCheckIssueKind::MutabilityViolation {
                                 local_id,
                             },
                         });
                         return self.store_and_return(
-                            expr_id,
-                            expr.span,
+                            body_expr_id,
+                            span,
                             Type::error(),
                             types_by_expr_id,
+                            types_by_hir_expr_id,
                         );
                     }
                     AssignmentTargetStatus::Invalid => {
                         issues.push(ExprCheckIssue {
                             owner: self.body.owner.clone(),
                             body_index: self.body.body_index,
-                            span: expr.span,
+                            span,
                             kind: ExprCheckIssueKind::InvalidAssignmentTarget,
                         });
                         return self.store_and_return(
-                            expr_id,
-                            expr.span,
+                            body_expr_id,
+                            span,
                             Type::error(),
                             types_by_expr_id,
+                            types_by_hir_expr_id,
                         );
                     }
                 }
@@ -795,7 +575,7 @@ impl<'a> BodyExprChecker<'a> {
                     issues.push(ExprCheckIssue {
                         owner: self.body.owner.clone(),
                         body_index: self.body.body_index,
-                        span: expr.span,
+                        span,
                         kind: ExprCheckIssueKind::AssignmentTypeMismatch {
                             target: target_ty.clone(),
                             value: value_ty,
@@ -806,37 +586,26 @@ impl<'a> BodyExprChecker<'a> {
                     target_ty
                 }
             }
-            Expr::Call {
-                callee,
-                args,
-                trailing_closure,
-            } => {
+            HirExprKind::Call { callee, args } => {
                 let callee_sig =
-                    self.call_signature_for_callee(callee, typed_items);
+                    self.call_signature_for_callee(*callee, typed_items);
                 let _ = self.check_expr(
-                    callee,
+                    *callee,
                     typed_items,
                     issues,
                     types_by_expr_id,
+                    types_by_hir_expr_id,
                 );
 
                 let mut arg_types = Vec::with_capacity(args.len());
                 for arg in args {
                     arg_types.push(self.check_expr(
-                        &arg.value,
+                        arg.value,
                         typed_items,
                         issues,
                         types_by_expr_id,
+                        types_by_hir_expr_id,
                     ));
-                }
-                if let Some(trailing_closure) = trailing_closure {
-                    let _ = self.check_expr(
-                        trailing_closure,
-                        typed_items,
-                        issues,
-                        types_by_expr_id,
-                    );
-                    arg_types.push(Type::error());
                 }
 
                 let signature = match callee_sig {
@@ -848,31 +617,33 @@ impl<'a> BodyExprChecker<'a> {
                         issues.push(ExprCheckIssue {
                             owner: self.body.owner.clone(),
                             body_index: self.body.body_index,
-                            span: expr.span,
+                            span,
                             kind: ExprCheckIssueKind::BareExternFunctionCall {
                                 function,
                                 namespace,
                             },
                         });
                         return self.store_and_return(
-                            expr_id,
-                            expr.span,
+                            body_expr_id,
+                            span,
                             Type::error(),
                             types_by_expr_id,
+                            types_by_hir_expr_id,
                         );
                     }
                     CallSignatureResolution::Missing => {
                         issues.push(ExprCheckIssue {
                             owner: self.body.owner.clone(),
                             body_index: self.body.body_index,
-                            span: expr.span,
+                            span,
                             kind: ExprCheckIssueKind::InvalidCallCallee,
                         });
                         return self.store_and_return(
-                            expr_id,
-                            expr.span,
+                            body_expr_id,
+                            span,
                             Type::error(),
                             types_by_expr_id,
+                            types_by_hir_expr_id,
                         );
                     }
                 };
@@ -881,7 +652,7 @@ impl<'a> BodyExprChecker<'a> {
                     issues.push(ExprCheckIssue {
                         owner: self.body.owner.clone(),
                         body_index: self.body.body_index,
-                        span: expr.span,
+                        span,
                         kind: ExprCheckIssueKind::CallArityMismatch {
                             expected: signature.param_types.len(),
                             found: arg_types.len(),
@@ -902,7 +673,7 @@ impl<'a> BodyExprChecker<'a> {
                             issues.push(ExprCheckIssue {
                                 owner: self.body.owner.clone(),
                                 body_index: self.body.body_index,
-                                span: expr.span,
+                                span,
                                 kind: ExprCheckIssueKind::CallArgTypeMismatch {
                                     index,
                                     expected: expected.clone(),
@@ -910,10 +681,11 @@ impl<'a> BodyExprChecker<'a> {
                                 },
                             });
                             return self.store_and_return(
-                                expr_id,
-                                expr.span,
+                                body_expr_id,
+                                span,
                                 Type::error(),
                                 types_by_expr_id,
+                                types_by_hir_expr_id,
                             );
                         }
                     }
@@ -921,74 +693,71 @@ impl<'a> BodyExprChecker<'a> {
                     signature.return_type.clone().unwrap_or_else(Type::void)
                 }
             }
-            Expr::Block(block) | Expr::UnsafeBlock(block) => {
-                self.check_block(block, typed_items, issues, types_by_expr_id)
-            }
-            Expr::If {
-                clauses,
-                then_branch,
-                else_branch,
+            HirExprKind::Block { body } => self.check_body(
+                *body,
+                typed_items,
+                issues,
+                types_by_expr_id,
+                types_by_hir_expr_id,
+            ),
+            HirExprKind::If {
+                condition,
+                then_body,
+                else_expr,
             } => {
-                self.check_clause_list(
-                    clauses,
+                let condition_ty = self.check_expr(
+                    *condition,
                     typed_items,
                     issues,
                     types_by_expr_id,
+                    types_by_hir_expr_id,
                 );
-                let mut then_checker = Self {
-                    body: self.body,
-                    local_types: self.local_types.clone(),
-                    imports: self.imports,
-                    external_lookup: self.external_lookup,
-                    hir_view: self.hir_view,
-                    expr_ids_by_span: BTreeMap::new(),
-                    next_expr_index: self.next_expr_index,
-                };
-                let then_ty = then_checker.check_block(
-                    then_branch,
-                    typed_items,
-                    issues,
-                    types_by_expr_id,
-                );
-                self.next_expr_index = then_checker.next_expr_index;
-                for (key, ids) in then_checker.expr_ids_by_span {
-                    self.expr_ids_by_span.entry(key).or_default().extend(ids);
-                }
-
-                let Some(else_branch) = else_branch else {
+                if condition_ty != Type::builtin(BuiltinType::Bool)
+                    && !condition_ty.is_error()
+                {
                     issues.push(ExprCheckIssue {
                         owner: self.body.owner.clone(),
                         body_index: self.body.body_index,
-                        span: expr.span,
-                        kind: ExprCheckIssueKind::MissingElseBranch,
+                        span,
+                        kind: ExprCheckIssueKind::InvalidBinaryOp,
                     });
-                    return self.store_and_return(
-                        expr_id,
-                        expr.span,
-                        Type::error(),
-                        types_by_expr_id,
-                    );
-                };
+                }
 
-                let mut else_checker = Self {
-                    body: self.body,
-                    local_types: self.local_types.clone(),
-                    imports: self.imports,
-                    external_lookup: self.external_lookup,
-                    hir_view: self.hir_view,
-                    expr_ids_by_span: BTreeMap::new(),
-                    next_expr_index: self.next_expr_index,
-                };
-                let else_ty = else_checker.check_expr(
-                    else_branch,
+                let mut then_checker = self.branch_checker();
+                let then_ty = then_checker.check_body(
+                    *then_body,
                     typed_items,
                     issues,
                     types_by_expr_id,
+                    types_by_hir_expr_id,
                 );
-                self.next_expr_index = else_checker.next_expr_index;
-                for (key, ids) in else_checker.expr_ids_by_span {
-                    self.expr_ids_by_span.entry(key).or_default().extend(ids);
-                }
+                self.merge_branch(then_checker);
+
+                let Some(else_expr_id) = else_expr else {
+                    issues.push(ExprCheckIssue {
+                        owner: self.body.owner.clone(),
+                        body_index: self.body.body_index,
+                        span,
+                        kind: ExprCheckIssueKind::MissingElseBranch,
+                    });
+                    return self.store_and_return(
+                        body_expr_id,
+                        span,
+                        Type::error(),
+                        types_by_expr_id,
+                        types_by_hir_expr_id,
+                    );
+                };
+
+                let mut else_checker = self.branch_checker();
+                let else_ty = else_checker.check_expr(
+                    *else_expr_id,
+                    typed_items,
+                    issues,
+                    types_by_expr_id,
+                    types_by_hir_expr_id,
+                );
+                self.merge_branch(else_checker);
 
                 if then_ty == else_ty {
                     then_ty
@@ -998,7 +767,7 @@ impl<'a> BodyExprChecker<'a> {
                     issues.push(ExprCheckIssue {
                         owner: self.body.owner.clone(),
                         body_index: self.body.body_index,
-                        span: expr.span,
+                        span,
                         kind: ExprCheckIssueKind::IncompatibleIfBranches {
                             then_type: then_ty,
                             else_type: else_ty,
@@ -1007,30 +776,23 @@ impl<'a> BodyExprChecker<'a> {
                     Type::error()
                 }
             }
-            Expr::Match { subject, arms } => {
+            HirExprKind::Match { subject, arms } => {
                 let _ = self.check_expr(
-                    subject,
+                    *subject,
                     typed_items,
                     issues,
                     types_by_expr_id,
+                    types_by_hir_expr_id,
                 );
                 let mut arm_types = Vec::new();
                 for arm in arms {
-                    let arm_ty = match &arm.node.body {
-                        MatchArmBody::Expr(value) => self.check_expr(
-                            value,
-                            typed_items,
-                            issues,
-                            types_by_expr_id,
-                        ),
-                        MatchArmBody::Block(block) => self.check_block(
-                            block,
-                            typed_items,
-                            issues,
-                            types_by_expr_id,
-                        ),
-                    };
-                    arm_types.push(arm_ty);
+                    arm_types.push(self.check_expr(
+                        arm.expr,
+                        typed_items,
+                        issues,
+                        types_by_expr_id,
+                        types_by_hir_expr_id,
+                    ));
                 }
                 if arm_types.is_empty() {
                     Type::void()
@@ -1040,21 +802,59 @@ impl<'a> BodyExprChecker<'a> {
                     Type::error()
                 }
             }
-            Expr::Try { expr: inner }
-            | Expr::ForceUnwrap { expr: inner }
-            | Expr::Spread { expr: inner } => {
-                self.check_expr(inner, typed_items, issues, types_by_expr_id)
+            HirExprKind::Array { elements } => {
+                for element in elements {
+                    match element {
+                        HirArrayElement::Expr(value)
+                        | HirArrayElement::Spread(value) => {
+                            self.check_expr(
+                                *value,
+                                typed_items,
+                                issues,
+                                types_by_expr_id,
+                                types_by_hir_expr_id,
+                            );
+                        }
+                    }
+                }
+                Type::error()
             }
-            Expr::Ternary {
-                condition,
-                then_expr,
-                else_expr,
-            } => {
+            HirExprKind::Struct { fields, .. } => {
+                for field in fields {
+                    match field {
+                        HirStructExprField::Named { value, .. }
+                        | HirStructExprField::Spread { value } => {
+                            self.check_expr(
+                                *value,
+                                typed_items,
+                                issues,
+                                types_by_expr_id,
+                                types_by_hir_expr_id,
+                            );
+                        }
+                    }
+                }
+                Type::error()
+            }
+            HirExprKind::Tuple { elements } => {
+                for element in elements {
+                    self.check_expr(
+                        *element,
+                        typed_items,
+                        issues,
+                        types_by_expr_id,
+                        types_by_hir_expr_id,
+                    );
+                }
+                Type::error()
+            }
+            HirExprKind::While { condition, body } => {
                 let condition_ty = self.check_expr(
-                    condition,
+                    *condition,
                     typed_items,
                     issues,
                     types_by_expr_id,
+                    types_by_hir_expr_id,
                 );
                 if condition_ty != Type::builtin(BuiltinType::Bool)
                     && !condition_ty.is_error()
@@ -1062,201 +862,227 @@ impl<'a> BodyExprChecker<'a> {
                     issues.push(ExprCheckIssue {
                         owner: self.body.owner.clone(),
                         body_index: self.body.body_index,
-                        span: condition.span,
+                        span,
                         kind: ExprCheckIssueKind::InvalidBinaryOp,
                     });
                 }
-                let then_ty = self.check_expr(
-                    then_expr,
+                self.check_body(
+                    *body,
                     typed_items,
                     issues,
                     types_by_expr_id,
+                    types_by_hir_expr_id,
                 );
-                let else_ty = self.check_expr(
-                    else_expr,
+                Type::void()
+            }
+            HirExprKind::For { iterator, body, .. } => {
+                self.check_expr(
+                    *iterator,
                     typed_items,
                     issues,
                     types_by_expr_id,
+                    types_by_hir_expr_id,
                 );
-                if then_ty == else_ty {
-                    then_ty
-                } else {
-                    Type::error()
-                }
+                self.check_body(
+                    *body,
+                    typed_items,
+                    issues,
+                    types_by_expr_id,
+                    types_by_hir_expr_id,
+                );
+                Type::void()
             }
-            Expr::ArrayLiteral(elements) => {
-                for element in elements {
-                    match element {
-                        crate::frontend::ast::ArrayElement::Expr(value)
-                        | crate::frontend::ast::ArrayElement::Spread(value) => {
-                            self.check_expr(
-                                value,
-                                typed_items,
-                                issues,
-                                types_by_expr_id,
-                            );
-                        }
-                    }
+            HirExprKind::Return { value } => {
+                if let Some(value) = value {
+                    self.check_expr(
+                        *value,
+                        typed_items,
+                        issues,
+                        types_by_expr_id,
+                        types_by_hir_expr_id,
+                    );
                 }
-                Type::error()
+                Type::builtin(BuiltinType::Never)
             }
-            Expr::StructLiteral { fields, .. } => {
-                for field in fields {
-                    match field {
-                        crate::frontend::ast::StructLiteralField::Named { value, .. }
-                        | crate::frontend::ast::StructLiteralField::Spread {
-                            value,
-                        } => {
-                            self.check_expr(
-                                value,
-                                typed_items,
-                                issues,
-                                types_by_expr_id,
-                            );
-                        }
-                        crate::frontend::ast::StructLiteralField::Shorthand {
-                            ..
-                        } => {}
-                    }
-                }
-                Type::error()
+            HirExprKind::Try { expr: inner }
+            | HirExprKind::ForceUnwrap { expr: inner }
+            | HirExprKind::Spread { expr: inner } => self.check_expr(
+                *inner,
+                typed_items,
+                issues,
+                types_by_expr_id,
+                types_by_hir_expr_id,
+            ),
+            HirExprKind::Break | HirExprKind::Continue => {
+                Type::builtin(BuiltinType::Never)
             }
-            Expr::Closure { .. }
-            | Expr::Macro { .. }
-            | Expr::MemberAccess { .. }
-            | Expr::OptionalMemberAccess { .. }
-            | Expr::Index { .. }
-            | Expr::OptionalIndex { .. }
-            | Expr::Cast { .. }
-            | Expr::Range { .. }
-            | Expr::ShorthandMember { .. }
-            | Expr::QualifiedMember { .. }
-            | Expr::MethodCall { .. }
-            | Expr::ConstructorCall { .. }
-            | Expr::SelfType => Type::error(),
+            HirExprKind::Field { .. }
+            | HirExprKind::OptionalField { .. }
+            | HirExprKind::MethodCall { .. }
+            | HirExprKind::Index { .. }
+            | HirExprKind::OptionalIndex { .. }
+            | HirExprKind::Closure { .. }
+            | HirExprKind::Cast { .. }
+            | HirExprKind::Range { .. } => Type::error(),
         };
 
-        self.store_and_return(expr_id, expr.span, ty, types_by_expr_id)
+        self.store_and_return(
+            body_expr_id,
+            span,
+            ty,
+            types_by_expr_id,
+            types_by_hir_expr_id,
+        )
     }
 
     fn store_and_return(
         &mut self,
-        expr_id: BodyExprId,
+        body_expr_id: BodyExprId,
         span: Span,
         ty: Type,
         types_by_expr_id: &mut BTreeMap<BodyExprId, Type>,
+        types_by_hir_expr_id: &mut BTreeMap<
+            (DeclarationOwner, usize, HirExprId),
+            Type,
+        >,
     ) -> Type {
         let key = (
-            expr_id.owner.clone(),
-            expr_id.body_index,
+            body_expr_id.owner.clone(),
+            body_expr_id.body_index,
             span.start,
             span.end,
         );
         self.expr_ids_by_span
             .entry(key)
             .or_default()
-            .push(expr_id.clone());
-        types_by_expr_id.insert(expr_id, ty.clone());
+            .push(body_expr_id.clone());
+        types_by_expr_id.insert(body_expr_id.clone(), ty.clone());
+        types_by_hir_expr_id.insert(
+            (
+                body_expr_id.owner.clone(),
+                body_expr_id.body_index,
+                body_expr_id.hir_expr_id,
+            ),
+            ty.clone(),
+        );
         ty
     }
 
     fn infer_local_from_pattern(
         &mut self,
-        pattern: &crate::frontend::ast::Spanned<crate::frontend::ast::Pattern>,
+        pat_id: HirPatId,
         inferred_type: Type,
         requires_mutable: bool,
     ) {
-        let crate::frontend::ast::Pattern::Identifier(name) = &pattern.node
-        else {
+        let Some(pattern) = self.module.patterns.get(&pat_id) else {
             return;
         };
+        let HirPatKind::Binding { .. } = pattern.kind else {
+            return;
+        };
+
         if inferred_type.is_error() {
             return;
         }
 
-        let local = self.body.locals.iter().find(|local| {
-            local.declared_span == pattern.span && local.name == *name
-        });
-        let Some(local) = local else {
+        let Some(hir_local_id) = self
+            .hir_input
+            .hir_local_bindings
+            .binding_for_pat(self.body_ref.file_id, pat_id)
+        else {
             return;
         };
-        if requires_mutable && local.mutability != LocalMutability::Mutable {
-            return;
+        if requires_mutable {
+            let is_mutable =
+                self.local_bindings.get(&hir_local_id).is_some_and(|local| {
+                    local.mutability == LocalMutability::Mutable
+                });
+            if !is_mutable {
+                return;
+            }
         }
 
         let current = self
             .local_types
-            .get(&local.id)
+            .get(&hir_local_id)
             .cloned()
             .unwrap_or_else(Type::error);
         if current.is_error() {
-            self.local_types.insert(local.id, inferred_type);
-        }
-    }
-
-    fn check_clause_list(
-        &mut self,
-        clauses: &crate::frontend::ast::ClauseList,
-        typed_items: &TypedItemTable,
-        issues: &mut Vec<ExprCheckIssue>,
-        types_by_expr_id: &mut BTreeMap<BodyExprId, Type>,
-    ) {
-        for clause in &clauses.clauses {
-            match &clause.node {
-                Clause::Expr(expr) => {
-                    let ty = self.check_expr(
-                        expr,
-                        typed_items,
-                        issues,
-                        types_by_expr_id,
-                    );
-                    if ty != Type::builtin(BuiltinType::Bool) && !ty.is_error()
-                    {
-                        issues.push(ExprCheckIssue {
-                            owner: self.body.owner.clone(),
-                            body_index: self.body.body_index,
-                            span: clause.span,
-                            kind: ExprCheckIssueKind::InvalidBinaryOp,
-                        });
-                    }
-                }
-                Clause::LetBinding(binding) => {
-                    let value_ty = self.check_expr(
-                        &binding.value,
-                        typed_items,
-                        issues,
-                        types_by_expr_id,
-                    );
-                    self.infer_local_from_pattern(
-                        &binding.pattern,
-                        value_ty,
-                        false,
-                    );
-                }
-                Clause::VarBinding(binding) => {
-                    let value_ty = self.check_expr(
-                        &binding.value,
-                        typed_items,
-                        issues,
-                        types_by_expr_id,
-                    );
-                    self.infer_local_from_pattern(
-                        &binding.pattern,
-                        value_ty,
-                        true,
-                    );
-                }
-            }
+            self.local_types.insert(hir_local_id, inferred_type);
         }
     }
 
     fn type_for_path_reference(
         &self,
+        expr_id: HirExprId,
         span: Span,
         segments: Vec<String>,
         typed_items: &TypedItemTable,
         issues: &mut Vec<ExprCheckIssue>,
     ) -> Type {
+        if let Some(resolution) = self
+            .hir_input
+            .hir_path_table
+            .by_expr(self.body_ref.file_id, expr_id)
+        {
+            match resolution {
+                crate::frontend::resolver::HirPathResolution::Local(
+                    hir_local_id,
+                ) => {
+                    return self
+                        .local_types
+                        .get(&hir_local_id)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            issues.push(ExprCheckIssue {
+                                owner: self.body.owner.clone(),
+                                body_index: self.body.body_index,
+                                span,
+                                kind: ExprCheckIssueKind::MissingLocalType {
+                                    local_id: hir_local_id,
+                                },
+                            });
+                            Type::error()
+                        });
+                }
+                crate::frontend::resolver::HirPathResolution::Item(
+                    item_ref,
+                ) => {
+                    if let Some(item_id) = self
+                        .hir_input
+                        .item_id_by_hir_item_ref
+                        .get(&item_ref)
+                        .copied()
+                    {
+                        return self.type_for_item_reference(
+                            span,
+                            item_id,
+                            typed_items,
+                            issues,
+                        );
+                    }
+                }
+                crate::frontend::resolver::HirPathResolution::AssociatedMember {
+                    type_item_ref,
+                    ..
+                } => {
+                    if let Some(item_id) = self
+                        .hir_input
+                        .item_id_by_hir_item_ref
+                        .get(&type_item_ref)
+                        .copied()
+                    {
+                        return self.type_for_item_reference(
+                            span,
+                            item_id,
+                            typed_items,
+                            issues,
+                        );
+                    }
+                }
+            }
+        }
+
         if let Some(item_id) = self.resolve_item_id_from_hir_path(&segments) {
             return self.type_for_item_reference(
                 span,
@@ -1265,43 +1091,22 @@ impl<'a> BodyExprChecker<'a> {
                 issues,
             );
         }
-
-        let Some(resolved) = self
-            .body
-            .references
-            .iter()
-            .find(|reference| {
-                reference.span == span && reference.segments == segments
-            })
-            .map(|reference| reference.resolved.clone())
-        else {
-            issues.push(ExprCheckIssue {
-                owner: self.body.owner.clone(),
-                body_index: self.body.body_index,
-                span,
-                kind: ExprCheckIssueKind::MissingResolvedReference { segments },
-            });
+        if self.external_import_signature_for_path(&segments).is_some()
+            || self
+                .direct_named_root_signature_for_path(&segments)
+                .is_some()
+            || self.extern_signature_for_path(&segments).is_some()
+        {
             return Type::error();
-        };
-
-        match resolved {
-            ResolvedBodyRef::Local(local_id) => {
-                self.local_types.get(&local_id).cloned().unwrap_or_else(|| {
-                    issues.push(ExprCheckIssue {
-                        owner: self.body.owner.clone(),
-                        body_index: self.body.body_index,
-                        span,
-                        kind: ExprCheckIssueKind::MissingLocalType { local_id },
-                    });
-                    Type::error()
-                })
-            }
-            ResolvedBodyRef::Item(item_id)
-            | ResolvedBodyRef::Import(item_id) => {
-                self.type_for_item_reference(span, item_id, typed_items, issues)
-            }
-            ResolvedBodyRef::Unresolved => Type::error(),
         }
+
+        issues.push(ExprCheckIssue {
+            owner: self.body.owner.clone(),
+            body_index: self.body.body_index,
+            span,
+            kind: ExprCheckIssueKind::MissingResolvedReference { segments },
+        });
+        Type::error()
     }
 
     fn type_for_item_reference(
@@ -1314,8 +1119,8 @@ impl<'a> BodyExprChecker<'a> {
         match typed_items.get(item_id) {
             Some(TypedItemData::Struct(_))
             | Some(TypedItemData::Enum(_))
-            | Some(TypedItemData::Protocol(_)) => Type::error(),
-            Some(TypedItemData::Function(_)) => Type::error(),
+            | Some(TypedItemData::Protocol(_))
+            | Some(TypedItemData::Function(_)) => Type::error(),
             None => {
                 issues.push(ExprCheckIssue {
                     owner: self.body.owner.clone(),
@@ -1330,15 +1135,17 @@ impl<'a> BodyExprChecker<'a> {
 
     fn call_signature_for_callee(
         &self,
-        callee: &crate::frontend::ast::Spanned<Expr>,
+        callee_expr_id: HirExprId,
         typed_items: &TypedItemTable,
     ) -> CallSignatureResolution {
-        let Some(path) = Self::extract_namespace_path(&callee.node) else {
+        let Some(path) =
+            Self::extract_namespace_path(self.module, callee_expr_id)
+        else {
             return CallSignatureResolution::Missing;
         };
 
         if let Some(signature) =
-            self.local_signature_for_callee(callee, &path, typed_items)
+            self.local_signature_for_callee(callee_expr_id, &path, typed_items)
         {
             return CallSignatureResolution::Signature(signature);
         }
@@ -1373,39 +1180,184 @@ impl<'a> BodyExprChecker<'a> {
 
     fn local_signature_for_callee(
         &self,
-        callee: &crate::frontend::ast::Spanned<Expr>,
+        callee_expr_id: HirExprId,
         path: &[String],
         typed_items: &TypedItemTable,
     ) -> Option<TypedFunctionSignature> {
+        if let Some(resolution) = self
+            .hir_input
+            .hir_path_table
+            .by_expr(self.body_ref.file_id, callee_expr_id)
+        {
+            match resolution {
+                crate::frontend::resolver::HirPathResolution::Item(item_ref) => {
+                    if let Some(item_id) = self
+                        .hir_input
+                        .item_id_by_hir_item_ref
+                        .get(&item_ref)
+                        .copied()
+                        && let Some(signature) = typed_items.function(item_id)
+                    {
+                        return Some(signature.clone());
+                    }
+                }
+                crate::frontend::resolver::HirPathResolution::AssociatedMember {
+                    type_item_ref,
+                    member_name,
+                    member_kind,
+                } => {
+                    if let Some(signature) =
+                        self.associated_member_signature_for_type_item(
+                            type_item_ref,
+                            &member_name,
+                            member_kind,
+                            typed_items,
+                        )
+                    {
+                        return Some(signature);
+                    }
+                }
+                crate::frontend::resolver::HirPathResolution::Local(_) => {}
+            }
+        }
+
         if let Some(item_id) = self.resolve_item_id_from_hir_path(path)
             && let Some(signature) = typed_items.function(item_id)
         {
             return Some(signature.clone());
         }
 
-        let resolved = self
-            .body
-            .references
-            .iter()
-            .find(|reference| {
-                reference.span == callee.span && reference.segments == path
-            })
-            .map(|reference| reference.resolved.clone())?;
-        let item_id = match resolved {
-            ResolvedBodyRef::Item(item_id)
-            | ResolvedBodyRef::Import(item_id) => item_id,
-            ResolvedBodyRef::Local(_) | ResolvedBodyRef::Unresolved => {
-                return None;
+        self.initializer_signature_for_path(path, typed_items)
+    }
+
+    fn initializer_signature_for_path(
+        &self,
+        path: &[String],
+        typed_items: &TypedItemTable,
+    ) -> Option<TypedFunctionSignature> {
+        if path.len() < 2
+            || path.last().is_none_or(|segment| segment != "init")
+        {
+            return None;
+        }
+
+        let owner_path = &path[..path.len() - 1];
+        let owner_item_id = self.resolve_item_id_from_hir_path(owner_path)?;
+        match typed_items.get(owner_item_id)? {
+            TypedItemData::Struct(signature_data) => {
+                signature_data.initializer_signatures.first().cloned()
             }
+            TypedItemData::Enum(signature_data) => {
+                signature_data.initializer_signatures.first().cloned()
+            }
+            TypedItemData::Protocol(signature_data) => {
+                signature_data.initializer_signatures.first().cloned()
+            }
+            TypedItemData::Function(_) => None,
+        }
+    }
+
+    fn associated_member_signature_for_type_item(
+        &self,
+        type_item_ref: crate::frontend::resolver::HirItemRef,
+        member_name: &str,
+        member_kind: crate::frontend::resolver::AssociatedMemberKind,
+        typed_items: &TypedItemTable,
+    ) -> Option<TypedFunctionSignature> {
+        let type_item_id = self
+            .hir_input
+            .item_id_by_hir_item_ref
+            .get(&type_item_ref)
+            .copied()?;
+        self.associated_member_signature_for_item(
+            type_item_id,
+            member_name,
+            member_kind,
+            typed_items,
+        )
+    }
+
+    fn associated_member_signature_for_item(
+        &self,
+        type_item_id: ItemId,
+        member_name: &str,
+        member_kind: crate::frontend::resolver::AssociatedMemberKind,
+        typed_items: &TypedItemTable,
+    ) -> Option<TypedFunctionSignature> {
+        let direct_signature = match typed_items.get(type_item_id)? {
+            TypedItemData::Struct(signature_data) => {
+                Self::select_associated_member_signature(
+                    &signature_data.method_signatures,
+                    &signature_data.initializer_signatures,
+                    member_name,
+                    member_kind,
+                )
+            }
+            TypedItemData::Enum(signature_data) => {
+                Self::select_associated_member_signature(
+                    &signature_data.method_signatures,
+                    &signature_data.initializer_signatures,
+                    member_name,
+                    member_kind,
+                )
+            }
+            TypedItemData::Protocol(signature_data) => {
+                Self::select_associated_member_signature(
+                    &signature_data.method_signatures,
+                    &signature_data.initializer_signatures,
+                    member_name,
+                    member_kind,
+                )
+            }
+            TypedItemData::Function(_) => None,
         };
-        typed_items.function(item_id).cloned()
+        if direct_signature.is_some() {
+            return direct_signature;
+        }
+
+        for impl_owner in typed_items.impl_owners_for_target(type_item_id) {
+            let Some(impl_signature) = typed_items.impl_signature(impl_owner)
+            else {
+                continue;
+            };
+            if let Some(signature) = Self::select_associated_member_signature(
+                &impl_signature.method_signatures,
+                &impl_signature.initializer_signatures,
+                member_name,
+                member_kind,
+            ) {
+                return Some(signature);
+            }
+        }
+
+        None
+    }
+
+    fn select_associated_member_signature(
+        method_signatures: &[super::signatures::TypedNamedFunctionSignature],
+        initializer_signatures: &[TypedFunctionSignature],
+        member_name: &str,
+        member_kind: crate::frontend::resolver::AssociatedMemberKind,
+    ) -> Option<TypedFunctionSignature> {
+        match member_kind {
+            crate::frontend::resolver::AssociatedMemberKind::Method => {
+                method_signatures
+                    .iter()
+                    .find(|method| method.name == member_name)
+                    .map(|method| method.signature.clone())
+            }
+            crate::frontend::resolver::AssociatedMemberKind::Initializer => {
+                (member_name == "init")
+                    .then(|| initializer_signatures.first().cloned())
+                    .flatten()
+            }
+        }
     }
 
     fn resolve_item_id_from_hir_path(&self, path: &[String]) -> Option<ItemId> {
-        let view = self.hir_view?;
         let first = path.first()?;
         let file_id = self.body.containing_scope_file_id;
-        let imports = view.hir_imports;
+        let imports = &self.hir_input.hir_imports;
 
         if let Some(binding) =
             imports.get(file_id).and_then(|table| table.get(first))
@@ -1415,7 +1367,8 @@ impl<'a> BodyExprChecker<'a> {
                     == crate::frontend::resolver::HirImportBindingKind::Item
                 {
                     let item_ref = binding.target_item?;
-                    return view
+                    return self
+                        .hir_input
                         .item_id_by_hir_item_ref
                         .get(&item_ref)
                         .copied();
@@ -1430,7 +1383,11 @@ impl<'a> BodyExprChecker<'a> {
                     .item_paths_for_root(root_name)
                     .and_then(|paths| paths.get(&full_path))
                 {
-                    return view.item_id_by_hir_item_ref.get(item_ref).copied();
+                    return self
+                        .hir_input
+                        .item_id_by_hir_item_ref
+                        .get(item_ref)
+                        .copied();
                 }
             }
         }
@@ -1442,7 +1399,10 @@ impl<'a> BodyExprChecker<'a> {
             .item_paths_for_root(None)?
             .get(&local_full_path)
             .copied()?;
-        view.item_id_by_hir_item_ref.get(&item_ref).copied()
+        self.hir_input
+            .item_id_by_hir_item_ref
+            .get(&item_ref)
+            .copied()
     }
 
     fn external_import_signature_for_path(
@@ -1504,7 +1464,7 @@ impl<'a> BodyExprChecker<'a> {
     fn type_unary(
         &self,
         span: Span,
-        op: UnaryOp,
+        op: HirUnaryOp,
         operand: Type,
         issues: &mut Vec<ExprCheckIssue>,
     ) -> Type {
@@ -1512,8 +1472,8 @@ impl<'a> BodyExprChecker<'a> {
             return Type::error();
         }
         match op {
-            UnaryOp::Negate if is_numeric_type(&operand) => operand,
-            UnaryOp::Not if operand == Type::builtin(BuiltinType::Bool) => {
+            HirUnaryOp::Negate if is_numeric_type(&operand) => operand,
+            HirUnaryOp::Not if operand == Type::builtin(BuiltinType::Bool) => {
                 Type::builtin(BuiltinType::Bool)
             }
             _ => {
@@ -1531,7 +1491,7 @@ impl<'a> BodyExprChecker<'a> {
     fn type_binary(
         &self,
         span: Span,
-        op: BinaryOp,
+        op: HirBinaryOp,
         lhs: Type,
         rhs: Type,
         issues: &mut Vec<ExprCheckIssue>,
@@ -1541,11 +1501,11 @@ impl<'a> BodyExprChecker<'a> {
         }
 
         match op {
-            BinaryOp::Add
-            | BinaryOp::Subtract
-            | BinaryOp::Multiply
-            | BinaryOp::Divide
-            | BinaryOp::Remainder => {
+            HirBinaryOp::Add
+            | HirBinaryOp::Subtract
+            | HirBinaryOp::Multiply
+            | HirBinaryOp::Divide
+            | HirBinaryOp::Remainder => {
                 if is_numeric_type(&lhs) && lhs == rhs {
                     lhs
                 } else {
@@ -1558,7 +1518,7 @@ impl<'a> BodyExprChecker<'a> {
                     Type::error()
                 }
             }
-            BinaryOp::LogicalAnd | BinaryOp::LogicalOr => {
+            HirBinaryOp::LogicalAnd | HirBinaryOp::LogicalOr => {
                 if lhs == Type::builtin(BuiltinType::Bool)
                     && rhs == Type::builtin(BuiltinType::Bool)
                 {
@@ -1573,12 +1533,12 @@ impl<'a> BodyExprChecker<'a> {
                     Type::error()
                 }
             }
-            BinaryOp::Equal
-            | BinaryOp::NotEqual
-            | BinaryOp::Less
-            | BinaryOp::LessEqual
-            | BinaryOp::Greater
-            | BinaryOp::GreaterEqual => {
+            HirBinaryOp::Equal
+            | HirBinaryOp::NotEqual
+            | HirBinaryOp::Less
+            | HirBinaryOp::LessEqual
+            | HirBinaryOp::Greater
+            | HirBinaryOp::GreaterEqual => {
                 if lhs == rhs {
                     Type::builtin(BuiltinType::Bool)
                 } else {
@@ -1591,18 +1551,18 @@ impl<'a> BodyExprChecker<'a> {
                     Type::error()
                 }
             }
-            BinaryOp::NullCoalescing => {
+            HirBinaryOp::NullCoalescing => {
                 if lhs == rhs {
                     lhs
                 } else {
                     Type::error()
                 }
             }
-            BinaryOp::BitOr
-            | BinaryOp::BitXor
-            | BinaryOp::BitAnd
-            | BinaryOp::ShiftLeft
-            | BinaryOp::ShiftRight => {
+            HirBinaryOp::BitOr
+            | HirBinaryOp::BitXor
+            | HirBinaryOp::BitAnd
+            | HirBinaryOp::ShiftLeft
+            | HirBinaryOp::ShiftRight => {
                 if is_integer_type(&lhs) && lhs == rhs {
                     lhs
                 } else {
@@ -1620,41 +1580,52 @@ impl<'a> BodyExprChecker<'a> {
 
     fn assignment_target_status(
         &self,
-        target: &crate::frontend::ast::Spanned<Expr>,
+        target_expr_id: HirExprId,
     ) -> AssignmentTargetStatus {
-        let Some(path) = Self::extract_namespace_path(&target.node) else {
+        let Some(path) =
+            Self::extract_namespace_path(self.module, target_expr_id)
+        else {
             return AssignmentTargetStatus::MutableLocalOrNonPath;
         };
-        let Some(reference) = self.body.references.iter().find(|reference| {
-            reference.span == target.span && reference.segments == path
-        }) else {
+        let _ = path;
+
+        let Some(resolution) = self
+            .hir_input
+            .hir_path_table
+            .by_expr(self.body_ref.file_id, target_expr_id)
+        else {
             return AssignmentTargetStatus::Invalid;
         };
-        match reference.resolved {
-            ResolvedBodyRef::Local(local_id) => {
-                match self.body.locals.iter().find(|local| local.id == local_id)
-                {
-                    Some(local)
-                        if local.mutability == LocalMutability::Mutable =>
-                    {
-                        AssignmentTargetStatus::MutableLocalOrNonPath
-                    }
-                    Some(_) => AssignmentTargetStatus::ImmutableLocal(local_id),
-                    None => AssignmentTargetStatus::Invalid,
+
+        match resolution {
+            crate::frontend::resolver::HirPathResolution::Local(
+                hir_local_id,
+            ) => match self.local_bindings.get(&hir_local_id) {
+                Some(local) if local.mutability == LocalMutability::Mutable => {
+                    AssignmentTargetStatus::MutableLocalOrNonPath
                 }
+                Some(_) => AssignmentTargetStatus::ImmutableLocal(hir_local_id),
+                None => AssignmentTargetStatus::Invalid,
+            },
+            crate::frontend::resolver::HirPathResolution::Item(_) => {
+                AssignmentTargetStatus::Invalid
             }
-            ResolvedBodyRef::Item(_)
-            | ResolvedBodyRef::Import(_)
-            | ResolvedBodyRef::Unresolved => AssignmentTargetStatus::Invalid,
+            crate::frontend::resolver::HirPathResolution::AssociatedMember {
+                ..
+            } => AssignmentTargetStatus::Invalid,
         }
     }
 
-    fn extract_namespace_path(expr: &Expr) -> Option<Vec<String>> {
-        match expr {
-            Expr::Identifier(name) => Some(vec![name.clone()]),
-            Expr::NamespaceAccess { base, member, .. } => {
-                let mut path = Self::extract_namespace_path(&base.node)?;
-                path.push(member.clone());
+    fn extract_namespace_path(
+        module: &HirModule,
+        expr_id: HirExprId,
+    ) -> Option<Vec<String>> {
+        let expr = module.exprs.get(&expr_id)?;
+        match &expr.kind {
+            HirExprKind::Path(path) => Some(path.segments.clone()),
+            HirExprKind::NamespaceField { base, name, .. } => {
+                let mut path = Self::extract_namespace_path(module, *base)?;
+                path.push(name.clone());
                 Some(path)
             }
             _ => None,

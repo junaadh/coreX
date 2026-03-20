@@ -4,7 +4,8 @@
 //! from AST through the lowering process.
 
 use core_x::frontend::hir::{
-    HirFile, HirFunctionParam, HirItemKind, HirParamLabel,
+    HirFile, HirFunctionParam, HirItemKind, HirMutability, HirParamLabel,
+    HirTypeKind,
 };
 use core_x::frontend::parser::parse_source_file_from_source_file;
 use core_x::frontend::source::SourceDb;
@@ -253,4 +254,52 @@ fn test_hir_extern_function_preserves_labels() {
         HirParamLabel::Explicit(label) => assert_eq!(label, "label"),
         _ => panic!("expected Explicit label"),
     }
+}
+
+#[test]
+fn test_hir_protocol_lowers_properties_and_associated_types() {
+    let source = r#"
+        struct Response {}
+        protocol Service {
+            type Output: Response;
+            var current: Output { get set }
+            let name: string { get }
+        }
+    "#;
+
+    let mut db = SourceDb::new();
+    let (hir_file, desugared) = parse_and_lower(&mut db, source);
+    let (_, hir_module) = lower_to_hir(&desugared);
+
+    let protocol_item_id = &hir_file.root_items[1];
+    let protocol_item = hir_module
+        .items
+        .get(protocol_item_id)
+        .expect("item should exist");
+    let HirItemKind::Protocol(hir_protocol) = &protocol_item.kind else {
+        panic!("expected protocol item");
+    };
+
+    assert_eq!(hir_protocol.associated_types.len(), 1);
+    assert_eq!(hir_protocol.associated_types[0].name, "Output");
+    assert_eq!(hir_protocol.associated_types[0].bounds.len(), 1);
+    let associated_bound = hir_module
+        .types
+        .get(&hir_protocol.associated_types[0].bounds[0])
+        .expect("associated type bound should exist");
+    assert!(matches!(associated_bound.kind, HirTypeKind::Path(_)));
+
+    assert_eq!(hir_protocol.properties.len(), 2);
+    assert_eq!(hir_protocol.properties[0].name, "current");
+    assert_eq!(
+        hir_protocol.properties[0].mutability,
+        HirMutability::Mutable
+    );
+    assert_eq!(hir_protocol.properties[0].accessors.len(), 2);
+    assert_eq!(hir_protocol.properties[1].name, "name");
+    assert_eq!(
+        hir_protocol.properties[1].mutability,
+        HirMutability::Immutable
+    );
+    assert_eq!(hir_protocol.properties[1].accessors.len(), 1);
 }

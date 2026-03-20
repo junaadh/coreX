@@ -5,7 +5,7 @@ use core_x::frontend::resolver::{
 };
 use core_x::frontend::source::{FileId, SourceDb};
 use core_x::frontend::{
-    BodyExprId, BuiltinType, ExprCheckIssueKind, Type,
+    BodyExprId, BuiltinType, ExprCheckIssueKind, HirExprId, HirExprKind, Type,
     build_body_type_environments, build_typed_item_table,
     check_expression_types, type_declaration_signatures,
 };
@@ -48,6 +48,7 @@ fn resolve_library_graph(
 
 struct Pipeline {
     item_table: GlobalItemTable,
+    hir: core_x::frontend::SemanticHirInput,
     expr_types: core_x::frontend::ExpressionTypeTable,
 }
 
@@ -58,11 +59,16 @@ fn run_pipeline(
 ) -> Pipeline {
     let graph = resolve_library_graph(db, parsed_files, root_file_id);
     let item_table = GlobalItemTable::collect(&graph, parsed_files);
+    let hir = core_x::frontend::SemanticHirInput::build(
+        &graph,
+        parsed_files,
+        &item_table,
+    );
     let (_, imports) =
         resolve_project_imports(&graph, parsed_files).expect("imports");
     let declarations =
         resolve_declaration_types(&graph, parsed_files, &imports, &item_table);
-    let signatures = type_declaration_signatures(&declarations, &item_table);
+    let signatures = type_declaration_signatures(&hir, &item_table);
     let typed_items = build_typed_item_table(&item_table, &signatures);
     let bodies = resolve_bodies(
         &graph,
@@ -71,17 +77,12 @@ fn run_pipeline(
         &item_table,
         &declarations,
     );
-    let body_envs = build_body_type_environments(&bodies, &typed_items);
-    let expr_types = check_expression_types(
-        &graph,
-        parsed_files,
-        &item_table,
-        &typed_items,
-        &bodies,
-        &body_envs,
-    );
+    let body_envs = build_body_type_environments(&hir, &bodies, &typed_items);
+    let expr_types =
+        check_expression_types(&hir, &typed_items, &bodies, &body_envs);
     Pipeline {
         item_table,
+        hir,
         expr_types,
     }
 }
@@ -95,6 +96,36 @@ fn owner_for(item_table: &GlobalItemTable, path: &[&str]) -> DeclarationOwner {
         .item_id_by_full_path(&full_path)
         .unwrap_or_else(|| panic!("missing item path {full_path:?}"));
     DeclarationOwner::Item(item_id)
+}
+
+fn typed_hir_expr_ids_for_body(
+    pipeline: &Pipeline,
+    owner: &DeclarationOwner,
+    body_index: usize,
+    predicate: impl Fn(&HirExprKind) -> bool,
+) -> Vec<HirExprId> {
+    let body_ref = pipeline
+        .hir
+        .body_ref(owner, body_index)
+        .expect("body ref should exist");
+    let module = pipeline
+        .hir
+        .hir_modules
+        .get(&body_ref.file_id)
+        .expect("HIR module should exist");
+
+    module
+        .exprs
+        .iter()
+        .filter_map(|(expr_id, expr)| {
+            (predicate(&expr.kind)
+                && pipeline
+                    .expr_types
+                    .expr_type_for_hir_expr(owner, body_index, *expr_id)
+                    .is_some())
+            .then_some(*expr_id)
+        })
+        .collect()
 }
 
 #[test]
@@ -243,7 +274,75 @@ fn expression_result_side_table_behavior() {
     let synthetic = BodyExprId {
         owner,
         body_index: 0,
-        expr_index: u32::MAX,
+        hir_expr_id: HirExprId::new(u32::MAX),
     };
     assert!(first.expr_types.expr_type(&synthetic).is_none());
+}
+
+#[test]
+fn shadowing_still_works_with_hir_path_resolution() {
+    let mut db = SourceDb::new();
+    let root = add_and_parse(
+        &mut db,
+        "src/root.cx",
+        "fn takes_bool(_ b: bool) {} fn takes_i32(_ n: i32) -> i32 { n } fn f() -> i32 { let x: i32 = 1; { let x: bool = true; takes_bool(x); }; takes_i32(x) }",
+    );
+    let parsed_files = vec![root.clone()];
+    let pipeline = run_pipeline(&db, &parsed_files, root.file_id);
+    let owner = owner_for(&pipeline.item_table, &["f"]);
+
+    assert_eq!(
+        pipeline.expr_types.root_type(&owner, 0),
+        Some(&Type::builtin(BuiltinType::I32))
+    );
+    assert!(!pipeline.expr_types.issues.iter().any(|issue| {
+        matches!(issue.kind, ExprCheckIssueKind::CallArgTypeMismatch { .. })
+    }));
+}
+
+#[test]
+fn function_call_validity_works_on_hir() {
+    let mut db = SourceDb::new();
+    let root = add_and_parse(
+        &mut db,
+        "src/root.cx",
+        "fn g() -> i32 { 1 } fn ok() -> i32 { g() } fn bad() -> i32 { let x = 1; x() }",
+    );
+    let parsed_files = vec![root.clone()];
+    let pipeline = run_pipeline(&db, &parsed_files, root.file_id);
+
+    let ok_owner = owner_for(&pipeline.item_table, &["ok"]);
+    let ok_call_expr_ids =
+        typed_hir_expr_ids_for_body(&pipeline, &ok_owner, 0, |kind| {
+            matches!(kind, HirExprKind::Call { .. })
+        });
+    assert_eq!(ok_call_expr_ids.len(), 1);
+    assert_eq!(
+        pipeline.expr_types.expr_type_for_hir_expr(
+            &ok_owner,
+            0,
+            ok_call_expr_ids[0]
+        ),
+        Some(&Type::builtin(BuiltinType::I32))
+    );
+
+    let bad_owner = owner_for(&pipeline.item_table, &["bad"]);
+    let bad_call_expr_ids =
+        typed_hir_expr_ids_for_body(&pipeline, &bad_owner, 0, |kind| {
+            matches!(kind, HirExprKind::Call { .. })
+        });
+    assert_eq!(bad_call_expr_ids.len(), 1);
+    assert_eq!(
+        pipeline.expr_types.expr_type_for_hir_expr(
+            &bad_owner,
+            0,
+            bad_call_expr_ids[0]
+        ),
+        Some(&Type::error())
+    );
+    assert!(pipeline.expr_types.issues.iter().any(|issue| {
+        issue.owner == bad_owner
+            && issue.body_index == 0
+            && matches!(issue.kind, ExprCheckIssueKind::InvalidCallCallee)
+    }));
 }

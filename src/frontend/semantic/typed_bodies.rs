@@ -2,10 +2,10 @@ use super::Type;
 use super::body_env::{BodyLocalBindingInfo, BodyTypeEnvironmentTable};
 use super::control_flow::{BodyControlFlowId, ControlFlowTable};
 use super::expr_check::{BodyExprId, ExpressionTypeTable};
+use super::hir_input::SemanticHirInput;
 use super::stmt_check::StatementTypeTable;
-use crate::frontend::resolver::{
-    BodyKind, DeclarationOwner, LocalId, ResolvedBodyTable,
-};
+use crate::frontend::hir::HirBodyId;
+use crate::frontend::resolver::{BodyKind, DeclarationOwner, LocalId};
 use crate::frontend::source::FileId;
 use std::collections::BTreeMap;
 
@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 pub struct TypedBodyId {
     pub owner: DeclarationOwner,
     pub body_index: usize,
+    pub hir_body_id: HirBodyId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -45,6 +46,7 @@ pub struct TypedBody {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypedBodyTableIssueKind {
+    MissingBodyReference,
     MissingBodyEnvironment,
     MissingControlFlowResult,
 }
@@ -58,6 +60,8 @@ pub struct TypedBodyTableIssue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedBodyTable {
     by_owner: BTreeMap<DeclarationOwner, Vec<TypedBody>>,
+    hir_local_id_by_resolved_local_id_by_body:
+        BTreeMap<(DeclarationOwner, usize), BTreeMap<LocalId, LocalId>>,
     pub issues: Vec<TypedBodyTableIssue>,
 }
 
@@ -93,6 +97,20 @@ impl TypedBodyTable {
         body_index: usize,
         local_id: LocalId,
     ) -> Option<&Type> {
+        let hir_local_id = self
+            .hir_local_id_by_resolved_local_id_by_body
+            .get(&(owner.clone(), body_index))?
+            .get(&local_id)?;
+        self.local_type_for_hir_local(owner, body_index, *hir_local_id)
+    }
+
+    #[must_use]
+    pub fn local_type_for_hir_local(
+        &self,
+        owner: &DeclarationOwner,
+        body_index: usize,
+        local_id: LocalId,
+    ) -> Option<&Type> {
         self.body(owner, body_index)?.local_types.get(&local_id)
     }
 
@@ -123,7 +141,7 @@ impl TypedBodyTable {
 
 #[must_use]
 pub fn build_typed_body_table(
-    resolved_bodies: &ResolvedBodyTable,
+    hir_input: &SemanticHirInput,
     body_envs: &BodyTypeEnvironmentTable,
     expr_types: &ExpressionTypeTable,
     stmt_types: &StatementTypeTable,
@@ -131,41 +149,55 @@ pub fn build_typed_body_table(
 ) -> TypedBodyTable {
     let mut by_owner: BTreeMap<DeclarationOwner, Vec<TypedBody>> =
         BTreeMap::new();
+    let mut hir_local_id_by_resolved_local_id_by_body = BTreeMap::new();
     let mut issues = Vec::new();
 
-    let mut grouped_bodies: BTreeMap<DeclarationOwner, Vec<_>> =
-        BTreeMap::new();
-    for body in resolved_bodies.iter() {
-        grouped_bodies
-            .entry(body.owner.clone())
-            .or_default()
-            .push(body);
+    let mut grouped_envs: BTreeMap<DeclarationOwner, Vec<_>> = BTreeMap::new();
+    for env in body_envs.iter() {
+        grouped_envs.entry(env.owner.clone()).or_default().push(env);
     }
 
-    for (owner, mut bodies) in grouped_bodies {
-        bodies.sort_by_key(|body| body.body_index);
-        let mut typed_for_owner = Vec::with_capacity(bodies.len());
+    for (owner, mut envs) in grouped_envs {
+        envs.sort_by_key(|env| env.body_index);
+        let mut typed_for_owner = Vec::with_capacity(envs.len());
 
-        for body in bodies {
-            let id = TypedBodyId {
-                owner: owner.clone(),
-                body_index: body.body_index,
+        for env in envs {
+            let Some(body_ref) = hir_input.body_ref(&owner, env.body_index)
+            else {
+                issues.push(TypedBodyTableIssue {
+                    id: TypedBodyId {
+                        owner: owner.clone(),
+                        body_index: env.body_index,
+                        hir_body_id: HirBodyId::new(0),
+                    },
+                    kind: TypedBodyTableIssueKind::MissingBodyReference,
+                });
+                continue;
             };
 
-            let env = body_envs
-                .envs_for_owner(&owner)
-                .iter()
-                .find(|candidate| candidate.body_index == body.body_index);
-            if env.is_none() {
-                issues.push(TypedBodyTableIssue {
-                    id: id.clone(),
-                    kind: TypedBodyTableIssueKind::MissingBodyEnvironment,
-                });
+            let id = TypedBodyId {
+                owner: owner.clone(),
+                body_index: env.body_index,
+                hir_body_id: body_ref.body_id,
+            };
+
+            let mut resolved_to_hir = BTreeMap::new();
+            for hir_local_id in env.local_bindings.keys() {
+                if let Some(resolved_local_id) =
+                    env.resolved_local_id_for_hir_local(*hir_local_id)
+                {
+                    resolved_to_hir.insert(resolved_local_id, *hir_local_id);
+                }
+            }
+            if !resolved_to_hir.is_empty() {
+                hir_local_id_by_resolved_local_id_by_body
+                    .insert((owner.clone(), env.body_index), resolved_to_hir);
             }
 
             let control = control_flow.body(&BodyControlFlowId {
                 owner: owner.clone(),
-                body_index: body.body_index,
+                body_index: env.body_index,
+                hir_body_id: body_ref.body_id,
             });
             if control.is_none() {
                 issues.push(TypedBodyTableIssue {
@@ -174,26 +206,21 @@ pub fn build_typed_body_table(
                 });
             }
 
-            let expected_return_type = env
-                .map(|env| env.expected_return_type.clone())
-                .unwrap_or_else(Type::error);
+            let expected_return_type = env.expected_return_type.clone();
             let body_result_type = control
                 .map(|result| result.block_result_type.clone())
                 .unwrap_or_else(Type::error);
             let control_flow_is_compatible =
                 control.is_some_and(|result| result.is_compatible);
 
-            let local_bindings = env
-                .map(|env| env.local_bindings.clone())
-                .unwrap_or_default();
+            let local_bindings = env.local_bindings.clone();
             let local_types = stmt_types
-                .local_types_for_body(&owner, body.body_index)
+                .local_types_for_body(&owner, env.body_index)
                 .cloned()
-                .or_else(|| env.map(|env| env.local_types.clone()))
-                .unwrap_or_default();
+                .unwrap_or_else(|| env.local_types.clone());
 
             let mut expression_types = BTreeMap::new();
-            for expr_id in expr_types.expr_ids_for_body(&owner, body.body_index)
+            for expr_id in expr_types.expr_ids_for_body(&owner, env.body_index)
             {
                 if let Some(ty) = expr_types.expr_type(&expr_id).cloned() {
                     expression_types.insert(expr_id, ty);
@@ -202,8 +229,8 @@ pub fn build_typed_body_table(
 
             typed_for_owner.push(TypedBody {
                 id,
-                kind: body.kind,
-                containing_scope_file_id: body.containing_scope_file_id,
+                kind: env.kind,
+                containing_scope_file_id: env.containing_scope_file_id,
                 expected_return_type,
                 body_result_type,
                 control_flow_is_compatible,
@@ -216,7 +243,7 @@ pub fn build_typed_body_table(
                     stmt_types,
                     control_flow,
                     &owner,
-                    body.body_index,
+                    env.body_index,
                 ),
             });
         }
@@ -224,7 +251,11 @@ pub fn build_typed_body_table(
         by_owner.insert(owner, typed_for_owner);
     }
 
-    TypedBodyTable { by_owner, issues }
+    TypedBodyTable {
+        by_owner,
+        hir_local_id_by_resolved_local_id_by_body,
+        issues,
+    }
 }
 
 fn issue_markers_for_body(

@@ -1,7 +1,9 @@
 use core_x::frontend::parser::parse_source_file_from_source_file;
 use core_x::frontend::resolver::{ScopeResolver, resolve_project_imports};
 use core_x::frontend::source::SourceDb;
-use core_x::frontend::{Diagnostic, DiagnosticsBag, analyze_semantics};
+use core_x::frontend::{
+    Diagnostic, DiagnosticsBag, analyze_semantics, resolve_hir_semantic_input,
+};
 use std::collections::BTreeMap;
 
 fn parsed_to_desugared(
@@ -31,7 +33,11 @@ fn semantic_diagnostics_for_source(source: &str) -> DiagnosticsBag {
         .expect("scope graph");
     let (_, imports) =
         resolve_project_imports(&graph, &parsed_files).expect("imports");
-    analyze_semantics(&db, &graph, &parsed_files, &imports).diagnostics
+    analyze_semantics(
+        &db,
+        resolve_hir_semantic_input(&graph, &parsed_files, &imports),
+    )
+    .diagnostics
 }
 
 fn has_message(diagnostics: &DiagnosticsBag, message: &str) -> bool {

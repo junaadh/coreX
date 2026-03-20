@@ -50,6 +50,7 @@ fn resolve_library_graph(
 
 struct Pipeline {
     item_table: GlobalItemTable,
+    hir: core_x::frontend::SemanticHirInput,
     bodies: ResolvedBodyTable,
     typed_bodies: core_x::frontend::TypedBodyTable,
 }
@@ -61,11 +62,16 @@ fn run_pipeline(
 ) -> Pipeline {
     let graph = resolve_library_graph(db, parsed_files, root_file_id);
     let item_table = GlobalItemTable::collect(&graph, parsed_files);
+    let hir = core_x::frontend::SemanticHirInput::build(
+        &graph,
+        parsed_files,
+        &item_table,
+    );
     let (_, imports) =
         resolve_project_imports(&graph, parsed_files).expect("imports");
     let declarations =
         resolve_declaration_types(&graph, parsed_files, &imports, &item_table);
-    let signatures = type_declaration_signatures(&declarations, &item_table);
+    let signatures = type_declaration_signatures(&hir, &item_table);
     let typed_items = build_typed_item_table(&item_table, &signatures);
     let bodies = resolve_bodies(
         &graph,
@@ -74,34 +80,23 @@ fn run_pipeline(
         &item_table,
         &declarations,
     );
-    let body_envs = build_body_type_environments(&bodies, &typed_items);
-    let expr_types = check_expression_types(
-        &graph,
-        parsed_files,
-        &item_table,
-        &typed_items,
-        &bodies,
-        &body_envs,
-    );
+    let body_envs = build_body_type_environments(&hir, &bodies, &typed_items);
+    let expr_types =
+        check_expression_types(&hir, &typed_items, &bodies, &body_envs);
     let stmt_types = check_statements_with_expression_types(
-        &graph,
-        parsed_files,
-        &item_table,
+        &hir,
         &bodies,
         &body_envs,
         &expr_types,
     );
     let control_flow = check_control_flow_with_tables(
-        &graph,
-        parsed_files,
-        &item_table,
-        &bodies,
+        &hir,
         &body_envs,
         &expr_types,
         &stmt_types,
     );
     let typed_bodies = build_typed_body_table(
-        &bodies,
+        &hir,
         &body_envs,
         &expr_types,
         &stmt_types,
@@ -109,6 +104,7 @@ fn run_pipeline(
     );
     Pipeline {
         item_table,
+        hir,
         bodies,
         typed_bodies,
     }
@@ -179,14 +175,27 @@ fn local_type_lookup() {
     let pipeline = run_pipeline(&db, &parsed_files, root.file_id);
 
     let owner = owner_for(&pipeline.item_table, &["f"]);
-    let body = &pipeline.bodies.bodies_for_owner(&owner)[0];
-    let x_local = body
-        .locals
+    let body_ref = pipeline
+        .hir
+        .body_ref(&owner, 0)
+        .expect("hir body ref for f");
+    let x_local = pipeline
+        .hir
+        .local_binding_ids_for_body(body_ref)
         .iter()
-        .find(|local| local.name == "x")
+        .copied()
+        .find(|local_id| {
+            pipeline
+                .hir
+                .hir_local_bindings
+                .binding(*local_id)
+                .is_some_and(|binding| binding.name == "x")
+        })
         .expect("x local binding");
     assert_eq!(
-        pipeline.typed_bodies.local_type(&owner, 0, x_local.id),
+        pipeline
+            .typed_bodies
+            .local_type_for_hir_local(&owner, 0, x_local),
         Some(&Type::builtin(BuiltinType::I32))
     );
 }
@@ -220,6 +229,33 @@ fn deterministic_keyed_storage() {
 }
 
 #[test]
+fn typed_body_ids_and_local_maps_are_hir_backed() {
+    let mut db = SourceDb::new();
+    let root =
+        add_and_parse(&mut db, "src/root.cx", "fn f() -> i32 { let x = 1; x }");
+    let parsed_files = vec![root.clone()];
+    let pipeline = run_pipeline(&db, &parsed_files, root.file_id);
+
+    let owner = owner_for(&pipeline.item_table, &["f"]);
+    let body_ref = pipeline
+        .hir
+        .body_ref(&owner, 0)
+        .expect("hir body ref for f");
+    let typed_body = pipeline
+        .typed_bodies
+        .body(&owner, 0)
+        .expect("typed body for f");
+    assert_eq!(typed_body.id.hir_body_id, body_ref.body_id);
+
+    for local_id in typed_body.local_types.keys() {
+        assert!(
+            pipeline.hir.hir_local_bindings.binding(*local_id).is_some(),
+            "typed body local key should be a HIR local binding id"
+        );
+    }
+}
+
+#[test]
 fn compatibility_with_existing_body_and_owner_identities() {
     let mut db = SourceDb::new();
     let root = add_and_parse(
@@ -235,10 +271,15 @@ fn compatibility_with_existing_body_and_owner_identities() {
             .typed_bodies
             .body(&body.owner, body.body_index)
             .expect("typed body should exist for resolved body");
+        let body_ref = pipeline
+            .hir
+            .body_ref(&body.owner, body.body_index)
+            .expect("hir body ref for resolved body");
         assert_eq!(typed_body.kind, body.kind);
         assert_eq!(
             typed_body.containing_scope_file_id,
             body.containing_scope_file_id
         );
+        assert_eq!(typed_body.id.hir_body_id, body_ref.body_id);
     }
 }

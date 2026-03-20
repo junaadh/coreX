@@ -10,6 +10,7 @@ use core_x::frontend::{
     ExternalSemanticLookup, analyze_semantics_with_external_lookup,
     build_external_semantic_lookup, collect_item_definition_locations,
     completion_candidates_for_file, lookup_definition_target,
+    resolve_hir_semantic_input,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -52,6 +53,20 @@ fn byte_offset(haystack: &str, needle: &str) -> usize {
         .unwrap_or_else(|| panic!("missing `{needle}` in source"))
 }
 
+fn analyze_with_external_lookup(
+    db: &SourceDb,
+    graph: &core_x::frontend::ScopeGraph,
+    parsed_files: &[DesugaredFile],
+    imports: &BTreeMap<FileId, core_x::frontend::ResolvedImports>,
+    external: &ExternalSemanticLookup,
+) -> core_x::frontend::SemanticAnalysis {
+    analyze_semantics_with_external_lookup(
+        db,
+        resolve_hir_semantic_input(graph, parsed_files, imports),
+        external,
+    )
+}
+
 #[test]
 fn local_binding_definition_lookup() {
     let source = "fn main() { let value = 1; value; }";
@@ -71,7 +86,7 @@ fn local_binding_definition_lookup() {
             &db,
         );
     let external = ExternalSemanticLookup::new();
-    let semantic = analyze_semantics_with_external_lookup(
+    let semantic = analyze_with_external_lookup(
         &db,
         &graph,
         &parsed_files,
@@ -123,7 +138,7 @@ fn current_target_item_definition_lookup() {
             &db,
         );
     let external = ExternalSemanticLookup::new();
-    let semantic = analyze_semantics_with_external_lookup(
+    let semantic = analyze_with_external_lookup(
         &db,
         &graph,
         &parsed_files,
@@ -202,7 +217,7 @@ fn binary_to_library_definition_lookup_uses_external_target() {
         &binary_graph,
         &parsed_files,
     );
-    let semantic = analyze_semantics_with_external_lookup(
+    let semantic = analyze_with_external_lookup(
         &db,
         &binary_graph,
         &parsed_files,
@@ -267,7 +282,7 @@ fn dependency_root_definition_lookup_uses_external_context() {
             span: Span::new(10, 18),
         },
     );
-    let semantic = analyze_semantics_with_external_lookup(
+    let semantic = analyze_with_external_lookup(
         &db,
         &graph,
         &parsed_files,
@@ -329,7 +344,7 @@ fn definition_lookup_is_deterministic() {
             &db,
         );
     let external = ExternalSemanticLookup::new();
-    let semantic = analyze_semantics_with_external_lookup(
+    let semantic = analyze_with_external_lookup(
         &db,
         &graph,
         &parsed_files,
@@ -409,7 +424,7 @@ fn external_definition_is_not_retagged_as_local_item() {
         &binary_graph,
         &parsed_files,
     );
-    let semantic = analyze_semantics_with_external_lookup(
+    let semantic = analyze_with_external_lookup(
         &db,
         &binary_graph,
         &parsed_files,
@@ -459,7 +474,7 @@ fn completion_candidates_are_deterministic_and_include_semantic_sources() {
             &db,
         );
     let external = ExternalSemanticLookup::new();
-    let semantic = analyze_semantics_with_external_lookup(
+    let semantic = analyze_with_external_lookup(
         &db,
         &graph,
         &parsed_files,

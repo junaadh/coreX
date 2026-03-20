@@ -1,14 +1,12 @@
-use core_x::frontend::DesugaredFile;
 use core_x::frontend::parser::parse_source_file_from_source_file;
 use core_x::frontend::resolver::{
-    GlobalItemTable, ItemId, ResolvedDeclarationTable, ScopeGraph,
-    ScopeResolver, resolve_declaration_types, resolve_project_imports,
+    GlobalItemTable, ItemId, ScopeGraph, ScopeResolver,
 };
 use core_x::frontend::source::{FileId, SourceDb};
 use core_x::frontend::{
-    NamedTypeKind, SignatureTypingIssueKind, Type, type_declaration_signatures,
+    DesugaredFile, NamedTypeKind, SemanticHirInput, SignatureTypingIssueKind,
+    Type, type_declaration_signatures,
 };
-use std::collections::BTreeMap;
 
 fn parsed_to_desugared(
     parsed: core_x::frontend::ParsedFile,
@@ -48,17 +46,10 @@ fn resolve_library_graph(
 fn resolve_tables(
     graph: &ScopeGraph,
     parsed_files: &[DesugaredFile],
-) -> (
-    GlobalItemTable,
-    BTreeMap<FileId, core_x::frontend::ResolvedImports>,
-    ResolvedDeclarationTable,
-) {
+) -> (GlobalItemTable, SemanticHirInput) {
     let item_table = GlobalItemTable::collect(graph, parsed_files);
-    let (_, imports) =
-        resolve_project_imports(graph, parsed_files).expect("imports");
-    let declarations =
-        resolve_declaration_types(graph, parsed_files, &imports, &item_table);
-    (item_table, imports, declarations)
+    let hir = SemanticHirInput::build(graph, parsed_files, &item_table);
+    (item_table, hir)
 }
 
 fn get_item_id(table: &GlobalItemTable, path: &[&str]) -> ItemId {
@@ -82,7 +73,7 @@ fn assert_named_type(ty: &Type, expected_item_id: ItemId, kind: NamedTypeKind) {
 }
 
 #[test]
-fn typed_function_signatures() {
+fn typed_function_signatures_from_hir() {
     let mut db = SourceDb::new();
     let root = add_and_parse(
         &mut db,
@@ -91,8 +82,8 @@ fn typed_function_signatures() {
     );
     let parsed_files = vec![root.clone()];
     let graph = resolve_library_graph(&db, &parsed_files, root.file_id);
-    let (item_table, _, declarations) = resolve_tables(&graph, &parsed_files);
-    let typed = type_declaration_signatures(&declarations, &item_table);
+    let (item_table, hir) = resolve_tables(&graph, &parsed_files);
+    let typed = type_declaration_signatures(&hir, &item_table);
 
     let handle_id = get_item_id(&item_table, &["handle"]);
     let request_id = get_item_id(&item_table, &["Request"]);
@@ -116,7 +107,7 @@ fn typed_function_signatures() {
 }
 
 #[test]
-fn typed_struct_fields_keep_field_names() {
+fn typed_struct_signatures_from_hir_keep_field_names() {
     let mut db = SourceDb::new();
     let root = add_and_parse(
         &mut db,
@@ -125,8 +116,8 @@ fn typed_struct_fields_keep_field_names() {
     );
     let parsed_files = vec![root.clone()];
     let graph = resolve_library_graph(&db, &parsed_files, root.file_id);
-    let (item_table, _, declarations) = resolve_tables(&graph, &parsed_files);
-    let typed = type_declaration_signatures(&declarations, &item_table);
+    let (item_table, hir) = resolve_tables(&graph, &parsed_files);
+    let typed = type_declaration_signatures(&hir, &item_table);
 
     let wrapper_id = get_item_id(&item_table, &["Wrapper"]);
     let inner_id = get_item_id(&item_table, &["Inner"]);
@@ -144,7 +135,7 @@ fn typed_struct_fields_keep_field_names() {
 }
 
 #[test]
-fn typed_enum_payloads_keep_case_and_method_names() {
+fn typed_enum_signatures_from_hir_keep_case_and_method_names() {
     let mut db = SourceDb::new();
     let root = add_and_parse(
         &mut db,
@@ -153,8 +144,8 @@ fn typed_enum_payloads_keep_case_and_method_names() {
     );
     let parsed_files = vec![root.clone()];
     let graph = resolve_library_graph(&db, &parsed_files, root.file_id);
-    let (item_table, _, declarations) = resolve_tables(&graph, &parsed_files);
-    let typed = type_declaration_signatures(&declarations, &item_table);
+    let (item_table, hir) = resolve_tables(&graph, &parsed_files);
+    let typed = type_declaration_signatures(&hir, &item_table);
 
     let message_id = get_item_id(&item_table, &["Message"]);
     let payload_id = get_item_id(&item_table, &["Payload"]);
@@ -187,17 +178,17 @@ fn typed_enum_payloads_keep_case_and_method_names() {
 }
 
 #[test]
-fn typed_protocol_signatures_keep_method_names() {
+fn typed_protocol_signatures_from_hir_keep_members() {
     let mut db = SourceDb::new();
     let root = add_and_parse(
         &mut db,
         "src/root.cx",
-        "struct Request {} struct Response {} protocol Service { fn call(_ req: Request) -> Response; }",
+        "struct Request {} struct Response {} protocol Service { type Output: Response; let request: Request { get } fn call(_ req: Request) -> Response; }",
     );
     let parsed_files = vec![root.clone()];
     let graph = resolve_library_graph(&db, &parsed_files, root.file_id);
-    let (item_table, _, declarations) = resolve_tables(&graph, &parsed_files);
-    let typed = type_declaration_signatures(&declarations, &item_table);
+    let (item_table, hir) = resolve_tables(&graph, &parsed_files);
+    let typed = type_declaration_signatures(&hir, &item_table);
 
     let service_id = get_item_id(&item_table, &["Service"]);
     let request_id = get_item_id(&item_table, &["Request"]);
@@ -206,6 +197,14 @@ fn typed_protocol_signatures_keep_method_names() {
     let protocol_sig = typed
         .protocol(service_id)
         .expect("service signature should exist");
+    assert_eq!(protocol_sig.properties.len(), 1);
+    assert_eq!(protocol_sig.properties[0].name, "request");
+    assert_named_type(
+        &protocol_sig.properties[0].ty,
+        request_id,
+        NamedTypeKind::Struct,
+    );
+
     assert_eq!(protocol_sig.method_signatures.len(), 1);
     assert_eq!(protocol_sig.method_signatures[0].name, "call");
     assert_named_type(
@@ -222,6 +221,14 @@ fn typed_protocol_signatures_keep_method_names() {
         response_id,
         NamedTypeKind::Struct,
     );
+
+    assert_eq!(protocol_sig.associated_type_bounds.len(), 1);
+    assert_eq!(protocol_sig.associated_type_bounds[0].name, "Output");
+    assert_named_type(
+        &protocol_sig.associated_type_bounds[0].bounds[0],
+        response_id,
+        NamedTypeKind::Struct,
+    );
 }
 
 #[test]
@@ -234,8 +241,8 @@ fn typed_impl_target_and_conformance_keep_method_names() {
     );
     let parsed_files = vec![root.clone()];
     let graph = resolve_library_graph(&db, &parsed_files, root.file_id);
-    let (item_table, _, declarations) = resolve_tables(&graph, &parsed_files);
-    let typed = type_declaration_signatures(&declarations, &item_table);
+    let (item_table, hir) = resolve_tables(&graph, &parsed_files);
+    let typed = type_declaration_signatures(&hir, &item_table);
 
     let client_id = get_item_id(&item_table, &["Client"]);
     let drawable_id = get_item_id(&item_table, &["Drawable"]);
@@ -262,6 +269,64 @@ fn typed_impl_target_and_conformance_keep_method_names() {
 }
 
 #[test]
+fn init_lowered_forms_still_type_correctly() {
+    let mut db = SourceDb::new();
+    let root = add_and_parse(
+        &mut db,
+        "src/root.cx",
+        "struct Payload {} protocol Builder { init(_ value: Payload); } struct S { init(_ value: Payload) {} } enum E { V(Payload), init(_ value: Payload) {} } impl Builder for S { init(_ value: Payload) {} }",
+    );
+    let parsed_files = vec![root.clone()];
+    let graph = resolve_library_graph(&db, &parsed_files, root.file_id);
+    let (item_table, hir) = resolve_tables(&graph, &parsed_files);
+    let typed = type_declaration_signatures(&hir, &item_table);
+
+    let payload_id = get_item_id(&item_table, &["Payload"]);
+    let s_id = get_item_id(&item_table, &["S"]);
+    let e_id = get_item_id(&item_table, &["E"]);
+    let builder_id = get_item_id(&item_table, &["Builder"]);
+
+    let struct_sig = typed.struct_data(s_id).expect("struct signature");
+    assert_eq!(struct_sig.initializer_signatures.len(), 1);
+    assert_named_type(
+        &struct_sig.initializer_signatures[0].param_types[0],
+        payload_id,
+        NamedTypeKind::Struct,
+    );
+
+    let enum_sig = typed.enum_data(e_id).expect("enum signature");
+    assert_eq!(enum_sig.initializer_signatures.len(), 1);
+    assert_named_type(
+        &enum_sig.initializer_signatures[0].param_types[0],
+        payload_id,
+        NamedTypeKind::Struct,
+    );
+
+    let protocol_sig = typed.protocol(builder_id).expect("protocol signature");
+    assert_eq!(protocol_sig.initializer_signatures.len(), 1);
+    assert_named_type(
+        &protocol_sig.initializer_signatures[0].param_types[0],
+        payload_id,
+        NamedTypeKind::Struct,
+    );
+
+    let impls = typed.impls_in_scope(root.file_id);
+    assert_eq!(impls.len(), 1);
+    assert_eq!(impls[0].initializer_signatures.len(), 1);
+    assert_named_type(
+        &impls[0].initializer_signatures[0].param_types[0],
+        payload_id,
+        NamedTypeKind::Struct,
+    );
+    assert_named_type(&impls[0].target, s_id, NamedTypeKind::Struct);
+    assert_named_type(
+        impls[0].conformance.as_ref().expect("conformance"),
+        builder_id,
+        NamedTypeKind::Protocol,
+    );
+}
+
+#[test]
 fn unresolved_declaration_type_paths_become_structured_issues() {
     let mut db = SourceDb::new();
     let root = add_and_parse(
@@ -271,8 +336,8 @@ fn unresolved_declaration_type_paths_become_structured_issues() {
     );
     let parsed_files = vec![root.clone()];
     let graph = resolve_library_graph(&db, &parsed_files, root.file_id);
-    let (item_table, _, declarations) = resolve_tables(&graph, &parsed_files);
-    let typed = type_declaration_signatures(&declarations, &item_table);
+    let (item_table, hir) = resolve_tables(&graph, &parsed_files);
+    let typed = type_declaration_signatures(&hir, &item_table);
 
     let broken_id = get_item_id(&item_table, &["broken"]);
     let signature = typed
@@ -308,10 +373,10 @@ fn signature_tables_are_item_id_keyed_and_deterministic() {
     );
     let parsed_files = vec![root.clone()];
     let graph = resolve_library_graph(&db, &parsed_files, root.file_id);
-    let (item_table, _, declarations) = resolve_tables(&graph, &parsed_files);
+    let (item_table, hir) = resolve_tables(&graph, &parsed_files);
 
-    let first = type_declaration_signatures(&declarations, &item_table);
-    let second = type_declaration_signatures(&declarations, &item_table);
+    let first = type_declaration_signatures(&hir, &item_table);
+    let second = type_declaration_signatures(&hir, &item_table);
     assert_eq!(first, second);
 
     let f_id = get_item_id(&item_table, &["f"]);
@@ -326,25 +391,27 @@ fn signature_tables_are_item_id_keyed_and_deterministic() {
 }
 
 #[test]
-fn missing_item_metadata_uses_structured_issue_without_fake_file_id() {
+fn missing_item_metadata_uses_structured_issue() {
     let mut db = SourceDb::new();
     let root = add_and_parse(&mut db, "src/root.cx", "fn f() -> i32 {}");
     let parsed_files = vec![root.clone()];
     let graph = resolve_library_graph(&db, &parsed_files, root.file_id);
-    let (item_table, _, mut declarations) =
-        resolve_tables(&graph, &parsed_files);
+    let (item_table, mut hir) = resolve_tables(&graph, &parsed_files);
 
-    declarations.by_item_id.insert(
-        ItemId::new(9_999),
-        declarations.by_item_id[&get_item_id(&item_table, &["f"])].clone(),
-    );
+    let f_id = get_item_id(&item_table, &["f"]);
+    let f_item_ref = hir
+        .item_id_by_hir_item_ref
+        .iter()
+        .find_map(|(item_ref, item_id)| (*item_id == f_id).then_some(*item_ref))
+        .expect("HIR item mapping for f should exist");
+    hir.item_id_by_hir_item_ref.remove(&f_item_ref);
 
-    let typed = type_declaration_signatures(&declarations, &item_table);
+    let typed = type_declaration_signatures(&hir, &item_table);
     assert!(typed.issues.iter().any(|issue| {
         matches!(
             issue.kind,
             SignatureTypingIssueKind::MissingGlobalItemMetadata { item_id }
-                if item_id == ItemId::new(9_999)
-        ) && issue.containing_scope_file_id.is_none()
+                if item_id == f_id
+        ) && issue.containing_scope_file_id == Some(root.file_id)
     }));
 }

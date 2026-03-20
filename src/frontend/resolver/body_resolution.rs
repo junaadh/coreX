@@ -76,6 +76,7 @@ pub struct ResolvedBody {
     pub signature_index: usize,
     pub kind: BodyKind,
     pub containing_scope_file_id: FileId,
+    pub receiver_kind: Option<ReceiverKind>,
     pub locals: Vec<ResolvedLocalBinding>,
     pub references: Vec<ResolvedBodyReference>,
     pub unresolved_references: Vec<UnresolvedBodyReference>,
@@ -545,12 +546,19 @@ impl<'a> BodyResolver<'a> {
         scope_file_id: FileId,
         function_decl: &FunctionDecl,
     ) -> ResolvedBody {
+        // Extract the receiver kind if present
+        let receiver_kind = function_decl
+            .receiver
+            .as_ref()
+            .map(|receiver| receiver.node);
+
         let mut resolved = ResolvedBody {
             owner,
             body_index,
             signature_index,
             kind,
             containing_scope_file_id: scope_file_id,
+            receiver_kind,
             locals: Vec::new(),
             references: Vec::new(),
             unresolved_references: Vec::new(),
@@ -602,12 +610,16 @@ impl<'a> BodyResolver<'a> {
         scope_file_id: FileId,
         init_decl: &crate::frontend::ast::InitDecl,
     ) -> ResolvedBody {
+        // Extract the receiver kind if present
+        let receiver_kind = init_decl.receiver.as_ref().map(|receiver| receiver.node);
+
         let mut resolved = ResolvedBody {
             owner,
             body_index,
             signature_index,
             kind,
             containing_scope_file_id: scope_file_id,
+            receiver_kind,
             locals: Vec::new(),
             references: Vec::new(),
             unresolved_references: Vec::new(),
@@ -659,12 +671,19 @@ impl<'a> BodyResolver<'a> {
         scope_file_id: FileId,
         function_member: &crate::frontend::ast::ProtocolFunctionMember,
     ) -> ResolvedBody {
+        // Extract the receiver kind if present
+        let receiver_kind = function_member
+            .receiver
+            .as_ref()
+            .map(|receiver| receiver.node);
+
         let mut resolved = ResolvedBody {
             owner,
             body_index,
             signature_index,
             kind,
             containing_scope_file_id: scope_file_id,
+            receiver_kind,
             locals: Vec::new(),
             references: Vec::new(),
             unresolved_references: Vec::new(),
@@ -714,12 +733,19 @@ impl<'a> BodyResolver<'a> {
         scope_file_id: FileId,
         init_member: &crate::frontend::ast::ProtocolInitMember,
     ) -> ResolvedBody {
+        // Extract the receiver kind if present
+        let receiver_kind = init_member
+            .receiver
+            .as_ref()
+            .map(|receiver| receiver.node);
+
         let mut resolved = ResolvedBody {
             owner,
             body_index,
             signature_index,
             kind: BodyKind::ProtocolDefaultInitializer,
             containing_scope_file_id: scope_file_id,
+            receiver_kind,
             locals: Vec::new(),
             references: Vec::new(),
             unresolved_references: Vec::new(),

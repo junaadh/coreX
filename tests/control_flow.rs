@@ -47,6 +47,7 @@ fn resolve_library_graph(
 
 struct Pipeline {
     item_table: GlobalItemTable,
+    hir: core_x::frontend::SemanticHirInput,
     control_flow: core_x::frontend::ControlFlowTable,
 }
 
@@ -57,11 +58,16 @@ fn run_pipeline(
 ) -> Pipeline {
     let graph = resolve_library_graph(db, parsed_files, root_file_id);
     let item_table = GlobalItemTable::collect(&graph, parsed_files);
+    let hir = core_x::frontend::SemanticHirInput::build(
+        &graph,
+        parsed_files,
+        &item_table,
+    );
     let (_, imports) =
         resolve_project_imports(&graph, parsed_files).expect("imports");
     let declarations =
         resolve_declaration_types(&graph, parsed_files, &imports, &item_table);
-    let signatures = type_declaration_signatures(&declarations, &item_table);
+    let signatures = type_declaration_signatures(&hir, &item_table);
     let typed_items = build_typed_item_table(&item_table, &signatures);
     let bodies = resolve_bodies(
         &graph,
@@ -70,17 +76,12 @@ fn run_pipeline(
         &item_table,
         &declarations,
     );
-    let body_envs = build_body_type_environments(&bodies, &typed_items);
-    let control_flow = check_control_flow(
-        &graph,
-        parsed_files,
-        &item_table,
-        &typed_items,
-        &bodies,
-        &body_envs,
-    );
+    let body_envs = build_body_type_environments(&hir, &bodies, &typed_items);
+    let control_flow =
+        check_control_flow(&hir, &typed_items, &bodies, &body_envs);
     Pipeline {
         item_table,
+        hir,
         control_flow,
     }
 }
@@ -96,6 +97,22 @@ fn owner_for(item_table: &GlobalItemTable, path: &[&str]) -> DeclarationOwner {
     DeclarationOwner::Item(item_id)
 }
 
+fn body_id_for(
+    pipeline: &Pipeline,
+    owner: &DeclarationOwner,
+    body_index: usize,
+) -> BodyControlFlowId {
+    let body_ref = pipeline
+        .hir
+        .body_ref(owner, body_index)
+        .expect("hir body ref for owner/body index");
+    BodyControlFlowId {
+        owner: owner.clone(),
+        body_index,
+        hir_body_id: body_ref.body_id,
+    }
+}
+
 #[test]
 fn correct_return_type() {
     let mut db = SourceDb::new();
@@ -105,10 +122,7 @@ fn correct_return_type() {
     let pipeline = run_pipeline(&db, &parsed_files, root.file_id);
 
     let owner = owner_for(&pipeline.item_table, &["f"]);
-    let id = BodyControlFlowId {
-        owner,
-        body_index: 0,
-    };
+    let id = body_id_for(&pipeline, &owner, 0);
     let body_result = pipeline
         .control_flow
         .body(&id)
@@ -179,10 +193,7 @@ fn void_return_function_behavior() {
     let ok_owner = owner_for(&pipeline.item_table, &["ok"]);
     let ok_result = pipeline
         .control_flow
-        .body(&BodyControlFlowId {
-            owner: ok_owner,
-            body_index: 0,
-        })
+        .body(&body_id_for(&pipeline, &ok_owner, 0))
         .expect("control-flow result for ok");
     assert!(ok_result.is_compatible);
 
@@ -209,5 +220,54 @@ fn return_less_body_mismatch_where_applicable() {
             issue.kind,
             ControlFlowIssueKind::MissingTailExpression { .. }
         )
+    }));
+}
+
+#[test]
+fn return_checking_on_hir() {
+    let mut db = SourceDb::new();
+    let root =
+        add_and_parse(&mut db, "src/root.cx", "fn f() -> i32 { return true; }");
+    let parsed_files = vec![root.clone()];
+    let pipeline = run_pipeline(&db, &parsed_files, root.file_id);
+
+    let owner = owner_for(&pipeline.item_table, &["f"]);
+    let id = body_id_for(&pipeline, &owner, 0);
+    let body_result = pipeline
+        .control_flow
+        .body(&id)
+        .expect("control-flow result should exist");
+    assert!(!body_result.is_compatible);
+    assert!(pipeline.control_flow.issues.iter().any(|issue| {
+        issue.owner == owner
+            && issue.body_index == 0
+            && matches!(
+                issue.kind,
+                ControlFlowIssueKind::ReturnTypeMismatch { .. }
+            )
+    }));
+}
+
+#[test]
+fn tail_expression_compatibility_on_hir() {
+    let mut db = SourceDb::new();
+    let root = add_and_parse(&mut db, "src/root.cx", "fn f() -> i32 { true }");
+    let parsed_files = vec![root.clone()];
+    let pipeline = run_pipeline(&db, &parsed_files, root.file_id);
+
+    let owner = owner_for(&pipeline.item_table, &["f"]);
+    let id = body_id_for(&pipeline, &owner, 0);
+    let body_result = pipeline
+        .control_flow
+        .body(&id)
+        .expect("control-flow result should exist");
+    assert!(!body_result.is_compatible);
+    assert!(pipeline.control_flow.issues.iter().any(|issue| {
+        issue.owner == owner
+            && issue.body_index == 0
+            && matches!(
+                issue.kind,
+                ControlFlowIssueKind::TailTypeMismatch { .. }
+            )
     }));
 }

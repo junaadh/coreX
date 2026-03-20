@@ -1,30 +1,32 @@
 use crate::cli_driver::DynError;
 use core_x::frontend::parser::parse_source_file_with_recovery;
-use core_x::frontend::resolver::{ResolvedScopeKind, resolve_project_scopes};
+use core_x::frontend::resolver::ResolvedScopeKind;
 use core_x::frontend::source::FileId;
 use core_x::frontend::source::SourceDb;
 use core_x::frontend::{
-    DesugaredFile, ExpansionOptions, FrontendContext, ImportRootKind,
+    DesugaredFile, FrontendAnalysis, FrontendContext, ImportRootKind,
     NamedImportRoot, ParseSessionError, ParsedFile, ProjectGraph,
-    ProjectLoader, ProjectManifest, TargetRoots, build_target_roots,
-    load_local_dependency_project_graph,
+    ProjectLoader, ProjectManifest, TargetRoots, analyze_project,
+    build_target_roots, load_local_dependency_project_graph,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-type ParsedProjectFiles =
-    (SourceDb, Vec<DesugaredFile>, BTreeMap<PathBuf, FileId>);
+type ParsedProjectFiles = (
+    FrontendAnalysis,
+    BTreeMap<PathBuf, FileId>,
+    BTreeMap<FileId, PathBuf>,
+);
 
 pub struct ProjectContext {
     pub db: SourceDb,
+    pub analysis: FrontendAnalysis,
     pub parsed_files: Vec<DesugaredFile>,
     pub ordered_file_ids: Vec<FileId>,
     pub path_by_file_id: BTreeMap<FileId, PathBuf>,
     pub library_target: Option<TargetSelection>,
     pub binary_targets: Vec<TargetSelection>,
-    pub current_library_import_root: Option<String>,
-    pub dependency_named_roots: BTreeMap<String, NamedImportRoot>,
 }
 
 #[derive(Clone)]
@@ -47,18 +49,21 @@ pub fn parse_single_file(
     let source = fs::read_to_string(path)?;
     let mut context = FrontendContext::new();
     let file_id = context.add_file(path.to_path_buf(), source);
-    let mut desugared = context
-        .pre_resolution_pipeline(&[file_id], ExpansionOptions::default())
-        .map_err(|error| {
-            format_parse_session_error(
-                &context,
-                error,
-                "failed to run frontend pre-resolution pipeline for",
-            )
+    let analysis = analyze_project(&mut context, &[file_id]).map_err(|error| {
+        format_parse_session_error(
+            &context,
+            error,
+            "failed to run frontend canonical analysis for",
+        )
+    })?;
+    let desugared = analysis
+        .desugared
+        .iter()
+        .find(|file| file.file_id == file_id)
+        .cloned()
+        .ok_or_else(|| {
+            format!("missing desugared output for file {}", file_id.raw())
         })?;
-    let desugared = desugared
-        .pop()
-        .expect("single-file pipeline should return one file");
     Ok((context.into_db(), desugared, file_id))
 }
 
@@ -89,18 +94,6 @@ pub fn load_project_context(
 
         file_id_by_path.insert(absolute_path, file_id);
     }
-
-    let ordered_file_ids = frontend.ordered_file_ids().to_vec();
-    let path_by_file_id = frontend.path_by_file_id().clone();
-    let desugared_files = frontend
-        .pre_resolution_pipeline(&ordered_file_ids, ExpansionOptions::default())
-        .map_err(|error| {
-            format_parse_session_error(
-                &frontend,
-                error,
-                "failed to run frontend pre-resolution pipeline for project file",
-            )
-        })?;
 
     let library_target = if let Some(target) = manifest.library.as_ref() {
         let file_id =
@@ -138,15 +131,48 @@ pub fn load_project_context(
     let dependency_named_roots =
         build_dependency_named_roots(&project_graph, &target_roots)?;
 
+    for target in &binary_targets {
+        frontend.set_root_kind(target.root_file_id, target.kind);
+    }
+    if let Some(target) = &library_target {
+        frontend.set_root_kind(target.root_file_id, target.kind);
+    }
+    frontend.set_dependency_named_roots(dependency_named_roots.clone());
+    frontend.configure_current_library_root(
+        current_library_import_root.clone(),
+        library_target.as_ref().map(|target| target.root_file_id),
+    );
+
+    let mut entry_file_ids = Vec::new();
+    if let Some(target) = &library_target {
+        entry_file_ids.push(target.root_file_id);
+    }
+    entry_file_ids.extend(binary_targets.iter().map(|target| target.root_file_id));
+    if entry_file_ids.is_empty() {
+        entry_file_ids.extend(frontend.ordered_file_ids().iter().copied());
+    }
+
+    let analysis = analyze_project(&mut frontend, &entry_file_ids).map_err(
+        |error| {
+            format_parse_session_error(
+                &frontend,
+                error,
+                "failed to run frontend canonical analysis for project file",
+            )
+        },
+    )?;
+    let ordered_file_ids = frontend.ordered_file_ids().to_vec();
+    let path_by_file_id = frontend.path_by_file_id().clone();
+    let desugared_files = analysis.desugared.clone();
+
     Ok(ProjectContext {
         db: frontend.into_db(),
+        analysis,
         parsed_files: desugared_files,
         ordered_file_ids,
         path_by_file_id,
         library_target,
         binary_targets,
-        current_library_import_root,
-        dependency_named_roots,
     })
 }
 
@@ -298,7 +324,7 @@ fn format_parse_session_error(
     }
 }
 
-fn build_dependency_named_roots(
+pub fn build_dependency_named_roots(
     project_graph: &ProjectGraph,
     target_roots: &TargetRoots,
 ) -> Result<BTreeMap<String, NamedImportRoot>, DynError> {
@@ -330,12 +356,8 @@ fn build_dependency_named_roots(
                             )
                         },
                     )?;
-                let (db, parsed_files, file_id_by_path) =
+                let (analysis, file_id_by_path, path_by_file_id) =
                     parse_loaded_project_files(&dependency.project)?;
-                let path_by_file_id = file_id_by_path
-                    .iter()
-                    .map(|(path, file_id)| (*file_id, path.clone()))
-                    .collect();
                 let library_root_file_id = file_id_by_path
                     .get(&library_target.root_file)
                     .copied()
@@ -345,17 +367,21 @@ fn build_dependency_named_roots(
                             library_target.root_file.display()
                         )
                     })?;
-                let graph = resolve_project_scopes(
-                    &db,
-                    &parsed_files,
-                    library_root_file_id,
-                    ResolvedScopeKind::Root,
-                )?;
+                let graph = analysis
+                    .resolution_tables
+                    .get(&library_root_file_id)
+                    .map(|resolution| resolution.graph.clone())
+                    .ok_or_else(|| {
+                        format!(
+                            "missing canonical resolution graph for dependency root {}",
+                            library_target.root_file.display()
+                        )
+                    })?;
                 named_roots.insert(
                     name.clone(),
                     NamedImportRoot::LoadedLibrary {
                         graph,
-                        parsed_files,
+                        parsed_files: analysis.desugared.clone(),
                         path_by_file_id,
                     },
                 );
@@ -374,27 +400,48 @@ fn parse_loaded_project_files(
     let mut file_id_by_path = BTreeMap::new();
 
     for absolute_path in project_files {
-        let display_path = project_relative_or_absolute_path(
-            &project.project_dir,
-            &absolute_path,
-        );
         let source = fs::read_to_string(&absolute_path)?;
-        let file_id = frontend.add_file(display_path, source);
+        let file_id = frontend.add_file(absolute_path.clone(), source);
         file_id_by_path.insert(absolute_path, file_id);
     }
 
-    let ordered_file_ids = frontend.ordered_file_ids().to_vec();
-    let desugared_files = frontend
-        .pre_resolution_pipeline(&ordered_file_ids, ExpansionOptions::default())
-        .map_err(|error| {
+    if let Some(library_target) = project.manifest.library.as_ref()
+        && let Some(file_id) = file_id_by_path.get(&library_target.root_file)
+    {
+        frontend.set_root_kind(*file_id, ResolvedScopeKind::Root);
+    }
+    for binary_target in &project.manifest.binaries {
+        if let Some(file_id) = file_id_by_path.get(&binary_target.root_file) {
+            frontend.set_root_kind(*file_id, ResolvedScopeKind::BinaryRoot);
+        }
+    }
+
+    let mut entry_file_ids = Vec::new();
+    if let Some(library_target) = project.manifest.library.as_ref()
+        && let Some(file_id) = file_id_by_path.get(&library_target.root_file)
+    {
+        entry_file_ids.push(*file_id);
+    }
+    for binary_target in &project.manifest.binaries {
+        if let Some(file_id) = file_id_by_path.get(&binary_target.root_file) {
+            entry_file_ids.push(*file_id);
+        }
+    }
+    if entry_file_ids.is_empty() {
+        entry_file_ids.extend(frontend.ordered_file_ids().iter().copied());
+    }
+
+    let analysis = analyze_project(&mut frontend, &entry_file_ids).map_err(
+        |error| {
             format_parse_session_error(
                 &frontend,
                 error,
-                "failed to run frontend pre-resolution pipeline for dependency file",
+                "failed to run frontend canonical analysis for dependency file",
             )
-        })?;
-
-    Ok((frontend.into_db(), desugared_files, file_id_by_path))
+        },
+    )?;
+    let path_by_file_id = frontend.path_by_file_id().clone();
+    Ok((analysis, file_id_by_path, path_by_file_id))
 }
 
 pub fn classify_single_root_target(
@@ -487,39 +534,4 @@ pub fn path_for_file_id(context: &ProjectContext, file_id: FileId) -> String {
         || format!("<unknown:{}>", file_id.raw()),
         |path| path.display().to_string(),
     )
-}
-
-pub fn resolve_target_scope_graph_with_diagnostics(
-    resolver: &core_x::frontend::ScopeResolver<'_>,
-    db: &SourceDb,
-    parsed_files: &[DesugaredFile],
-    root_file_id: FileId,
-    kind: ResolvedScopeKind,
-) -> (
-    Option<core_x::frontend::ScopeGraph>,
-    core_x::frontend::DiagnosticsBag,
-) {
-    match kind {
-        ResolvedScopeKind::Root => {
-            resolver.resolve_library_root_with_diagnostics(root_file_id, db)
-        }
-        ResolvedScopeKind::BinaryRoot => {
-            resolver.resolve_binary_root_with_diagnostics(root_file_id, db)
-        }
-        other => {
-            let mut diagnostics = core_x::frontend::DiagnosticsBag::new();
-            match resolve_project_scopes(db, parsed_files, root_file_id, other)
-            {
-                Ok(graph) => (Some(graph), diagnostics),
-                Err(error) => {
-                    diagnostics.push(
-                        core_x::frontend::diagnostic_from_resolve_error(
-                            db, &error,
-                        ),
-                    );
-                    (None, diagnostics)
-                }
-            }
-        }
-    }
 }

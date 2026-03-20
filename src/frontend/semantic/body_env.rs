@@ -1,5 +1,6 @@
+use super::hir_input::SemanticHirInput;
 use super::signatures::TypedFunctionSignature;
-use super::{BuiltinType, NamedTypeKind, Type, TypedItemData, TypedItemTable};
+use super::{BuiltinType, Mutability, NamedTypeKind, Type, TypedItemData, TypedItemTable};
 use crate::frontend::resolver::{
     BodyKind, DeclarationOwner, ItemId, LocalId, LocalKind, LocalMutability,
     ResolvedBody, ResolvedBodyTable, ResolvedTypeRef,
@@ -20,8 +21,12 @@ pub struct BodyTypeEnvironment {
     pub kind: BodyKind,
     pub containing_scope_file_id: FileId,
     pub expected_return_type: Type,
+    /// Local type map keyed by HIR local-binding id.
     pub local_types: BTreeMap<LocalId, Type>,
+    /// Local binding metadata keyed by HIR local-binding id.
     pub local_bindings: BTreeMap<LocalId, BodyLocalBindingInfo>,
+    resolved_local_id_by_hir_local_id: BTreeMap<LocalId, LocalId>,
+    hir_local_id_by_resolved_local_id: BTreeMap<LocalId, LocalId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +81,17 @@ impl BodyTypeEnvironmentTable {
     }
 
     #[must_use]
+    pub fn env(
+        &self,
+        owner: &DeclarationOwner,
+        body_index: usize,
+    ) -> Option<&BodyTypeEnvironment> {
+        self.envs_for_owner(owner)
+            .iter()
+            .find(|env| env.body_index == body_index)
+    }
+
+    #[must_use]
     pub fn iter(&self) -> impl Iterator<Item = &BodyTypeEnvironment> {
         self.by_owner.values().flat_map(|envs| envs.iter())
     }
@@ -91,8 +107,100 @@ impl BodyTypeEnvironmentTable {
     }
 }
 
+impl BodyTypeEnvironment {
+    #[must_use]
+    pub fn local_type_for_hir_local(&self, local_id: LocalId) -> Option<&Type> {
+        self.local_types.get(&local_id)
+    }
+
+    #[must_use]
+    pub fn local_type_for_resolved_local(
+        &self,
+        local_id: LocalId,
+    ) -> Option<&Type> {
+        let hir_local_id = self.hir_local_id_for_resolved_local(local_id)?;
+        self.local_types.get(&hir_local_id)
+    }
+
+    #[must_use]
+    pub fn local_binding_for_hir_local(
+        &self,
+        local_id: LocalId,
+    ) -> Option<&BodyLocalBindingInfo> {
+        self.local_bindings.get(&local_id)
+    }
+
+    #[must_use]
+    pub fn local_binding_for_resolved_local(
+        &self,
+        local_id: LocalId,
+    ) -> Option<&BodyLocalBindingInfo> {
+        let hir_local_id = self.hir_local_id_for_resolved_local(local_id)?;
+        self.local_bindings.get(&hir_local_id)
+    }
+
+    #[must_use]
+    pub fn resolved_local_id_for_hir_local(
+        &self,
+        hir_local_id: LocalId,
+    ) -> Option<LocalId> {
+        self.resolved_local_id_by_hir_local_id
+            .get(&hir_local_id)
+            .copied()
+    }
+
+    #[must_use]
+    pub fn hir_local_id_for_resolved_local(
+        &self,
+        resolved_local_id: LocalId,
+    ) -> Option<LocalId> {
+        self.hir_local_id_by_resolved_local_id
+            .get(&resolved_local_id)
+            .copied()
+    }
+
+    #[must_use]
+    pub fn local_types_by_resolved_id(&self) -> BTreeMap<LocalId, Type> {
+        self.local_types
+            .iter()
+            .filter_map(|(hir_local_id, ty)| {
+                self.resolved_local_id_for_hir_local(*hir_local_id)
+                    .map(|resolved_local_id| (resolved_local_id, ty.clone()))
+            })
+            .collect()
+    }
+
+    #[must_use]
+    pub fn local_bindings_by_resolved_id(
+        &self,
+    ) -> BTreeMap<LocalId, BodyLocalBindingInfo> {
+        self.local_bindings
+            .iter()
+            .filter_map(|(hir_local_id, info)| {
+                self.resolved_local_id_for_hir_local(*hir_local_id)
+                    .map(|resolved_local_id| (resolved_local_id, info.clone()))
+            })
+            .collect()
+    }
+
+    #[must_use]
+    pub fn resolved_local_types_from_hir_map(
+        &self,
+        local_types_by_hir_local_id: &BTreeMap<LocalId, Type>,
+    ) -> BTreeMap<LocalId, Type> {
+        local_types_by_hir_local_id
+            .iter()
+            .filter_map(|(hir_local_id, ty)| {
+                self.resolved_local_id_for_hir_local(*hir_local_id)
+                    .map(|resolved_local_id| (resolved_local_id, ty.clone()))
+            })
+            .collect()
+    }
+}
+
 #[must_use]
 pub fn build_body_type_environments(
+    hir_input: &SemanticHirInput,
     resolved_bodies: &ResolvedBodyTable,
     typed_items: &TypedItemTable,
 ) -> BodyTypeEnvironmentTable {
@@ -114,7 +222,12 @@ pub fn build_body_type_environments(
 
         let mut owner_envs = Vec::with_capacity(bodies.len());
         for body in bodies {
-            owner_envs.push(build_one_body_env(body, typed_items, &mut issues));
+            owner_envs.push(build_one_body_env(
+                hir_input,
+                body,
+                typed_items,
+                &mut issues,
+            ));
         }
         by_owner.insert(owner, owner_envs);
     }
@@ -123,6 +236,7 @@ pub fn build_body_type_environments(
 }
 
 fn build_one_body_env(
+    hir_input: &SemanticHirInput,
     body: &ResolvedBody,
     typed_items: &TypedItemTable,
     issues: &mut Vec<BodyEnvIssue>,
@@ -147,35 +261,105 @@ fn build_one_body_env(
             }
         });
 
+    let body_ref = hir_input.body_ref(&body.owner, body.body_index);
+    let module = body_ref
+        .and_then(|body_ref| hir_input.hir_modules.get(&body_ref.file_id));
+    let mut resolved_local_id_by_hir_local_id = match (module, body_ref) {
+        (Some(module), Some(body_ref)) => {
+            hir_input.map_hir_local_ids_to_resolved(module, body, body_ref)
+        }
+        _ => BTreeMap::new(),
+    };
+    let mut hir_local_id_by_resolved_local_id =
+        resolved_local_id_by_hir_local_id
+            .iter()
+            .map(|(hir_local_id, resolved_local_id)| {
+                (*resolved_local_id, *hir_local_id)
+            })
+            .collect::<BTreeMap<_, _>>();
+
     let mut local_types = BTreeMap::new();
     let mut local_bindings = BTreeMap::new();
     let mut parameter_index = 0usize;
+    let resolved_locals_by_id = body
+        .locals
+        .iter()
+        .map(|local| (local.id, local))
+        .collect::<BTreeMap<_, _>>();
 
-    for local in &body.locals {
+    let mut hir_local_ids = body_ref
+        .map(|body_ref| hir_input.local_binding_ids_for_body(body_ref).to_vec())
+        .unwrap_or_default();
+    hir_local_ids.sort();
+
+    for hir_local_id in hir_local_ids {
+        let Some(hir_binding) =
+            hir_input.hir_local_bindings.binding(hir_local_id)
+        else {
+            continue;
+        };
+
         local_bindings.insert(
-            local.id,
+            hir_local_id,
             BodyLocalBindingInfo {
-                kind: local.kind,
-                mutability: local.mutability,
+                kind: hir_binding.kind,
+                mutability: hir_binding.mutability,
             },
         );
 
-        let local_type = if local.kind == LocalKind::Parameter {
-            if local.name == "self" {
-                self_type_for_owner(typed_items, &body.owner).unwrap_or_else(
-                    || {
+        let resolved_local = resolved_local_id_by_hir_local_id
+            .get(&hir_local_id)
+            .and_then(|resolved_local_id| {
+                resolved_locals_by_id.get(resolved_local_id)
+            })
+            .copied();
+
+        let local_type = if hir_binding.kind == LocalKind::Parameter {
+            if hir_binding.name == "self" {
+                // Get the base Self type
+                let self_type = self_type_for_owner(typed_items, &body.owner);
+
+                // Apply receiver mutability based on receiver_kind
+                let param_type = match body.receiver_kind {
+                    Some(crate::frontend::ast::ReceiverKind::Owned) => {
+                        // `self` has type Self
+                        self_type
+                    }
+                    Some(crate::frontend::ast::ReceiverKind::Ref) => {
+                        // `&self` has type &Self
+                        self_type.map(|ty| Type::pointer(ty, Mutability::Const))
+                    }
+                    Some(crate::frontend::ast::ReceiverKind::MutRef) => {
+                        // `&mut self` has type &mut Self
+                        self_type.map(|ty| Type::pointer(ty, Mutability::Mut))
+                    }
+                    None => {
+                        // "self" parameter without receiver_kind - error
                         issues.push(BodyEnvIssue {
                             owner: body.owner.clone(),
                             body_index: body.body_index,
                             containing_scope_file_id: body
                                 .containing_scope_file_id,
                             kind: BodyEnvIssueKind::MissingSelfType {
-                                local_id: local.id,
+                                local_id: hir_local_id,
                             },
                         });
-                        Type::error()
-                    },
-                )
+                        None
+                    }
+                };
+
+                param_type.unwrap_or_else(|| {
+                    issues.push(BodyEnvIssue {
+                        owner: body.owner.clone(),
+                        body_index: body.body_index,
+                        containing_scope_file_id: body
+                            .containing_scope_file_id,
+                        kind: BodyEnvIssueKind::MissingSelfType {
+                            local_id: hir_local_id,
+                        },
+                    });
+                    Type::error()
+                })
             } else if let Some(signature) = signature {
                 if let Some(ty) = signature.param_types.get(parameter_index) {
                     parameter_index = parameter_index.saturating_add(1);
@@ -186,7 +370,7 @@ fn build_one_body_env(
                         body_index: body.body_index,
                         containing_scope_file_id: body.containing_scope_file_id,
                         kind: BodyEnvIssueKind::MissingParameterType {
-                            local_id: local.id,
+                            local_id: hir_local_id,
                             parameter_index,
                         },
                     });
@@ -197,15 +381,16 @@ fn build_one_body_env(
                 Type::error()
             }
         } else {
-            local
-                .declared_type
-                .as_ref()
+            resolved_local
+                .and_then(|resolved_local| {
+                    resolved_local.declared_type.as_ref()
+                })
                 .map(|ty| {
                     lower_local_type_ref(
                         &body.owner,
                         body.body_index,
                         body.containing_scope_file_id,
-                        local.id,
+                        hir_local_id,
                         ty,
                         typed_items,
                         issues,
@@ -214,7 +399,80 @@ fn build_one_body_env(
                 .unwrap_or_else(Type::error)
         };
 
-        local_types.insert(local.id, local_type);
+        local_types.insert(hir_local_id, local_type);
+    }
+
+    if local_bindings.is_empty() && !body.locals.is_empty() {
+        for local in &body.locals {
+            resolved_local_id_by_hir_local_id
+                .entry(local.id)
+                .or_insert(local.id);
+            hir_local_id_by_resolved_local_id
+                .entry(local.id)
+                .or_insert(local.id);
+            local_bindings.insert(
+                local.id,
+                BodyLocalBindingInfo {
+                    kind: local.kind,
+                    mutability: local.mutability,
+                },
+            );
+            let local_type = if local.kind == LocalKind::Parameter {
+                if local.name == "self" {
+                    self_type_for_owner(typed_items, &body.owner)
+                        .unwrap_or_else(|| {
+                            issues.push(BodyEnvIssue {
+                                owner: body.owner.clone(),
+                                body_index: body.body_index,
+                                containing_scope_file_id: body
+                                    .containing_scope_file_id,
+                                kind: BodyEnvIssueKind::MissingSelfType {
+                                    local_id: local.id,
+                                },
+                            });
+                            Type::error()
+                        })
+                } else if let Some(signature) = signature {
+                    if let Some(ty) = signature.param_types.get(parameter_index)
+                    {
+                        parameter_index = parameter_index.saturating_add(1);
+                        ty.clone()
+                    } else {
+                        issues.push(BodyEnvIssue {
+                            owner: body.owner.clone(),
+                            body_index: body.body_index,
+                            containing_scope_file_id: body
+                                .containing_scope_file_id,
+                            kind: BodyEnvIssueKind::MissingParameterType {
+                                local_id: local.id,
+                                parameter_index,
+                            },
+                        });
+                        parameter_index = parameter_index.saturating_add(1);
+                        Type::error()
+                    }
+                } else {
+                    Type::error()
+                }
+            } else {
+                local
+                    .declared_type
+                    .as_ref()
+                    .map(|ty| {
+                        lower_local_type_ref(
+                            &body.owner,
+                            body.body_index,
+                            body.containing_scope_file_id,
+                            local.id,
+                            ty,
+                            typed_items,
+                            issues,
+                        )
+                    })
+                    .unwrap_or_else(Type::error)
+            };
+            local_types.insert(local.id, local_type);
+        }
     }
 
     BodyTypeEnvironment {
@@ -225,6 +483,8 @@ fn build_one_body_env(
         expected_return_type,
         local_types,
         local_bindings,
+        resolved_local_id_by_hir_local_id,
+        hir_local_id_by_resolved_local_id,
     }
 }
 

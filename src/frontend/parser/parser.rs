@@ -3613,7 +3613,7 @@ impl<'a> Parser<'a> {
         expr: &Spanned<Expr>,
     ) -> Result<Spanned<Expr>, ParseError> {
         self.bump();
-        let (member, member_span) = self.expect_identifier_text()?;
+        let (member, member_span) = self.expect_namespace_member_text()?;
         let mut turbofish = Vec::new();
         let mut end = member_span.end;
         if self.at(TokenKind::ColonColon)
@@ -4307,6 +4307,28 @@ impl<'a> Parser<'a> {
             }),
             _ => Err(ParseError::UnexpectedToken {
                 expected: "identifier",
+                found: token.kind,
+                span: token.span,
+            }),
+        }
+    }
+
+    fn expect_namespace_member_text(
+        &mut self,
+    ) -> Result<(String, Span), ParseError> {
+        let token = *self.peek();
+        match token.kind {
+            TokenKind::Ident | TokenKind::KwInit => {
+                let member = self.slice(token.span).to_owned();
+                let _ = self.bump();
+                Ok((member, token.span))
+            }
+            TokenKind::Eof => Err(ParseError::UnexpectedEof {
+                expected: "namespace member",
+                span: token.span,
+            }),
+            _ => Err(ParseError::UnexpectedToken {
+                expected: "namespace member",
                 found: token.kind,
                 span: token.span,
             }),
@@ -6125,6 +6147,15 @@ mod tests {
     fn parse_namespace_access_expr() {
         let expr = parse_expr_from_source("Foo::bar");
         assert!(matches!(expr.node, Expr::NamespaceAccess { .. }));
+    }
+
+    #[test]
+    fn parse_namespace_access_init_keyword_expr() {
+        let expr = parse_expr_from_source("Point::init");
+        match expr.node {
+            Expr::NamespaceAccess { member, .. } => assert_eq!(member, "init"),
+            _ => panic!("expected namespace access expr"),
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@ use super::control_flow::{
 };
 use super::expr_check::{
     ExprCheckIssue, ExpressionTypeTable,
-    check_expression_types_with_external_lookup_and_hir,
+    check_expression_types_with_external_lookup,
 };
 use super::external_lookup::ExternalSemanticLookup;
 use super::hir_input::SemanticHirInput;
@@ -22,6 +22,7 @@ use super::stmt_check::{
 use super::typed_bodies::{
     TypedBodyTable, TypedBodyTableIssue, build_typed_body_table,
 };
+use crate::frontend::DesugaredFile;
 use crate::frontend::diagnostics::{
     DiagnosticsBag, diagnostics_from_semantic_checks,
 };
@@ -31,6 +32,48 @@ use crate::frontend::resolver::{
 };
 use crate::frontend::source::{FileId, SourceDb};
 use std::collections::BTreeMap;
+
+/// Resolved HIR semantic inputs produced by the resolver stage.
+///
+/// Canonical pipeline:
+/// parse -> expand -> desugar -> HIR -> resolve -> semantic
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedHirSemanticInput<'a> {
+    pub global_items: GlobalItemTable,
+    pub declarations: ResolvedDeclarationTable,
+    pub hir: SemanticHirInput,
+    pub resolved_bodies: ResolvedBodyTable,
+    pub imports: &'a BTreeMap<FileId, ResolvedImports>,
+}
+
+/// Builds the resolved-HIR semantic input bundle for one resolved target
+/// graph/import context.
+#[must_use]
+pub fn resolve_hir_semantic_input<'a>(
+    graph: &ScopeGraph,
+    parsed_files: &[DesugaredFile],
+    imports: &'a BTreeMap<FileId, ResolvedImports>,
+) -> ResolvedHirSemanticInput<'a> {
+    let global_items = GlobalItemTable::collect(graph, parsed_files);
+    let hir = SemanticHirInput::build(graph, parsed_files, &global_items);
+    let declarations =
+        resolve_declaration_types(graph, parsed_files, imports, &global_items);
+    let resolved_bodies = resolve_bodies(
+        graph,
+        parsed_files,
+        imports,
+        &global_items,
+        &declarations,
+    );
+
+    ResolvedHirSemanticInput {
+        global_items,
+        declarations,
+        hir,
+        resolved_bodies,
+        imports,
+    }
+}
 
 /// Full semantic-analysis outputs for one resolved target graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,74 +137,54 @@ impl SemanticAnalysis {
 #[must_use]
 pub fn analyze_semantics(
     db: &SourceDb,
-    graph: &ScopeGraph,
-    parsed_files: &[crate::frontend::DesugaredFile],
-    imports: &BTreeMap<FileId, ResolvedImports>,
+    input: ResolvedHirSemanticInput<'_>,
 ) -> SemanticAnalysis {
     let external_lookup = ExternalSemanticLookup::default();
-    analyze_semantics_with_external_lookup(
-        db,
-        graph,
-        parsed_files,
-        imports,
-        &external_lookup,
-    )
+    analyze_semantics_with_external_lookup(db, input, &external_lookup)
 }
 
-/// Runs the semantic pass chain with lookup-only external semantic context.
+/// Runs the semantic pass chain over resolved HIR inputs with lookup-only
+/// external semantic context.
 #[must_use]
 pub fn analyze_semantics_with_external_lookup(
     db: &SourceDb,
-    graph: &ScopeGraph,
-    parsed_files: &[crate::frontend::DesugaredFile],
-    imports: &BTreeMap<FileId, ResolvedImports>,
+    input: ResolvedHirSemanticInput<'_>,
     external_lookup: &ExternalSemanticLookup,
 ) -> SemanticAnalysis {
-    let global_items = GlobalItemTable::collect(graph, parsed_files);
-    let declarations =
-        resolve_declaration_types(graph, parsed_files, imports, &global_items);
-    let signatures = type_declaration_signatures(&declarations, &global_items);
-    let typed_items = build_typed_item_table(&global_items, &signatures);
-    let hir = SemanticHirInput::build(graph, parsed_files, &global_items);
-    let resolved_bodies = resolve_bodies(
-        graph,
-        parsed_files,
+    let ResolvedHirSemanticInput {
+        global_items,
+        declarations,
+        hir,
+        resolved_bodies,
         imports,
-        &global_items,
-        &declarations,
-    );
+    } = input;
+
+    let signatures = type_declaration_signatures(&hir, &global_items);
+    let typed_items = build_typed_item_table(&global_items, &signatures);
     let body_envs =
-        build_body_type_environments(&resolved_bodies, &typed_items);
-    let expr_types = check_expression_types_with_external_lookup_and_hir(
-        graph,
-        parsed_files,
-        &global_items,
+        build_body_type_environments(&hir, &resolved_bodies, &typed_items);
+    let expr_types = check_expression_types_with_external_lookup(
+        &hir,
         &typed_items,
         &resolved_bodies,
         &body_envs,
         imports,
         external_lookup,
-        Some(&hir),
     );
     let stmt_types = check_statements_with_expression_types(
-        graph,
-        parsed_files,
-        &global_items,
+        &hir,
         &resolved_bodies,
         &body_envs,
         &expr_types,
     );
     let control_flow = check_control_flow_with_tables(
-        graph,
-        parsed_files,
-        &global_items,
-        &resolved_bodies,
+        &hir,
         &body_envs,
         &expr_types,
         &stmt_types,
     );
     let typed_bodies = build_typed_body_table(
-        &resolved_bodies,
+        &hir,
         &body_envs,
         &expr_types,
         &stmt_types,

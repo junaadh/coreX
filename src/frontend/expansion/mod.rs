@@ -363,6 +363,16 @@ impl MacroDefinitionIndex {
         self.declarations.get(name)
     }
 
+    /// Returns declaration location for one macro by name.
+    #[must_use]
+    pub fn declaration_location(
+        &self,
+        name: &str,
+    ) -> Option<(FileId, crate::frontend::ast::Span)> {
+        self.get(name)
+            .map(|definition| (definition.defining_file_id, definition.declaration_span))
+    }
+
     /// Returns deterministic duplicate-definition diagnostics.
     #[must_use]
     pub fn diagnostics(&self) -> &DiagnosticsBag {
@@ -3950,6 +3960,33 @@ fn render_expr_to_source(expr: &Expr) -> Result<String, Diagnostic> {
             if *is_optional { "?" } else { "" },
             render_type_to_source(&ty.node)?
         )),
+        Expr::Block(block) => {
+            let mut output = String::from("{");
+            for stmt in &block.statements {
+                output.push_str(&render_stmt_to_source(stmt)?);
+                output.push(';');
+            }
+            if let Some(tail) = &block.tail_expr {
+                output.push_str(&render_expr_to_source(&tail.node)?);
+            }
+            output.push('}');
+            Ok(output)
+        }
+        Expr::Closure { params, body, uses_shorthand_params, .. } => {
+            // If the closure has no parameters and uses shorthand params,
+            // render it as just the block (not as a closure expression)
+            if params.is_empty() && *uses_shorthand_params {
+                return render_block_to_source(body);
+            }
+
+            let rendered_params = params
+                .iter()
+                .map(|p| p.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let rendered_body = render_block_to_source(body)?;
+            Ok(format!("|{rendered_params}| {rendered_body}"))
+        }
         _ => Err(Diagnostic::error(
             "unsupported expression form for v1 rule argument rendering",
         )),
@@ -4037,6 +4074,46 @@ fn render_assign_op(op: crate::frontend::ast::AssignOp) -> &'static str {
         crate::frontend::ast::AssignOp::BitAndAssign => "&=",
         crate::frontend::ast::AssignOp::ShlAssign => "<<=",
         crate::frontend::ast::AssignOp::ShrAssign => ">>=",
+    }
+}
+
+fn render_stmt_to_source(stmt: &Spanned<crate::frontend::ast::Stmt>) -> Result<String, Diagnostic> {
+    match &stmt.node {
+        crate::frontend::ast::Stmt::Expr { expr, .. } => render_expr_to_source(&expr.node),
+        crate::frontend::ast::Stmt::Let(let_stmt) => {
+            let mut output = String::from("let ");
+            output.push_str(&render_pattern_to_source(&let_stmt.node.pattern.node)?);
+            if let Some(t) = &let_stmt.node.ty {
+                output.push_str(": ");
+                output.push_str(&render_type_to_source(&t.node)?);
+            }
+            if let Some(v) = &let_stmt.node.value {
+                output.push_str(" = ");
+                output.push_str(&render_expr_to_source(&v.node)?);
+            }
+            Ok(output)
+        }
+        _ => Ok(String::new()),
+    }
+}
+
+fn render_block_to_source(block: &crate::frontend::ast::Block) -> Result<String, Diagnostic> {
+    let mut output = String::from("{");
+    for stmt in &block.statements {
+        output.push_str(&render_stmt_to_source(stmt)?);
+        output.push(';');
+    }
+    if let Some(tail) = &block.tail_expr {
+        output.push_str(&render_expr_to_source(&tail.node)?);
+    }
+    output.push('}');
+    Ok(output)
+}
+
+fn render_pattern_to_source(pattern: &crate::frontend::ast::Pattern) -> Result<String, Diagnostic> {
+    match pattern {
+        crate::frontend::ast::Pattern::Identifier(name) => Ok(name.clone()),
+        _ => Ok(String::from("_")),
     }
 }
 

@@ -328,11 +328,16 @@ pub fn completion_candidates_for_file(
         if body.containing_scope_file_id != file_id {
             continue;
         }
+        let env = semantic.body_envs.env(&body.owner, body.body_index);
         let typed_body =
             semantic.typed_bodies.body(&body.owner, body.body_index);
         for local in &body.locals {
             let detail = typed_body
-                .and_then(|typed| typed.local_types.get(&local.id))
+                .and_then(|typed| {
+                    let hir_local_id =
+                        env?.hir_local_id_for_resolved_local(local.id)?;
+                    typed.local_types.get(&hir_local_id)
+                })
                 .map(|ty| {
                     format!(
                         "local: {}",
@@ -422,10 +427,12 @@ pub fn local_binding_type(
     local_id: LocalId,
 ) -> Option<&Type> {
     semantic.resolved_bodies.iter().find_map(|body| {
+        let env = semantic.body_envs.env(&body.owner, body.body_index)?;
+        let hir_local_id = env.hir_local_id_for_resolved_local(local_id)?;
         semantic
             .typed_bodies
             .body(&body.owner, body.body_index)
-            .and_then(|typed| typed.local_types.get(&local_id))
+            .and_then(|typed| typed.local_types.get(&hir_local_id))
     })
 }
 

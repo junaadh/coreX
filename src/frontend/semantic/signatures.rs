@@ -1,9 +1,11 @@
+use super::hir_input::SemanticHirInput;
 use super::{BuiltinType, Mutability, NamedTypeKind, Type};
+use crate::frontend::hir::{
+    HirFunction, HirFunctionSignature, HirItemKind, HirModule,
+    HirProtocolFunction, HirTypeId, HirTypeKind,
+};
 use crate::frontend::resolver::{
-    DeclarationOwner, GlobalItemTable, ItemId, ItemKind, ResolvedDeclaration,
-    ResolvedDeclarationTable, ResolvedEnumDeclaration,
-    ResolvedFunctionSignature, ResolvedImplDeclaration,
-    ResolvedProtocolDeclaration, ResolvedStructDeclaration, ResolvedTypeRef,
+    DeclarationOwner, GlobalItemTable, ItemId, ItemKind,
 };
 use crate::frontend::source::FileId;
 use std::collections::BTreeMap;
@@ -169,18 +171,16 @@ impl TypedSignatureTable {
 
 #[must_use]
 pub fn type_declaration_signatures(
-    declarations: &ResolvedDeclarationTable,
+    hir_input: &SemanticHirInput,
     item_table: &GlobalItemTable,
 ) -> TypedSignatureTable {
-    SignatureTyper {
-        item_table,
-        issues: Vec::new(),
-    }
-    .type_declarations(declarations)
+    SignatureTyper::new(hir_input, item_table).type_declarations()
 }
 
 struct SignatureTyper<'a> {
+    hir_input: &'a SemanticHirInput,
     item_table: &'a GlobalItemTable,
+    item_ref_by_item_id: BTreeMap<ItemId, crate::frontend::HirItemRef>,
     issues: Vec<SignatureTypingIssue>,
 }
 
@@ -188,86 +188,181 @@ struct SignatureTyper<'a> {
 struct TypeContext {
     owner: DeclarationOwner,
     containing_scope_file_id: Option<FileId>,
+    file_id: FileId,
 }
 
 impl<'a> SignatureTyper<'a> {
-    fn type_declarations(
-        mut self,
-        declarations: &ResolvedDeclarationTable,
-    ) -> TypedSignatureTable {
+    fn new(
+        hir_input: &'a SemanticHirInput,
+        item_table: &'a GlobalItemTable,
+    ) -> Self {
+        let mut item_ref_by_item_id = BTreeMap::new();
+        for (item_ref, item_id) in &hir_input.item_id_by_hir_item_ref {
+            item_ref_by_item_id.entry(*item_id).or_insert(*item_ref);
+        }
+
+        Self {
+            hir_input,
+            item_table,
+            item_ref_by_item_id,
+            issues: Vec::new(),
+        }
+    }
+
+    fn type_declarations(mut self) -> TypedSignatureTable {
         let mut functions = BTreeMap::new();
         let mut structs = BTreeMap::new();
         let mut enums = BTreeMap::new();
         let mut protocols = BTreeMap::new();
 
-        for (item_id, declaration) in &declarations.by_item_id {
-            let containing_scope_file_id = self
-                .item_table
-                .get(*item_id)
-                .map(|item| item.containing_scope_file_id);
-            if containing_scope_file_id.is_none() {
-                self.issues.push(SignatureTypingIssue {
-                    owner: DeclarationOwner::Item(*item_id),
-                    containing_scope_file_id: None,
-                    kind: SignatureTypingIssueKind::MissingGlobalItemMetadata {
-                        item_id: *item_id,
-                    },
-                });
-            }
-
+        for global_item in self.item_table.iter() {
+            let containing_scope_file_id =
+                Some(global_item.containing_scope_file_id);
             let context = TypeContext {
-                owner: DeclarationOwner::Item(*item_id),
+                owner: DeclarationOwner::Item(global_item.id),
                 containing_scope_file_id,
+                file_id: global_item.containing_scope_file_id,
             };
 
-            match declaration {
-                ResolvedDeclaration::Function(signature) => {
+            let Some(item_ref) =
+                self.item_ref_by_item_id.get(&global_item.id).copied()
+            else {
+                self.issues.push(SignatureTypingIssue {
+                    owner: context.owner,
+                    containing_scope_file_id,
+                    kind: SignatureTypingIssueKind::MissingGlobalItemMetadata {
+                        item_id: global_item.id,
+                    },
+                });
+                continue;
+            };
+
+            let Some(module) =
+                self.hir_input.hir_modules.get(&item_ref.file_id)
+            else {
+                self.issues.push(SignatureTypingIssue {
+                    owner: context.owner,
+                    containing_scope_file_id,
+                    kind: SignatureTypingIssueKind::MissingGlobalItemMetadata {
+                        item_id: global_item.id,
+                    },
+                });
+                continue;
+            };
+
+            let Some(hir_item) = module.items.get(&item_ref.item_id) else {
+                self.issues.push(SignatureTypingIssue {
+                    owner: context.owner,
+                    containing_scope_file_id,
+                    kind: SignatureTypingIssueKind::MissingGlobalItemMetadata {
+                        item_id: global_item.id,
+                    },
+                });
+                continue;
+            };
+
+            match (global_item.kind, &hir_item.kind) {
+                (ItemKind::Function, HirItemKind::Function(function)) => {
                     functions.insert(
-                        *item_id,
-                        self.type_function_signature(&context, signature),
+                        global_item.id,
+                        self.type_function_signature(
+                            &TypeContext {
+                                file_id: item_ref.file_id,
+                                ..context.clone()
+                            },
+                            module,
+                            &function.signature,
+                        ),
                     );
                 }
-                ResolvedDeclaration::Struct(struct_decl) => {
+                (ItemKind::Struct, HirItemKind::Struct(struct_decl)) => {
                     structs.insert(
-                        *item_id,
-                        self.type_struct_signature_data(&context, struct_decl),
+                        global_item.id,
+                        self.type_struct_signature_data(
+                            &TypeContext {
+                                file_id: item_ref.file_id,
+                                ..context.clone()
+                            },
+                            module,
+                            struct_decl,
+                        ),
                     );
                 }
-                ResolvedDeclaration::Enum(enum_decl) => {
+                (ItemKind::Enum, HirItemKind::Enum(enum_decl)) => {
                     enums.insert(
-                        *item_id,
-                        self.type_enum_signature_data(&context, enum_decl),
+                        global_item.id,
+                        self.type_enum_signature_data(
+                            &TypeContext {
+                                file_id: item_ref.file_id,
+                                ..context.clone()
+                            },
+                            module,
+                            enum_decl,
+                        ),
                     );
                 }
-                ResolvedDeclaration::Protocol(protocol_decl) => {
+                (ItemKind::Protocol, HirItemKind::Protocol(protocol_decl)) => {
                     protocols.insert(
-                        *item_id,
+                        global_item.id,
                         self.type_protocol_signature_data(
-                            &context,
+                            &TypeContext {
+                                file_id: item_ref.file_id,
+                                ..context.clone()
+                            },
+                            module,
                             protocol_decl,
                         ),
+                    );
+                }
+                (ItemKind::Scope, _) => {}
+                _ => {
+                    self.push_unsupported_issue(
+                        &context,
+                        "global and HIR item kind mismatch",
                     );
                 }
             }
         }
 
-        let mut impls_by_scope_file_id = BTreeMap::new();
-        for (scope_file_id, impls) in &declarations.impls_by_scope_file_id {
-            let typed = impls
-                .iter()
-                .map(|resolved_impl| {
-                    self.type_impl_signature(
-                        &TypeContext {
-                            owner: resolved_impl.owner.clone(),
-                            containing_scope_file_id: Some(
-                                resolved_impl.containing_scope_file_id,
-                            ),
-                        },
-                        resolved_impl,
-                    )
-                })
-                .collect();
-            impls_by_scope_file_id.insert(*scope_file_id, typed);
+        let mut impls_by_scope_file_id: BTreeMap<
+            FileId,
+            Vec<TypedImplSignature>,
+        > = BTreeMap::new();
+        for hir_file in &self.hir_input.hir_files {
+            let Some(module) =
+                self.hir_input.hir_modules.get(&hir_file.file_id)
+            else {
+                continue;
+            };
+
+            let mut impl_index = 0usize;
+            for item_id in &hir_file.root_items {
+                let Some(item) = module.items.get(item_id) else {
+                    continue;
+                };
+                let HirItemKind::Impl(impl_decl) = &item.kind else {
+                    continue;
+                };
+
+                let owner = DeclarationOwner::Impl {
+                    scope_file_id: hir_file.file_id,
+                    impl_index,
+                };
+                impl_index = impl_index.saturating_add(1);
+
+                let context = TypeContext {
+                    owner: owner.clone(),
+                    containing_scope_file_id: Some(hir_file.file_id),
+                    file_id: hir_file.file_id,
+                };
+
+                let typed_impl =
+                    self.type_impl_signature(&context, module, impl_decl);
+                impls_by_scope_file_id
+                    .entry(hir_file.file_id)
+                    .or_default()
+                    .push(typed_impl);
+            }
         }
 
         TypedSignatureTable {
@@ -283,102 +378,82 @@ impl<'a> SignatureTyper<'a> {
     fn type_struct_signature_data(
         &mut self,
         context: &TypeContext,
-        declaration: &ResolvedStructDeclaration,
+        module: &HirModule,
+        declaration: &crate::frontend::hir::HirStruct,
     ) -> TypedStructSignatureData {
+        let (method_signatures, initializer_signatures) =
+            self.type_hir_functions(context, module, &declaration.functions);
+
         TypedStructSignatureData {
             fields: declaration
                 .fields
                 .iter()
                 .map(|field| TypedStructField {
                     name: field.name.clone(),
-                    ty: self.type_ref(context, &field.ty),
+                    ty: self.type_ref(context, module, field.ty),
                 })
                 .collect(),
-            method_signatures: declaration
-                .methods
-                .iter()
-                .map(|method| TypedNamedFunctionSignature {
-                    name: method.name.clone(),
-                    signature: self
-                        .type_function_signature(context, &method.signature),
-                })
-                .collect(),
-            initializer_signatures: declaration
-                .initializers
-                .iter()
-                .map(|init| self.type_function_signature(context, init))
-                .collect(),
+            method_signatures,
+            initializer_signatures,
         }
     }
 
     fn type_enum_signature_data(
         &mut self,
         context: &TypeContext,
-        declaration: &ResolvedEnumDeclaration,
+        module: &HirModule,
+        declaration: &crate::frontend::hir::HirEnum,
     ) -> TypedEnumSignatureData {
+        let (method_signatures, initializer_signatures) =
+            self.type_hir_functions(context, module, &declaration.functions);
+
         TypedEnumSignatureData {
             case_signatures: declaration
-                .cases
+                .variants
                 .iter()
                 .map(|case_| TypedEnumCaseSignature {
                     name: case_.name.clone(),
                     payload_types: case_
                         .payload
                         .iter()
-                        .map(|payload| self.type_ref(context, &payload.ty))
+                        .map(|payload| self.type_ref(context, module, *payload))
                         .collect(),
                 })
                 .collect(),
-            method_signatures: declaration
-                .methods
-                .iter()
-                .map(|method| TypedNamedFunctionSignature {
-                    name: method.name.clone(),
-                    signature: self
-                        .type_function_signature(context, &method.signature),
-                })
-                .collect(),
-            initializer_signatures: declaration
-                .initializers
-                .iter()
-                .map(|init| self.type_function_signature(context, init))
-                .collect(),
+            method_signatures,
+            initializer_signatures,
         }
     }
 
     fn type_protocol_signature_data(
         &mut self,
         context: &TypeContext,
-        declaration: &ResolvedProtocolDeclaration,
+        module: &HirModule,
+        declaration: &crate::frontend::hir::HirProtocol,
     ) -> TypedProtocolSignatureData {
+        let (method_signatures, initializer_signatures) = self
+            .type_hir_protocol_functions(
+                context,
+                module,
+                &declaration.functions,
+            );
+
         TypedProtocolSignatureData {
             inheritance_types: declaration
-                .inheritance
+                .inherited_types
                 .iter()
-                .map(|inherit| self.type_ref(context, inherit))
+                .map(|inherit| self.type_ref(context, module, *inherit))
                 .collect(),
             properties: declaration
                 .properties
                 .iter()
                 .map(|property| TypedProtocolProperty {
                     name: property.name.clone(),
-                    ty: self.type_ref(context, &property.ty),
+                    ty: self.type_ref(context, module, property.ty),
                 })
                 .collect(),
-            method_signatures: declaration
-                .methods
-                .iter()
-                .map(|method| TypedNamedFunctionSignature {
-                    name: method.name.clone(),
-                    signature: self
-                        .type_function_signature(context, &method.signature),
-                })
-                .collect(),
-            initializer_signatures: declaration
-                .initializers
-                .iter()
-                .map(|init| self.type_function_signature(context, init))
-                .collect(),
+            method_signatures,
+            initializer_signatures,
             associated_type_bounds: declaration
                 .associated_types
                 .iter()
@@ -387,7 +462,7 @@ impl<'a> SignatureTyper<'a> {
                     bounds: associated_type
                         .bounds
                         .iter()
-                        .map(|bound| self.type_ref(context, bound))
+                        .map(|bound| self.type_ref(context, module, *bound))
                         .collect(),
                 })
                 .collect(),
@@ -397,67 +472,133 @@ impl<'a> SignatureTyper<'a> {
     fn type_impl_signature(
         &mut self,
         context: &TypeContext,
-        declaration: &ResolvedImplDeclaration,
+        module: &HirModule,
+        declaration: &crate::frontend::hir::HirImpl,
     ) -> TypedImplSignature {
+        let (method_signatures, initializer_signatures) =
+            self.type_hir_functions(context, module, &declaration.functions);
+
         TypedImplSignature {
-            owner: declaration.owner.clone(),
-            containing_scope_file_id: declaration.containing_scope_file_id,
-            target: self.type_ref(context, &declaration.target),
+            owner: context.owner.clone(),
+            containing_scope_file_id: context
+                .containing_scope_file_id
+                .unwrap_or(context.file_id),
+            target: self.type_ref(context, module, declaration.target),
             conformance: declaration
                 .conformance
-                .as_ref()
-                .map(|ty| self.type_ref(context, ty)),
-            method_signatures: declaration
-                .methods
-                .iter()
-                .map(|method| TypedNamedFunctionSignature {
-                    name: method.name.clone(),
-                    signature: self
-                        .type_function_signature(context, &method.signature),
-                })
-                .collect(),
-            initializer_signatures: declaration
-                .initializers
-                .iter()
-                .map(|init| self.type_function_signature(context, init))
-                .collect(),
+                .map(|ty| self.type_ref(context, module, ty)),
+            method_signatures,
+            initializer_signatures,
         }
+    }
+
+    fn type_hir_functions(
+        &mut self,
+        context: &TypeContext,
+        module: &HirModule,
+        functions: &[HirFunction],
+    ) -> (
+        Vec<TypedNamedFunctionSignature>,
+        Vec<TypedFunctionSignature>,
+    ) {
+        let mut methods = Vec::new();
+        let mut initializers = Vec::new();
+
+        for function in functions {
+            let typed_signature = self.type_function_signature(
+                context,
+                module,
+                &function.signature,
+            );
+            if function.init_origin.is_some() {
+                initializers.push(typed_signature);
+            } else {
+                methods.push(TypedNamedFunctionSignature {
+                    name: function.name.clone(),
+                    signature: typed_signature,
+                });
+            }
+        }
+
+        (methods, initializers)
+    }
+
+    fn type_hir_protocol_functions(
+        &mut self,
+        context: &TypeContext,
+        module: &HirModule,
+        functions: &[HirProtocolFunction],
+    ) -> (
+        Vec<TypedNamedFunctionSignature>,
+        Vec<TypedFunctionSignature>,
+    ) {
+        let mut methods = Vec::new();
+        let mut initializers = Vec::new();
+
+        for function in functions {
+            let typed_signature = self.type_function_signature(
+                context,
+                module,
+                &function.signature,
+            );
+            if function.init_origin.is_some() {
+                initializers.push(typed_signature);
+            } else {
+                methods.push(TypedNamedFunctionSignature {
+                    name: function.name.clone(),
+                    signature: typed_signature,
+                });
+            }
+        }
+
+        (methods, initializers)
     }
 
     fn type_function_signature(
         &mut self,
         context: &TypeContext,
-        signature: &ResolvedFunctionSignature,
+        module: &HirModule,
+        signature: &HirFunctionSignature,
     ) -> TypedFunctionSignature {
         TypedFunctionSignature {
             param_types: signature
                 .params
                 .iter()
-                .map(|param| self.type_ref(context, &param.ty))
+                .map(|param| self.type_ref(context, module, param.ty))
                 .collect(),
             return_type: signature
                 .return_type
-                .as_ref()
-                .map(|ty| self.type_ref(context, ty)),
+                .map(|ty| self.type_ref(context, module, ty)),
         }
     }
 
     fn type_ref(
         &mut self,
         context: &TypeContext,
-        ty: &ResolvedTypeRef,
+        module: &HirModule,
+        ty_id: HirTypeId,
     ) -> Type {
-        match ty {
-            ResolvedTypeRef::Named { segments, resolved } => {
-                if let Some(builtin) = Self::builtin_from_segments(segments) {
+        let Some(ty) = module.types.get(&ty_id) else {
+            self.push_unsupported_issue(context, "missing HIR type id");
+            return Type::error();
+        };
+
+        match &ty.kind {
+            HirTypeKind::Path(path) => {
+                if let Some(builtin) =
+                    Self::builtin_from_segments(&path.segments)
+                {
                     return Type::builtin(builtin);
                 }
 
-                match resolved {
-                    Some(resolved_item) => self.type_for_item_path(
+                match self.resolve_item_id_from_type_path(
+                    context.file_id,
+                    &path.segments,
+                ) {
+                    Some(item_id) => self.type_for_item_path(
                         context,
-                        segments,
-                        resolved_item.item_id,
+                        &path.segments,
+                        item_id,
                     ),
                     None => {
                         self.issues.push(SignatureTypingIssue {
@@ -465,53 +606,215 @@ impl<'a> SignatureTyper<'a> {
                             containing_scope_file_id: context
                                 .containing_scope_file_id,
                             kind: SignatureTypingIssueKind::UnresolvedPath {
-                                path: segments.clone(),
+                                path: path.segments.clone(),
                             },
                         });
                         Type::error()
                     }
                 }
             }
-            ResolvedTypeRef::Reference(inner) => {
-                Type::pointer(self.type_ref(context, inner), Mutability::Const)
-            }
-            ResolvedTypeRef::MutableReference(inner)
-            | ResolvedTypeRef::MutablePointer(inner) => {
-                Type::pointer(self.type_ref(context, inner), Mutability::Mut)
-            }
-            ResolvedTypeRef::ConstPointer(inner) => {
-                Type::pointer(self.type_ref(context, inner), Mutability::Const)
-            }
-            ResolvedTypeRef::Grouped(inner) => self.type_ref(context, inner),
-            ResolvedTypeRef::GenericApplication { base, args } => {
-                self.type_ref(context, base);
+            HirTypeKind::Reference { mutable, inner }
+            | HirTypeKind::Pointer { mutable, inner } => Type::pointer(
+                self.type_ref(context, module, *inner),
+                if *mutable {
+                    Mutability::Mut
+                } else {
+                    Mutability::Const
+                },
+            ),
+            HirTypeKind::GenericApplication { base, args } => {
+                self.type_ref(context, module, *base);
                 for arg in args {
-                    self.type_ref(context, arg);
+                    self.type_ref(context, module, *arg);
                 }
                 self.push_unsupported_issue(context, "generic application");
                 Type::error()
             }
-            ResolvedTypeRef::SelfType => {
-                self.push_unsupported_issue(context, "self type");
-                Type::error()
-            }
-            ResolvedTypeRef::Array(inner) => {
-                self.type_ref(context, inner);
-                self.push_unsupported_issue(context, "array type");
-                Type::error()
-            }
-            ResolvedTypeRef::Optional(inner) => {
-                self.type_ref(context, inner);
+            HirTypeKind::SelfType => self.resolve_self_type(context),
+            HirTypeKind::Optional { inner } => {
+                self.type_ref(context, module, *inner);
                 self.push_unsupported_issue(context, "optional type");
                 Type::error()
             }
-            ResolvedTypeRef::Result { ok, err } => {
-                self.type_ref(context, ok);
-                self.type_ref(context, err);
+            HirTypeKind::Result { ok, err } => {
+                self.type_ref(context, module, *ok);
+                self.type_ref(context, module, *err);
                 self.push_unsupported_issue(context, "result type");
                 Type::error()
             }
         }
+    }
+
+    /// Resolve `Self` to the appropriate type based on the declaration owner.
+    ///
+    /// For struct/enum/protocol declarations, `Self` resolves to the type itself.
+    /// For impl blocks, `Self` resolves to the impl's target type.
+    /// For free functions, `Self` is invalid and an error is reported.
+    fn resolve_self_type(
+        &mut self,
+        context: &TypeContext,
+    ) -> Type {
+        match &context.owner {
+            crate::frontend::resolver::DeclarationOwner::Item(item_id) => {
+                // Look up the item to determine its kind
+                let item_kind = self
+                    .item_table
+                    .get(*item_id)
+                    .map(|item| item.kind);
+
+                match item_kind {
+                    Some(crate::frontend::resolver::ItemKind::Struct) => {
+                        Type::named(*item_id, NamedTypeKind::Struct)
+                    }
+                    Some(crate::frontend::resolver::ItemKind::Enum) => {
+                        Type::named(*item_id, NamedTypeKind::Enum)
+                    }
+                    Some(crate::frontend::resolver::ItemKind::Protocol) => {
+                        Type::named(*item_id, NamedTypeKind::Protocol)
+                    }
+                    Some(crate::frontend::resolver::ItemKind::Function) => {
+                        // Self in a free function is invalid
+                        self.issues.push(SignatureTypingIssue {
+                            owner: context.owner.clone(),
+                            containing_scope_file_id: context
+                                .containing_scope_file_id,
+                            kind: SignatureTypingIssueKind::UnsupportedTypeSurface {
+                                description: "Self type in free function",
+                            },
+                        });
+                        Type::error()
+                    }
+                    _ => {
+                        // Other item kinds don't support Self
+                        self.issues.push(SignatureTypingIssue {
+                            owner: context.owner.clone(),
+                            containing_scope_file_id: context
+                                .containing_scope_file_id,
+                            kind: SignatureTypingIssueKind::UnsupportedTypeSurface {
+                                description: "Self type in unsupported declaration",
+                            },
+                        });
+                        Type::error()
+                    }
+                }
+            }
+            crate::frontend::resolver::DeclarationOwner::Impl { .. } => {
+                // For impl blocks, we need to resolve the target type
+                // This requires looking up the impl declaration to find its target
+                // For now, we'll report this as unsupported and return error
+                // TODO: Implement impl block target type resolution
+                self.issues.push(SignatureTypingIssue {
+                    owner: context.owner.clone(),
+                    containing_scope_file_id: context.containing_scope_file_id,
+                    kind: SignatureTypingIssueKind::UnsupportedTypeSurface {
+                        description: "Self type in impl block (not yet implemented)",
+                    },
+                });
+                Type::error()
+            }
+        }
+    }
+
+    fn resolve_item_id_from_type_path(
+        &self,
+        file_id: FileId,
+        segments: &[String],
+    ) -> Option<ItemId> {
+        let imports = &self.hir_input.hir_imports;
+        let first = segments.first()?;
+
+        if let Some(binding) =
+            imports.get(file_id).and_then(|table| table.get(first))
+        {
+            if segments.len() == 1 {
+                if binding.kind
+                    == crate::frontend::resolver::HirImportBindingKind::Item
+                {
+                    let item_ref = binding.target_item?;
+                    return self
+                        .hir_input
+                        .item_id_by_hir_item_ref
+                        .get(&item_ref)
+                        .copied();
+                }
+            } else if binding.kind
+                == crate::frontend::resolver::HirImportBindingKind::Scope
+            {
+                let mut full_path = binding.target_path.clone();
+                full_path.extend(segments.iter().skip(1).cloned());
+                let root_name = binding.source_root.as_deref();
+                if let Some(item_ref) = imports
+                    .item_paths_for_root(root_name)
+                    .and_then(|paths| paths.get(&full_path))
+                {
+                    return self
+                        .hir_input
+                        .item_id_by_hir_item_ref
+                        .get(item_ref)
+                        .copied();
+                }
+            }
+        }
+
+        if first == "root" && segments.len() > 1 {
+            let rooted = segments.iter().skip(1).cloned().collect::<Vec<_>>();
+            if let Some(item_ref) = imports
+                .item_paths_for_root(None)
+                .and_then(|paths| paths.get(&rooted))
+            {
+                return self
+                    .hir_input
+                    .item_id_by_hir_item_ref
+                    .get(item_ref)
+                    .copied();
+            }
+        }
+
+        if first == "super" && segments.len() > 1 {
+            if let Some(scope_path) = imports.scope_path_for_file(file_id) {
+                let mut parent_scope = scope_path.to_vec();
+                parent_scope.pop();
+                parent_scope.extend(segments.iter().skip(1).cloned());
+                if let Some(item_ref) = imports
+                    .item_paths_for_root(None)
+                    .and_then(|paths| paths.get(&parent_scope))
+                {
+                    return self
+                        .hir_input
+                        .item_id_by_hir_item_ref
+                        .get(item_ref)
+                        .copied();
+                }
+            }
+        }
+
+        if segments.len() > 1 {
+            let named_root = segments[0].as_str();
+            let remainder =
+                segments.iter().skip(1).cloned().collect::<Vec<_>>();
+            if let Some(item_ref) = imports
+                .item_paths_for_root(Some(named_root))
+                .and_then(|paths| paths.get(&remainder))
+            {
+                return self
+                    .hir_input
+                    .item_id_by_hir_item_ref
+                    .get(item_ref)
+                    .copied();
+            }
+        }
+
+        let mut local_full_path =
+            imports.scope_path_for_file(file_id)?.to_vec();
+        local_full_path.extend(segments.iter().cloned());
+        let item_ref = imports
+            .item_paths_for_root(None)?
+            .get(&local_full_path)
+            .copied()?;
+        self.hir_input
+            .item_id_by_hir_item_ref
+            .get(&item_ref)
+            .copied()
     }
 
     fn type_for_item_path(

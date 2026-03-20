@@ -3,6 +3,15 @@ enum Option<T> {
   None,
 }
 
+impl Option<T> {
+  pub fn unwrap(&self, or or_val: T) -> T {
+    match self {
+      .Some(v) => v,
+      .None => or_val
+    }
+  }
+}
+
 fn unwrap_or_zero(value: Option<i32>) -> i32 {
   match value {
     Some(x) => x,

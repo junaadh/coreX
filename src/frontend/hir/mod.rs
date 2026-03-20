@@ -12,12 +12,13 @@ pub use ids::{
 pub use lowering::lower_to_hir;
 pub use module::HirModule;
 pub use nodes::{
-    HirArrayElement, HirAssignOp, HirBinaryOp, HirBody, HirCallArg,
-    HirClosureParam, HirEnum, HirEnumVariant, HirExpr, HirExprKind, HirExtern,
-    HirExternFunction, HirFunction, HirFunctionParam, HirFunctionSignature,
-    HirImpl, HirInitOrigin, HirItem, HirItemKind, HirLetStmt, HirLiteral,
-    HirMatchArm, HirMutability, HirParamLabel, HirPat, HirPatKind, HirPath,
-    HirProtocol, HirProtocolFunction, HirStmt, HirStmtKind, HirStruct,
+    HirAccessorRequirement, HirArrayElement, HirAssignOp, HirAssociatedType,
+    HirBinaryOp, HirBody, HirCallArg, HirClosureParam, HirEnum, HirEnumVariant,
+    HirExpr, HirExprKind, HirExtern, HirExternFunction, HirFunction,
+    HirFunctionParam, HirFunctionSignature, HirImpl, HirInitOrigin, HirItem,
+    HirItemKind, HirLetStmt, HirLiteral, HirMatchArm, HirMutability,
+    HirParamLabel, HirPat, HirPatKind, HirPath, HirProtocol,
+    HirProtocolFunction, HirProtocolProperty, HirStmt, HirStmtKind, HirStruct,
     HirStructExprField, HirStructField, HirStructPatField, HirType,
     HirTypeKind, HirUnaryOp, HirUse, HirUseTree,
 };

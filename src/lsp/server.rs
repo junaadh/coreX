@@ -101,6 +101,7 @@ fn write_message<W: Write>(
 mod tests {
     use super::run_server;
     use crate::lsp::convert::path_to_uri;
+    use core_x::frontend::{FrontendContext, analyze_project};
     use serde_json::{Value, json};
     use std::fs;
     use std::io::{BufReader, Cursor};
@@ -356,6 +357,28 @@ mod tests {
         })
     }
 
+    fn canonical_diagnostic_messages(path: &Path, source: &str) -> Vec<String> {
+        let mut frontend = FrontendContext::new();
+        let file_id = frontend.add_file(path.to_path_buf(), source.to_string());
+        let analysis = analyze_project(&mut frontend, &[file_id])
+            .expect("canonical frontend analysis");
+        let mut messages = analysis
+            .diagnostics
+            .as_slice()
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic
+                    .labels
+                    .iter()
+                    .any(|label| label.span.file_id == file_id)
+            })
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect::<Vec<_>>();
+        messages.sort();
+        messages.dedup();
+        messages
+    }
+
     #[test]
     fn initialize_shutdown_roundtrip() {
         let messages = run_with_messages(&[
@@ -516,7 +539,11 @@ mod tests {
         let response =
             find_response(&messages, 5).expect("definition response");
         let locations = response["result"].as_array().expect("locations array");
-        assert!(!locations.is_empty());
+        assert!(
+            !locations.is_empty(),
+            "expected method definition location, got response: {:#?}",
+            response
+        );
         assert_eq!(
             locations[0].get("uri").and_then(Value::as_str),
             Some(uri.as_str())
@@ -543,7 +570,11 @@ mod tests {
         let response =
             find_response(&messages, 5).expect("definition response");
         let locations = response["result"].as_array().expect("locations array");
-        assert!(!locations.is_empty());
+        assert!(
+            !locations.is_empty(),
+            "expected method definition location, got response: {:#?}",
+            response
+        );
         assert_eq!(
             locations[0].get("uri").and_then(Value::as_str),
             Some(uri.as_str())
@@ -588,7 +619,11 @@ mod tests {
         let response =
             find_response(&messages, 5).expect("definition response");
         let locations = response["result"].as_array().expect("locations array");
-        assert!(!locations.is_empty());
+        assert!(
+            !locations.is_empty(),
+            "expected method definition location, got response: {:#?}",
+            response
+        );
         let uri = locations[0]
             .get("uri")
             .and_then(Value::as_str)
@@ -624,7 +659,11 @@ mod tests {
         let response =
             find_response(&messages, 5).expect("definition response");
         let locations = response["result"].as_array().expect("locations array");
-        assert!(!locations.is_empty());
+        assert!(
+            !locations.is_empty(),
+            "expected method definition location, got response: {:#?}",
+            response
+        );
         let uri = locations[0]
             .get("uri")
             .and_then(Value::as_str)
@@ -989,6 +1028,201 @@ mod tests {
                 .iter()
                 .any(|message| message.contains("unknown macro")),
             "macro invocation should be consumed by expansion before semantic analysis"
+        );
+    }
+
+    #[test]
+    fn test_cli_and_lsp_share_pipeline() {
+        let file_path = unique_temp_dir("shared_pipeline").join("shared.cx");
+        let uri = path_to_uri(&file_path);
+        let source = "fn main() {\n  let value = 1;\n  value = 2;\n}\n";
+
+        let messages = run_with_messages(&[
+            initialize_message(1),
+            initialized_message(),
+            did_open_message(&uri, source),
+            shutdown_message(2),
+            exit_message(),
+        ]);
+        let lsp_diagnostics =
+            find_publish_diagnostics(&messages, &uri).expect("diagnostics");
+        let mut lsp_messages = lsp_diagnostics["params"]["diagnostics"]
+            .as_array()
+            .expect("diagnostics array")
+            .iter()
+            .filter_map(|entry| entry.get("message").and_then(Value::as_str))
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        lsp_messages.sort();
+        lsp_messages.dedup();
+
+        let cli_messages = canonical_diagnostic_messages(&file_path, source);
+        assert_eq!(lsp_messages, cli_messages);
+    }
+
+    #[test]
+    fn test_g2d_method() {
+        let file_path = unique_temp_dir("g2d_method").join("test.cx");
+        let uri = path_to_uri(&file_path);
+        let source = "struct Point {\n  x: I32,\n  fn get_x(&self) -> I32 { self.x }\n}\n\nfn test() {\n  let p = Point { x: 42 };\n  p.get_x()\n}\n";
+        let method_decl_line = source
+            .lines()
+            .position(|line| line.contains("fn get_x("))
+            .expect("method declaration line") as u32;
+        let call_line = source
+            .lines()
+            .position(|line| line.contains("p.get_x()"))
+            .expect("method call line") as u32;
+        let call_col = source
+            .lines()
+            .nth(call_line as usize)
+            .and_then(|line| line.find("get_x"))
+            .expect("method call column") as u32;
+
+        let messages = run_with_messages(&[
+            initialize_message(1),
+            initialized_message(),
+            did_open_message(&uri, source),
+            definition_message(5, &uri, call_line, call_col + 1),
+            shutdown_message(2),
+            exit_message(),
+        ]);
+        let response =
+            find_response(&messages, 5).expect("definition response");
+        let locations = response["result"].as_array().expect("locations array");
+        assert!(
+            !locations.is_empty(),
+            "expected method definition location, got response: {:#?}",
+            response
+        );
+        assert_eq!(
+            locations[0]
+                .get("uri")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            uri
+        );
+        let line = locations[0]["range"]["start"]["line"]
+            .as_u64()
+            .expect("line as u64") as u32;
+        assert_eq!(line, method_decl_line);
+    }
+
+    #[test]
+    fn test_constructor_call() {
+        let file_path =
+            unique_temp_dir("constructor_call").join("main.cx");
+        let uri = path_to_uri(&file_path);
+        let source = "struct Point {\n  x: I32,\n  y: I32,\n  init(_ x: I32, _ y: I32) -> Self {\n    Self { x, y }\n  }\n}\n\nfn main() {\n  Point(1, 2)\n}\n";
+
+        let messages = run_with_messages(&[
+            initialize_message(1),
+            initialized_message(),
+            did_open_message(&uri, source),
+            shutdown_message(2),
+            exit_message(),
+        ]);
+        let diagnostics =
+            find_publish_diagnostics(&messages, &uri).expect("diagnostics");
+        let rendered = diagnostics["params"]["diagnostics"]
+            .as_array()
+            .expect("diagnostics array")
+            .iter()
+            .filter_map(|entry| entry.get("message").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(
+            !rendered
+                .iter()
+                .any(|message| message.contains("invalid call target")),
+            "constructor syntax should resolve to a valid call target"
+        );
+    }
+
+    #[test]
+    fn test_macro_definition_lookup() {
+        let root = unique_temp_dir("macro_definition_lookup");
+        write_file(&root.join("corex.toml"), "[project]\nname = \"app\"\n");
+        write_file(&root.join("src/root.cx"), "scope util;\n");
+        write_file(
+            &root.join("src/util.cx"),
+            "macro plus_one { rule(input: Expr) => { input + 1 }; }\n",
+        );
+        write_file(
+            &root.join("src/main.cx"),
+            "use app::util::plus_one;\nfn main() { @plus_one(1); }\n",
+        );
+
+        let main_path = root.join("src/main.cx");
+        let uri = path_to_uri(&main_path);
+        let source = fs::read_to_string(&main_path)
+            .expect("read main source for didOpen");
+        let call_line = source
+            .lines()
+            .position(|line| line.contains("@plus_one(1);"))
+            .expect("macro call line") as u32;
+        let call_col = source
+            .lines()
+            .nth(call_line as usize)
+            .and_then(|line| line.find("plus_one"))
+            .expect("macro call column") as u32;
+
+        let messages = run_with_messages(&[
+            initialize_message(1),
+            initialized_message(),
+            did_open_message(&uri, &source),
+            definition_message(5, &uri, call_line, call_col),
+            shutdown_message(2),
+            exit_message(),
+        ]);
+        let response =
+            find_response(&messages, 5).expect("definition response");
+        let locations = response["result"].as_array().expect("locations array");
+        assert!(!locations.is_empty());
+        let uri = locations[0]
+            .get("uri")
+            .and_then(Value::as_str)
+            .expect("uri string");
+        assert!(
+            uri.ends_with("/src/util.cx"),
+            "expected macro definition uri to point at util.cx, got {uri}"
+        );
+    }
+
+    #[test]
+    fn test_mutability_error() {
+        let file_path =
+            unique_temp_dir("mutability_error").join("mutability.cx");
+        let uri = path_to_uri(&file_path);
+        let source = "fn main() {\n  let value = 1;\n  value = 2;\n}\n";
+
+        let messages = run_with_messages(&[
+            initialize_message(1),
+            initialized_message(),
+            did_open_message(&uri, source),
+            shutdown_message(2),
+            exit_message(),
+        ]);
+        let diagnostics =
+            find_publish_diagnostics(&messages, &uri).expect("diagnostics");
+        let lsp_messages = diagnostics["params"]["diagnostics"]
+            .as_array()
+            .expect("diagnostics array")
+            .iter()
+            .filter_map(|entry| entry.get("message").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(
+            lsp_messages
+                .iter()
+                .any(|message| message.contains("mutability")),
+            "LSP should report mutability diagnostics from canonical semantic analysis"
+        );
+
+        let cli_messages = canonical_diagnostic_messages(&file_path, source);
+        assert!(
+            cli_messages
+                .iter()
+                .any(|message| message.contains("mutability")),
+            "canonical frontend analysis should report the same mutability error"
         );
     }
 

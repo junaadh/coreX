@@ -5,6 +5,7 @@
 //! layers.
 
 pub mod ast;
+pub mod analysis;
 pub mod context;
 pub mod desugar;
 pub mod diagnostics;
@@ -19,6 +20,9 @@ pub mod resolver;
 pub mod semantic;
 pub mod source;
 
+pub use analysis::{
+    FrontendAnalysis, FrontendResolutionTables, analyze_project,
+};
 pub use context::FrontendContext;
 pub use desugar::{DesugaredFile, desugar_file, desugar_files};
 pub use diagnostics::{
@@ -89,12 +93,13 @@ pub use semantic::{
     ControlFlowIssueKind, ControlFlowTable, DefinitionLocation,
     DefinitionTarget, ExprCheckIssue, ExprCheckIssueKind, ExpressionTypeTable,
     ExternalDefinitionLocation, ExternalSemanticLookup, Mutability,
-    NamedTypeKind, SemanticAnalysis, SemanticAnalysisIssues,
-    SemanticCompletionCandidate, SemanticCompletionKind,
-    SemanticDefinitionLookup, SignatureTypingIssue, SignatureTypingIssueKind,
-    StatementKind, StatementTypeEntry, StatementTypeTable, StmtCheckIssue,
-    StmtCheckIssueKind, Type, TypedAssociatedTypeBounds, TypedBody,
-    TypedBodyId, TypedBodyIssueKind, TypedBodyIssueMarker, TypedBodyTable,
+    NamedTypeKind, ResolvedHirSemanticInput, SemanticAnalysis,
+    SemanticAnalysisIssues, SemanticCompletionCandidate,
+    SemanticCompletionKind, SemanticDefinitionLookup, SemanticHirInput,
+    SignatureTypingIssue, SignatureTypingIssueKind, StatementKind,
+    StatementTypeEntry, StatementTypeTable, StmtCheckIssue, StmtCheckIssueKind,
+    Type, TypedAssociatedTypeBounds, TypedBody, TypedBodyId,
+    TypedBodyIssueKind, TypedBodyIssueMarker, TypedBodyTable,
     TypedBodyTableIssue, TypedBodyTableIssueKind, TypedEnumCaseSignature,
     TypedEnumSignatureData, TypedFunctionSignature, TypedImplAttachment,
     TypedImplSignature, TypedItemData, TypedItemKind, TypedItemTable,
@@ -107,5 +112,6 @@ pub use semantic::{
     check_expression_types, check_expression_types_with_external_lookup,
     check_statements, check_statements_with_expression_types,
     collect_item_definition_locations, completion_candidates_for_file,
-    local_binding_type, lookup_definition_target, type_declaration_signatures,
+    local_binding_type, lookup_definition_target, resolve_hir_semantic_input,
+    type_declaration_signatures,
 };

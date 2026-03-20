@@ -1,21 +1,23 @@
 use super::{
-    HirArrayElement, HirAssignOp, HirBinaryOp, HirBody, HirBodyId, HirCallArg,
-    HirClosureParam, HirEnum, HirEnumVariant, HirExpr, HirExprId, HirExprKind,
-    HirExtern, HirExternFunction, HirFile, HirFunction, HirFunctionParam,
+    HirAccessorRequirement, HirArrayElement, HirAssignOp, HirAssociatedType,
+    HirBinaryOp, HirBody, HirBodyId, HirCallArg, HirClosureParam, HirEnum,
+    HirEnumVariant, HirExpr, HirExprId, HirExprKind, HirExtern,
+    HirExternFunction, HirFile, HirFunction, HirFunctionParam,
     HirFunctionSignature, HirImpl, HirInitOrigin, HirItem, HirItemId,
     HirItemKind, HirLetStmt, HirLiteral, HirMatchArm, HirModule, HirMutability,
     HirOrigin, HirPat, HirPatId, HirPatKind, HirPath, HirProtocol,
-    HirProtocolFunction, HirStmt, HirStmtId, HirStmtKind, HirStruct,
-    HirStructExprField, HirStructField, HirStructPatField, HirType, HirTypeId,
-    HirTypeKind, HirUnaryOp, HirUse, HirUseTree,
+    HirProtocolFunction, HirProtocolProperty, HirStmt, HirStmtId, HirStmtKind,
+    HirStruct, HirStructExprField, HirStructField, HirStructPatField, HirType,
+    HirTypeId, HirTypeKind, HirUnaryOp, HirUse, HirUseTree,
 };
 use crate::frontend::ast::{
-    ArrayElement, AssignOp, BinaryOp, Block, CallArg, Clause, ClauseList,
-    EnumCaseParam, EnumDecl, EnumMember, Expr, ExternBlock, ExternFunctionDecl,
-    ExternMember, ForStmt, FunctionDecl, GuardStmt, IfStmt, IfStmtElse,
-    ImplDecl, ImplMember, InitDecl, InitKind, InitOriginKind, Item, LetStmt,
-    ParamDecl, ParamLabel, Pattern, ProtocolDecl, ProtocolFunctionMember,
-    ProtocolInitMember, ProtocolMember, Spanned, Stmt, StructDecl,
+    AccessorRequirement, ArrayElement, AssignOp, AssociatedTypeDecl, BinaryOp,
+    BindingKind, Block, CallArg, Clause, ClauseList, EnumCaseParam, EnumDecl,
+    EnumMember, Expr, ExternBlock, ExternFunctionDecl, ExternMember, ForStmt,
+    FunctionDecl, GuardStmt, IfStmt, IfStmtElse, ImplDecl, ImplMember,
+    InitDecl, InitKind, InitOriginKind, Item, LetStmt, ParamDecl, ParamLabel,
+    Pattern, ProtocolDecl, ProtocolFunctionMember, ProtocolInitMember,
+    ProtocolMember, ProtocolPropertyRequirement, Spanned, Stmt, StructDecl,
     StructMember, StructPatternField, Type, TypeExpr, UnaryOp, UseItem,
     UsePath, UseTree, VarStmt, WhileStmt,
 };
@@ -187,7 +189,9 @@ impl<'a> LoweringCtx<'a> {
         protocol_decl: &ProtocolDecl,
         _fallback_span: crate::frontend::ast::Span,
     ) -> HirProtocol {
+        let mut properties = Vec::new();
         let mut functions = Vec::new();
+        let mut associated_types = Vec::new();
 
         for member in &protocol_decl.members {
             match &member.node {
@@ -203,8 +207,14 @@ impl<'a> LoweringCtx<'a> {
                         init_member.span,
                     ))
                 }
-                ProtocolMember::AssociatedType(_)
-                | ProtocolMember::Property(_) => {}
+                ProtocolMember::AssociatedType(associated_type) => {
+                    associated_types.push(
+                        self.lower_associated_type_decl(&associated_type.node),
+                    );
+                }
+                ProtocolMember::Property(property) => properties.push(
+                    self.lower_protocol_property_requirement(&property.node),
+                ),
             }
         }
 
@@ -220,7 +230,9 @@ impl<'a> LoweringCtx<'a> {
                 .iter()
                 .map(|ty| self.lower_type(ty))
                 .collect(),
+            properties,
             functions,
+            associated_types,
         }
     }
 
@@ -389,6 +401,42 @@ impl<'a> LoweringCtx<'a> {
                 .default_body
                 .as_ref()
                 .map(|body| self.lower_block(body, fallback_span)),
+        }
+    }
+
+    fn lower_protocol_property_requirement(
+        &mut self,
+        property: &ProtocolPropertyRequirement,
+    ) -> HirProtocolProperty {
+        HirProtocolProperty {
+            name: property.name.clone(),
+            ty: self.lower_type(&property.ty),
+            mutability: match property.binding {
+                BindingKind::Let => HirMutability::Immutable,
+                BindingKind::Var => HirMutability::Mutable,
+            },
+            accessors: property
+                .accessors
+                .iter()
+                .map(|accessor| match accessor {
+                    AccessorRequirement::Get => HirAccessorRequirement::Get,
+                    AccessorRequirement::Set => HirAccessorRequirement::Set,
+                })
+                .collect(),
+        }
+    }
+
+    fn lower_associated_type_decl(
+        &mut self,
+        associated_type: &AssociatedTypeDecl,
+    ) -> HirAssociatedType {
+        HirAssociatedType {
+            name: associated_type.name.clone(),
+            bounds: associated_type
+                .bounds
+                .iter()
+                .map(|bound| self.lower_type(bound))
+                .collect(),
         }
     }
 

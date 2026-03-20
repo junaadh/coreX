@@ -1,19 +1,15 @@
-macro name {
-	rule (input: Tokens) => {};
-
-	reflect (item: Item) => {};
-
-	reflect (item: Item, args: MacroArgs) => {};
-}
-
-macro unless {
-	rule (cond: Expr, body: Block) => {
-		if !cond body
-	};
+macro passthrough {
+	rule (input: Expr) => { input };
 }
 
 fn main() {
-	@unless(1 == 0, {
-		print("Hi");
-	});
+	let a = @passthrough(1);
+	var b = @passthrough(true);
+	let c = @passthrough("Hello");
+	let d = @passthrough(@passthrough(a) == 1 == @passthrough(b));
+	// Mutability violation
+	// a = 2;
+	// Type mismatch
+	// b = 1;
+	b = false;
 }

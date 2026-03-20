@@ -2,6 +2,12 @@
 fn helper() {
 }
 
+macro pass {
+  rule(input: Expr) => {
+    input
+  };
+}
+
 /** Block doc for Point */
 struct Point {
   /// x coordinate
@@ -30,7 +36,8 @@ enum Status {
 }
 
 fn a() {
-  var point = Point(x: 1, y: 2);
+  var point = Point::init(x: 1, y: 2);
   let x = point.x();
   point.set_x(x: 10);
+  let a = @pass(1);
 }

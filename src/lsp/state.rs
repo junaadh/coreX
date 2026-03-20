@@ -1,4 +1,6 @@
 use crate::lsp::convert::uri_to_path;
+use core_x::frontend::source::FileId;
+use core_x::frontend::FrontendContext;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -7,6 +9,13 @@ use std::sync::Arc;
 struct CachedAnalysis {
     version: Option<i64>,
     analysis: Arc<crate::lsp::analysis::DocumentAnalysis>,
+}
+
+#[derive(Debug)]
+pub struct DocumentPipelineState {
+    pub frontend: FrontendContext,
+    pub primary_file_id: FileId,
+    pub entry_files: Vec<FileId>,
 }
 
 #[derive(Debug, Clone)]
@@ -20,6 +29,7 @@ pub struct OpenDocument {
 pub struct ServerState {
     shutdown_requested: bool,
     documents_by_uri: BTreeMap<String, OpenDocument>,
+    pipeline_by_uri: BTreeMap<String, DocumentPipelineState>,
     analysis_cache_by_uri: BTreeMap<String, CachedAnalysis>,
 }
 
@@ -71,6 +81,7 @@ impl ServerState {
 
     pub fn close_document(&mut self, uri: &str) {
         self.documents_by_uri.remove(uri);
+        self.pipeline_by_uri.remove(uri);
         self.analysis_cache_by_uri.remove(uri);
     }
 
@@ -106,5 +117,26 @@ impl ServerState {
     ) {
         self.analysis_cache_by_uri
             .insert(uri.to_string(), CachedAnalysis { version, analysis });
+    }
+
+    pub fn upsert_pipeline_state(
+        &mut self,
+        uri: String,
+        pipeline: DocumentPipelineState,
+    ) {
+        self.pipeline_by_uri.insert(uri.clone(), pipeline);
+        self.analysis_cache_by_uri.remove(&uri);
+    }
+
+    #[must_use]
+    pub fn pipeline_state(&self, uri: &str) -> Option<&DocumentPipelineState> {
+        self.pipeline_by_uri.get(uri)
+    }
+
+    pub fn pipeline_state_mut(
+        &mut self,
+        uri: &str,
+    ) -> Option<&mut DocumentPipelineState> {
+        self.pipeline_by_uri.get_mut(uri)
     }
 }

@@ -1,7 +1,9 @@
 use core_x::frontend::parser::parse_source_file_from_source_file;
 use core_x::frontend::resolver::{ScopeResolver, resolve_project_imports};
 use core_x::frontend::source::SourceDb;
-use core_x::frontend::{NamedTypeKind, Type, analyze_semantics};
+use core_x::frontend::{
+    NamedTypeKind, Type, analyze_semantics, resolve_hir_semantic_input,
+};
 
 fn parsed_to_desugared(
     parsed: core_x::frontend::ParsedFile,
@@ -42,7 +44,10 @@ fn analyze_sources(
         .expect("scope graph");
     let (_, imports) =
         resolve_project_imports(&graph, &parsed_files).expect("imports");
-    let semantic = analyze_semantics(&db, &graph, &parsed_files, &imports);
+    let semantic = analyze_semantics(
+        &db,
+        resolve_hir_semantic_input(&graph, &parsed_files, &imports),
+    );
     (db, semantic)
 }
 

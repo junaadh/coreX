@@ -171,7 +171,9 @@ pub struct HirProtocol {
     pub name: String,
     pub generic_params: Vec<String>,
     pub inherited_types: Vec<HirTypeId>,
+    pub properties: Vec<HirProtocolProperty>,
     pub functions: Vec<HirProtocolFunction>,
+    pub associated_types: Vec<HirAssociatedType>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,6 +182,26 @@ pub struct HirProtocolFunction {
     pub init_origin: Option<HirInitOrigin>,
     pub signature: HirFunctionSignature,
     pub default_body: Option<HirBodyId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HirAccessorRequirement {
+    Get,
+    Set,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirProtocolProperty {
+    pub name: String,
+    pub ty: HirTypeId,
+    pub mutability: HirMutability,
+    pub accessors: Vec<HirAccessorRequirement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirAssociatedType {
+    pub name: String,
+    pub bounds: Vec<HirTypeId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

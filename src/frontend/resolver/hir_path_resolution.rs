@@ -12,10 +12,22 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
 
 /// Resolution result for one HIR path expression.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HirPathResolution {
     Local(LocalId),
     Item(HirItemRef),
+    AssociatedMember {
+        type_item_ref: HirItemRef,
+        member_name: String,
+        member_kind: AssociatedMemberKind,
+    },
+}
+
+/// Kinds of associated members that can be resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssociatedMemberKind {
+    Method,
+    Initializer,
 }
 
 /// Key for path-based side tables.
@@ -106,8 +118,19 @@ impl HirPathResolutionTable {
                 names.entry(item.name.clone()).or_insert(item.item_ref);
             }
             top_level_items_by_file.insert(hir_file.file_id, names);
+        }
 
-            for (expr_id, expr) in &module.exprs {
+        // Build the associated member index
+        let member_index = HirAssociatedMemberIndex::build(hir_files, hir_modules, item_table)?;
+
+        for hir_file in hir_files {
+            let _module = hir_modules.get(&hir_file.file_id).ok_or(
+                HirPathResolutionError::MissingModule {
+                    file_id: hir_file.file_id,
+                },
+            )?;
+
+            for (expr_id, expr) in &_module.exprs {
                 let HirExprKind::Path(path) = &expr.kind else {
                     continue;
                 };
@@ -123,7 +146,7 @@ impl HirPathResolutionTable {
                     local_bindings.binding_for_expr(hir_file.file_id, *expr_id)
                 {
                     let resolution = HirPathResolution::Local(binding_id);
-                    by_expr.insert(expr_ref, resolution);
+                    by_expr.insert(expr_ref, resolution.clone());
                     by_path.insert(path_ref, resolution);
                     continue;
                 }
@@ -135,9 +158,31 @@ impl HirPathResolutionTable {
                 );
                 if let Some(item_ref) = global_item {
                     let resolution = HirPathResolution::Item(item_ref);
-                    by_expr.insert(expr_ref, resolution);
+                    by_expr.insert(expr_ref, resolution.clone());
                     by_path.insert(path_ref, resolution);
                     continue;
+                }
+
+                // Try associated member resolution for 2-segment paths
+                if path.segments.len() == 2 {
+                    if let Some(type_item_ref) = top_level_items_by_file
+                        .get(&hir_file.file_id)
+                        .and_then(|items| items.get(&path.segments[0]))
+                        .copied()
+                    {
+                        if let Some(member_info) =
+                            member_index.lookup(type_item_ref, &path.segments[1])
+                        {
+                            let resolution = HirPathResolution::AssociatedMember {
+                                type_item_ref,
+                                member_name: path.segments[1].clone(),
+                                member_kind: member_info.member_kind,
+                            };
+                            by_expr.insert(expr_ref, resolution.clone());
+                            by_path.insert(path_ref, resolution);
+                            continue;
+                        }
+                    }
                 }
 
                 unresolved_diagnostics.push(HirUnresolvedPathDiagnostic {
@@ -226,6 +271,9 @@ impl HirPathResolutionTable {
             .map(|(file_id, scope)| (*file_id, scope.scope_path.clone()))
             .collect::<BTreeMap<_, _>>();
 
+        // Build the associated member index
+        let member_index = HirAssociatedMemberIndex::build(hir_files, hir_modules, item_table)?;
+
         for hir_file in hir_files {
             let module = hir_modules.get(&hir_file.file_id).ok_or(
                 HirPathResolutionError::MissingModule {
@@ -265,21 +313,21 @@ impl HirPathResolutionTable {
                         .binding_for_expr(hir_file.file_id, *expr_id)
                 {
                     let resolution = HirPathResolution::Local(binding_id);
-                    by_expr.insert(expr_ref, resolution);
+                    by_expr.insert(expr_ref, resolution.clone());
                     by_path.insert(path_ref, resolution);
                     continue;
                 }
 
-                if let Some(item_ref) = resolve_hir_path_with_context(
+                if let Some(resolution) = resolve_hir_path_with_context(
                     hir_file.file_id,
                     &segments,
                     imports,
                     &scope_paths_by_file,
                     &current_item_paths,
                     &top_level_items_by_file,
+                    &member_index,
                 ) {
-                    let resolution = HirPathResolution::Item(item_ref);
-                    by_expr.insert(expr_ref, resolution);
+                    by_expr.insert(expr_ref, resolution.clone());
                     by_path.insert(path_ref, resolution);
                     continue;
                 }
@@ -308,7 +356,7 @@ impl HirPathResolutionTable {
     ) -> Option<HirPathResolution> {
         self.by_expr
             .get(&HirExprRef::new(file_id, expr_id))
-            .copied()
+            .cloned()
     }
 
     #[must_use]
@@ -320,7 +368,7 @@ impl HirPathResolutionTable {
     ) -> Option<HirPathResolution> {
         self.by_path
             .get(&HirPathRef::new(file_id, expr_id, segments.to_vec()))
-            .copied()
+            .cloned()
     }
 
     #[must_use]
@@ -379,6 +427,150 @@ impl Display for HirPathResolutionError {
 }
 
 impl std::error::Error for HirPathResolutionError {}
+
+/// Index of associated members (methods and initializers) for nominal types.
+///
+/// This index maps (type_item_ref, member_name) -> member_info for O(log n)
+/// lookup of associated members during path resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirAssociatedMemberIndex {
+    /// Maps (type_item_ref, member_name) -> member info
+    members: BTreeMap<(HirItemRef, String), AssociatedMemberInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AssociatedMemberInfo {
+    pub member_kind: AssociatedMemberKind,
+}
+
+impl HirAssociatedMemberIndex {
+    /// Look up an associated member by type and name.
+    #[must_use]
+    pub fn lookup(
+        &self,
+        type_item_ref: HirItemRef,
+        member_name: &str,
+    ) -> Option<AssociatedMemberInfo> {
+        self.members.get(&(type_item_ref, member_name.to_string())).copied()
+    }
+
+    /// Build the associated member index from HIR files and modules.
+    ///
+    /// This iterates over all structs, enums, and impl blocks to collect
+    /// their methods and initializers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when required HIR containers are missing.
+    pub fn build(
+        hir_files: &[HirFile],
+        hir_modules: &BTreeMap<FileId, HirModule>,
+        item_table: &HirItemTable,
+    ) -> Result<Self, HirPathResolutionError> {
+        let mut members = BTreeMap::new();
+
+        for hir_file in hir_files {
+            let module = hir_modules.get(&hir_file.file_id).ok_or(
+                HirPathResolutionError::MissingModule {
+                    file_id: hir_file.file_id,
+                },
+            )?;
+
+            // Process each item in the file
+            for item_ref in item_table.item_refs_in_file(hir_file.file_id) {
+                let Some(item) = item_table.get(*item_ref) else {
+                    return Err(HirPathResolutionError::MissingItem {
+                        item_ref: *item_ref,
+                    });
+                };
+
+                match item.kind {
+                    HirCollectedItemKind::Struct | HirCollectedItemKind::Enum => {
+                        // Index methods and initializers defined directly on the type
+                        if let Some(hir_item) = module.items.get(&item_ref.item_id) {
+                            let functions = match &hir_item.kind {
+                                crate::frontend::hir::HirItemKind::Struct(s) => {
+                                    &s.functions
+                                }
+                                crate::frontend::hir::HirItemKind::Enum(e) => {
+                                    &e.functions
+                                }
+                                _ => continue,
+                            };
+
+                            for function in functions {
+                                let member_kind = if function.init_origin.is_some() {
+                                    AssociatedMemberKind::Initializer
+                                } else {
+                                    AssociatedMemberKind::Method
+                                };
+                                members.insert(
+                                    (*item_ref, function.name.clone()),
+                                    AssociatedMemberInfo { member_kind },
+                                );
+                            }
+                        }
+                    }
+                    HirCollectedItemKind::Impl => {
+                        // For impl blocks, we need to resolve the target type
+                        // and index members under that type
+                        if let Some(hir_item) = module.items.get(&item_ref.item_id) {
+                            if let crate::frontend::hir::HirItemKind::Impl(impl_block) =
+                                &hir_item.kind
+                            {
+                                // Try to resolve the impl target type to an item reference
+                                // For now, we'll handle simple named types
+                                let target_item_ref = Self::resolve_impl_target(
+                                    impl_block,
+                                    hir_file.file_id,
+                                    item_table,
+                                );
+
+                                if let Some(target_ref) = target_item_ref {
+                                    for function in &impl_block.functions {
+                                        let member_kind =
+                                            if function.init_origin.is_some() {
+                                                AssociatedMemberKind::Initializer
+                                            } else {
+                                                AssociatedMemberKind::Method
+                                            };
+                                        members.insert(
+                                            (target_ref, function.name.clone()),
+                                            AssociatedMemberInfo { member_kind },
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(Self { members })
+    }
+
+    /// Try to resolve an impl block's target type to an item reference.
+    ///
+    /// This handles simple named types like `Point` but not complex types like `Vec<T>`.
+    fn resolve_impl_target(
+        _impl_block: &crate::frontend::hir::HirImpl,
+        _file_id: FileId,
+        _item_table: &HirItemTable,
+    ) -> Option<HirItemRef> {
+        // For now, we need to look at the HIR type and try to find the corresponding item
+        // This is a simplified version that handles the common case
+        // A full implementation would walk the HIR type structure
+
+        // Look for items with matching names in the same file
+        // This is a placeholder - the real implementation needs to:
+        // 1. Extract the type name from the HirTypeId
+        // 2. Look it up in the item table
+        // For now, return None to skip impl block members
+        None
+    }
+}
 
 /// Builds HIR path-resolution side tables.
 ///
@@ -451,7 +643,8 @@ fn resolve_hir_path_with_context(
     scope_paths_by_file: &BTreeMap<FileId, Vec<String>>,
     current_item_paths: &BTreeMap<Vec<String>, HirItemRef>,
     top_level_items_by_file: &BTreeMap<FileId, BTreeMap<String, HirItemRef>>,
-) -> Option<HirItemRef> {
+    member_index: &HirAssociatedMemberIndex,
+) -> Option<HirPathResolution> {
     let first = segments.first()?;
 
     if let Some(imports) = imports
@@ -460,7 +653,7 @@ fn resolve_hir_path_with_context(
     {
         if segments.len() == 1 {
             if binding.kind == HirImportBindingKind::Item {
-                return binding.target_item;
+                return binding.target_item.map(HirPathResolution::Item);
             }
         } else if binding.kind == HirImportBindingKind::Scope {
             let mut full_path = binding.target_path.clone();
@@ -471,7 +664,7 @@ fn resolve_hir_path_with_context(
                 .and_then(|paths| paths.get(&full_path))
                 .copied()
             {
-                return Some(item_ref);
+                return Some(HirPathResolution::Item(item_ref));
             }
         }
     }
@@ -482,15 +675,37 @@ fn resolve_hir_path_with_context(
         if let Some(item_ref) =
             current_item_paths.get(&local_full_path).copied()
         {
-            return Some(item_ref);
+            return Some(HirPathResolution::Item(item_ref));
         }
     }
 
     if segments.len() == 1 {
-        return top_level_items_by_file
+        if let Some(item_ref) = top_level_items_by_file
             .get(&file_id)
             .and_then(|items| items.get(first))
-            .copied();
+            .copied()
+        {
+            return Some(HirPathResolution::Item(item_ref));
+        }
+    }
+
+    // Try associated member resolution for 2-segment paths like Point::init
+    if segments.len() == 2 {
+        if let Some(type_item_ref) = top_level_items_by_file
+            .get(&file_id)
+            .and_then(|items| items.get(&segments[0]))
+            .copied()
+        {
+            if let Some(member_info) =
+                member_index.lookup(type_item_ref, &segments[1])
+            {
+                return Some(HirPathResolution::AssociatedMember {
+                    type_item_ref,
+                    member_name: segments[1].clone(),
+                    member_kind: member_info.member_kind,
+                });
+            }
+        }
     }
 
     None

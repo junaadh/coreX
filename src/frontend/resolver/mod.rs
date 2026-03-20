@@ -41,7 +41,7 @@ pub use hir_item_table::{
     HirItemTableError, build_hir_item_table,
 };
 pub use hir_path_resolution::{
-    HirPathRef, HirPathResolution, HirPathResolutionError,
+    AssociatedMemberKind, HirPathRef, HirPathResolution, HirPathResolutionError,
     HirPathResolutionTable, HirUnresolvedPathDiagnostic,
     build_hir_path_resolution_table,
     build_hir_path_resolution_table_with_graph,

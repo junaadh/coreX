@@ -1,27 +1,29 @@
 use crate::cli_driver::project::{
-    collect_project_cx_files, resolve_target_scope_graph_with_diagnostics,
+    build_dependency_named_roots, collect_project_cx_files,
 };
 use crate::lsp::convert::{
     LspPosition, LspRange, offset_to_position, path_to_uri, position_to_offset,
     span_to_lsp_range, word_span_at_position,
 };
-use crate::lsp::state::ServerState;
-use core_x::frontend::ast::Item;
+use crate::lsp::state::{DocumentPipelineState, ServerState};
+use core_x::frontend::ast::{EnumMember, Item, ProtocolMember, StructMember};
+use core_x::frontend::hir::{
+    HirArrayElement, HirBodyId, HirExprId, HirExprKind, HirStmtKind,
+    HirStructExprField,
+};
 use core_x::frontend::resolver::{
-    ItemId, NamedImportRoot, ResolvedScopeKind, ScopeResolver,
-    resolve_project_imports_with_named_roots_and_diagnostics,
-    resolve_project_scopes,
+    ItemId, ResolvedScopeKind,
 };
 use core_x::frontend::source::{FileId, SourceDb, SourceFile};
 use core_x::frontend::{
     DefinitionLocation, DefinitionTarget, DesugaredFile, Diagnostic,
-    DiagnosticsBag, ExpansionOptions, ExternalSemanticLookup, FrontendContext,
-    GlobalItem, GlobalItemTable, ImportRootKind, ParseSessionError,
-    ProjectLoader, SemanticAnalysis, SemanticCompletionKind,
-    analyze_semantics_with_external_lookup, build_external_semantic_lookup,
-    build_target_roots, collect_item_definition_locations,
-    completion_candidates_for_file, load_local_dependency_project_graph,
-    local_binding_type, lookup_definition_target,
+    DiagnosticsBag, ExternalSemanticLookup, FrontendContext, GlobalItem,
+    GlobalItemTable, ImportRootKind, MacroDefinitionIndex, MacroScopeTable,
+    ParseSessionError, ProjectLoader, SemanticAnalysis,
+    SemanticCompletionKind, analyze_project,
+    build_target_roots, completion_candidates_for_file,
+    load_local_dependency_project_graph, local_binding_type,
+    lookup_definition_target,
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -42,6 +44,9 @@ pub struct DocumentAnalysis {
     path_by_file_id: BTreeMap<FileId, PathBuf>,
     file_id_by_path: BTreeMap<PathBuf, FileId>,
     item_definitions: BTreeMap<ItemId, DefinitionLocation>,
+    method_definitions: BTreeMap<(ItemId, String), DefinitionLocation>,
+    macro_definition_index: Option<MacroDefinitionIndex>,
+    macro_scope_table: Option<MacroScopeTable>,
 }
 
 pub fn analyze_document_cached(
@@ -59,30 +64,44 @@ pub fn analyze_document_cached(
 }
 
 fn analyze_document_uncached(
-    state: &ServerState,
+    state: &mut ServerState,
     uri: &str,
 ) -> Result<DocumentAnalysis, String> {
-    let Some(document) = state.document(uri) else {
+    let Some(document) = state.document(uri).cloned() else {
         return Err(format!("document is not open: {uri}"));
     };
     let open_text_by_path = state.open_text_by_path();
-
-    if let Some(project_root) = find_project_root(&document.path)
-        && let Ok(project_analysis) = analyze_in_project(
-            uri.to_string(),
-            document.path.clone(),
-            &document.text,
-            &open_text_by_path,
-            &project_root,
-        )
-    {
-        return Ok(project_analysis);
+    if state.pipeline_state(uri).is_none() {
+        let pipeline = if let Some(project_root) = find_project_root(&document.path) {
+            build_project_pipeline_state(
+                &document.path,
+                &document.text,
+                &open_text_by_path,
+                &project_root,
+            )
+            .or_else(|_| build_standalone_pipeline_state(&document.path, &document.text))?
+        } else {
+            build_standalone_pipeline_state(&document.path, &document.text)?
+        };
+        state.upsert_pipeline_state(uri.to_string(), pipeline);
     }
 
-    analyze_standalone(
+    let Some(pipeline) = state.pipeline_state_mut(uri) else {
+        return Err(format!("missing analysis pipeline state for {uri}"));
+    };
+    sync_pipeline_with_open_documents(pipeline, &open_text_by_path)?;
+    let frontend_analysis = analyze_project(&mut pipeline.frontend, &pipeline.entry_files)
+        .map_err(|error| {
+            format_parse_session_error(
+                &pipeline.frontend,
+                error,
+                "failed to run canonical frontend analysis for",
+            )
+        })?;
+    build_document_analysis_from_frontend(
         uri.to_string(),
-        document.path.clone(),
-        document.text.clone(),
+        pipeline,
+        frontend_analysis,
     )
 }
 
@@ -252,20 +271,33 @@ pub fn definition_for_position(
     };
     let fallback_word =
         word_span_at_position(file, position).map(|(word, _)| word);
-    let Some(semantic) = &analysis.semantic else {
-        return Vec::new();
-    };
+    if let Some(semantic) = &analysis.semantic {
+        if let Some(target) = lookup_definition_target(
+            semantic,
+            &analysis.imports,
+            &analysis.external_lookup,
+            &analysis.item_definitions,
+            analysis.primary_file_id,
+            offset,
+            fallback_word.as_deref(),
+        ) && let Some(location) =
+            location_for_definition_target(analysis, &target)
+        {
+            return vec![location];
+        }
 
-    if let Some(target) = lookup_definition_target(
-        semantic,
-        &analysis.imports,
-        &analysis.external_lookup,
-        &analysis.item_definitions,
-        analysis.primary_file_id,
-        offset,
-        fallback_word.as_deref(),
-    ) && let Some(location) =
-        location_for_definition_target(analysis, &target)
+        if let Some(location) = method_location_for_position(
+            analysis,
+            semantic,
+            offset,
+            fallback_word.as_deref(),
+        ) {
+            return vec![location];
+        }
+    }
+
+    if let Some(location) =
+        macro_location_for_position(analysis, fallback_word.as_deref())
     {
         return vec![location];
     }
@@ -355,6 +387,10 @@ pub fn inlay_hints_for_range(
         else {
             continue;
         };
+        let Some(env) = semantic.body_envs.env(&body.owner, body.body_index)
+        else {
+            continue;
+        };
 
         for local in &body.locals {
             if local.declared_type.is_some() {
@@ -367,7 +403,12 @@ pub fn inlay_hints_for_range(
             ) {
                 continue;
             }
-            let Some(ty) = typed_body.local_types.get(&local.id) else {
+            let Some(hir_local_id) =
+                env.hir_local_id_for_resolved_local(local.id)
+            else {
+                continue;
+            };
+            let Some(ty) = typed_body.local_types.get(&hir_local_id) else {
                 continue;
             };
             if ty.is_error() {
@@ -414,100 +455,26 @@ pub fn inlay_hints_for_range(
     hints
 }
 
-fn analyze_standalone(
-    uri: String,
-    path: PathBuf,
-    text: String,
-) -> Result<DocumentAnalysis, String> {
+fn build_standalone_pipeline_state(
+    path: &Path,
+    text: &str,
+) -> Result<DocumentPipelineState, String> {
     let mut frontend = FrontendContext::new();
-    let file_id = frontend.add_file(path.clone(), text);
-    let parsed_files = frontend
-        .pre_resolution_pipeline(&[file_id], ExpansionOptions::default())
-        .map_err(|error| {
-            format_parse_session_error(
-                &frontend,
-                error,
-                "failed to run frontend pre-resolution pipeline for",
-            )
-        })?;
-    let db = frontend.into_db();
-
-    let mut diagnostics = DiagnosticsBag::new();
-    for parsed in &parsed_files {
-        diagnostics.extend(parsed.diagnostics.as_slice().iter().cloned());
-    }
-
-    let resolver = ScopeResolver::new(&db, &parsed_files);
-    let (graph, scope_diagnostics) =
-        resolver.resolve_library_root_with_diagnostics(file_id, &db);
-    diagnostics.extend(scope_diagnostics.as_slice().iter().cloned());
-
-    let mut imports = BTreeMap::new();
-    let mut semantic = None;
-    let mut external_lookup = ExternalSemanticLookup::new();
-    let mut item_definitions = BTreeMap::new();
-    if let Some(graph) = &graph {
-        let (symbols, resolved_imports, import_diagnostics) =
-            resolve_project_imports_with_named_roots_and_diagnostics(
-                graph,
-                &parsed_files,
-                &BTreeMap::new(),
-                &db,
-            );
-        let _ = symbols;
-        diagnostics.extend(import_diagnostics.as_slice().iter().cloned());
-        imports = resolved_imports;
-
-        external_lookup = build_external_semantic_lookup(
-            &db,
-            &BTreeMap::new(),
-            graph,
-            &parsed_files,
-        );
-        let semantic_result = analyze_semantics_with_external_lookup(
-            &db,
-            graph,
-            &parsed_files,
-            &imports,
-            &external_lookup,
-        );
-        diagnostics
-            .extend(semantic_result.diagnostics.as_slice().iter().cloned());
-        item_definitions = collect_item_definition_locations(
-            graph,
-            &parsed_files,
-            &semantic_result.global_items,
-        );
-        semantic = Some(semantic_result);
-    }
-
-    let mut path_by_file_id = BTreeMap::new();
-    let mut file_id_by_path = BTreeMap::new();
-    path_by_file_id.insert(file_id, path.clone());
-    file_id_by_path.insert(path, file_id);
-
-    Ok(DocumentAnalysis {
-        uri,
-        db,
-        parsed_files,
-        primary_file_id: file_id,
-        diagnostics,
-        imports,
-        semantic,
-        external_lookup,
-        path_by_file_id,
-        file_id_by_path,
-        item_definitions,
+    let normalized_path = normalize_path(path);
+    let primary_file_id = frontend.add_file(normalized_path, text.to_string());
+    Ok(DocumentPipelineState {
+        frontend,
+        primary_file_id,
+        entry_files: vec![primary_file_id],
     })
 }
 
-fn analyze_in_project(
-    uri: String,
-    path: PathBuf,
+fn build_project_pipeline_state(
+    path: &Path,
     open_text: &str,
     open_text_by_path: &BTreeMap<PathBuf, String>,
     project_root: &Path,
-) -> Result<DocumentAnalysis, String> {
+) -> Result<DocumentPipelineState, String> {
     let loaded_project = ProjectLoader::load_project(project_root)
         .map_err(|error| format!("failed to load project: {error}"))?;
     let project_graph =
@@ -525,12 +492,15 @@ fn analyze_in_project(
         .iter()
         .any(|candidate| normalize_path(candidate) == path)
     {
-        return analyze_standalone(uri, path, open_text.to_string());
+        return Err(format!(
+            "document {} is not part of project {}",
+            path.display(),
+            project_root.display()
+        ));
     }
 
     let mut frontend = FrontendContext::new();
-
-    for file_path in files {
+    for file_path in &files {
         let normalized = normalize_path(&file_path);
         let source = if normalized == path {
             open_text.to_string()
@@ -544,105 +514,127 @@ fn analyze_in_project(
         frontend.add_file(normalized, source);
     }
 
-    let ordered_file_ids = frontend.ordered_file_ids().to_vec();
-    let parsed_files = frontend
-        .pre_resolution_pipeline(&ordered_file_ids, ExpansionOptions::default())
-        .map_err(|error| {
-            format_parse_session_error(
-                &frontend,
-                error,
-                "failed to run frontend pre-resolution pipeline for",
-            )
-        })?;
-    let path_by_file_id = frontend.path_by_file_id().clone();
     let file_id_by_path = frontend.file_id_by_path().clone();
-    let db = frontend.into_db();
-
     let Some(primary_file_id) = file_id_by_path.get(&path).copied() else {
-        return analyze_standalone(uri, path, open_text.to_string());
+        return Err(format!(
+            "missing file id for open project document {}",
+            path.display()
+        ));
     };
 
-    let mut diagnostics = DiagnosticsBag::new();
-    for parsed in &parsed_files {
-        diagnostics.extend(parsed.diagnostics.as_slice().iter().cloned());
+    for binary in &manifest.binaries {
+        let root_path = normalize_path(&binary.root_file);
+        if let Some(file_id) = file_id_by_path.get(&root_path).copied() {
+            frontend.set_root_kind(file_id, ResolvedScopeKind::BinaryRoot);
+        }
     }
+    if let Some(library) = &manifest.library {
+        let root_path = normalize_path(&library.root_file);
+        if let Some(file_id) = file_id_by_path.get(&root_path).copied() {
+            frontend.set_root_kind(file_id, ResolvedScopeKind::Root);
+        }
+    }
+
+    let current_library_import_root =
+        target_roots.by_name.iter().find_map(|(name, root)| {
+            (root.kind == ImportRootKind::CurrentLibrary).then(|| name.clone())
+        });
+    let dependency_named_roots =
+        build_dependency_named_roots(&project_graph, &target_roots)
+            .map_err(|error| {
+                format!("failed to build dependency import roots: {error}")
+            })?;
+    frontend.set_dependency_named_roots(dependency_named_roots);
+    let library_root_file_id = manifest.library.as_ref().and_then(|library| {
+        file_id_by_path.get(&normalize_path(&library.root_file)).copied()
+    });
+    frontend
+        .configure_current_library_root(
+            current_library_import_root,
+            library_root_file_id,
+        );
 
     let (root_kind, root_file_id) =
         select_target_for_file(&manifest, &path, &file_id_by_path)?;
+    frontend.set_root_kind(root_file_id, root_kind);
 
-    let scope_resolver = ScopeResolver::new(&db, &parsed_files);
-    let (graph, scope_diagnostics) =
-        resolve_target_scope_graph_with_diagnostics(
-            &scope_resolver,
-            &db,
-            &parsed_files,
-            root_file_id,
-            root_kind,
-        );
-    diagnostics.extend(scope_diagnostics.as_slice().iter().cloned());
+    Ok(DocumentPipelineState {
+        frontend,
+        primary_file_id,
+        entry_files: vec![root_file_id],
+    })
+}
 
-    let mut imports = BTreeMap::new();
-    let mut semantic = None;
-    let mut external_lookup = ExternalSemanticLookup::new();
-    let mut item_definitions = BTreeMap::new();
-    if let Some(graph) = &graph {
-        let named_roots = build_named_roots_for_project_analysis(
-            root_kind,
-            &scope_resolver,
-            &db,
-            &parsed_files,
-            &file_id_by_path,
-            &project_graph,
-            &target_roots,
-            &mut diagnostics,
-        )?;
-
-        let (symbols, resolved_imports, import_diagnostics) =
-            resolve_project_imports_with_named_roots_and_diagnostics(
-                graph,
-                &parsed_files,
-                &named_roots,
-                &db,
-            );
-        let _ = symbols;
-        diagnostics.extend(import_diagnostics.as_slice().iter().cloned());
-        imports = resolved_imports;
-
-        external_lookup = build_external_semantic_lookup(
-            &db,
-            &named_roots,
-            graph,
-            &parsed_files,
-        );
-        let semantic_result = analyze_semantics_with_external_lookup(
-            &db,
-            graph,
-            &parsed_files,
-            &imports,
-            &external_lookup,
-        );
-        diagnostics
-            .extend(semantic_result.diagnostics.as_slice().iter().cloned());
-        item_definitions = collect_item_definition_locations(
-            graph,
-            &parsed_files,
-            &semantic_result.global_items,
-        );
-        semantic = Some(semantic_result);
+fn sync_pipeline_with_open_documents(
+    pipeline: &mut DocumentPipelineState,
+    open_text_by_path: &BTreeMap<PathBuf, String>,
+) -> Result<(), String> {
+    for (path, text) in open_text_by_path {
+        let normalized = normalize_path(path);
+        let Some(file_id) = pipeline.frontend.file_id_for_path(&normalized)
+        else {
+            continue;
+        };
+        pipeline
+            .frontend
+            .replace_file_source(file_id, text.clone())
+            .map_err(|error| {
+                format_parse_session_error(
+                    &pipeline.frontend,
+                    error,
+                    "failed to update open document source for",
+                )
+            })?;
     }
+    Ok(())
+}
+
+fn build_document_analysis_from_frontend(
+    uri: String,
+    pipeline: &DocumentPipelineState,
+    frontend_analysis: core_x::frontend::FrontendAnalysis,
+) -> Result<DocumentAnalysis, String> {
+    let primary_entry = pipeline
+        .entry_files
+        .first()
+        .copied()
+        .unwrap_or(pipeline.primary_file_id);
+    let resolution = frontend_analysis.resolution_tables.get(&primary_entry);
+    let imports = resolution
+        .map(|tables| tables.imports.clone())
+        .unwrap_or_default();
+    let semantic = frontend_analysis.semantic_tables.get(&primary_entry).cloned();
+    let external_lookup = resolution
+        .map(|tables| tables.external_lookup.clone())
+        .unwrap_or_else(ExternalSemanticLookup::new);
+    let item_definitions = resolution
+        .map(|tables| tables.item_definitions.clone())
+        .unwrap_or_default();
+    let method_definitions = semantic
+        .as_ref()
+        .map(|semantic| {
+            collect_method_definitions(semantic, &frontend_analysis.desugared)
+        })
+        .unwrap_or_default();
+    let macro_definition_index =
+        pipeline.frontend.macro_definition_index().cloned();
+    let macro_scope_table = pipeline.frontend.macro_scope_table().cloned();
 
     Ok(DocumentAnalysis {
         uri,
-        db,
-        parsed_files,
-        primary_file_id,
-        diagnostics,
+        db: pipeline.frontend.db().clone(),
+        parsed_files: frontend_analysis.desugared,
+        primary_file_id: pipeline.primary_file_id,
+        diagnostics: frontend_analysis.diagnostics,
         imports,
         semantic,
         external_lookup,
-        path_by_file_id,
-        file_id_by_path,
+        path_by_file_id: pipeline.frontend.path_by_file_id().clone(),
+        file_id_by_path: pipeline.frontend.file_id_by_path().clone(),
         item_definitions,
+        method_definitions,
+        macro_definition_index,
+        macro_scope_table,
     })
 }
 
@@ -726,141 +718,584 @@ fn format_parse_session_error(
     }
 }
 
-fn build_named_roots_for_project_analysis(
-    root_kind: ResolvedScopeKind,
-    scope_resolver: &ScopeResolver<'_>,
-    db: &SourceDb,
+fn collect_method_definitions(
+    semantic: &SemanticAnalysis,
     parsed_files: &[DesugaredFile],
-    file_id_by_path: &BTreeMap<PathBuf, FileId>,
-    project_graph: &core_x::frontend::ProjectGraph,
-    target_roots: &core_x::frontend::TargetRoots,
-    diagnostics: &mut DiagnosticsBag,
-) -> Result<BTreeMap<String, NamedImportRoot>, String> {
-    let mut named_roots = BTreeMap::new();
+) -> BTreeMap<(ItemId, String), DefinitionLocation> {
+    let mut method_definitions = BTreeMap::new();
 
-    if root_kind == ResolvedScopeKind::BinaryRoot
-        && let Some(library_target) =
-            &project_graph.root_project.manifest.library
-        && let Some(library_root_id) =
-            file_id_by_path.get(&normalize_path(&library_target.root_file))
-    {
-        let (library_graph, library_diagnostics) = scope_resolver
-            .resolve_library_root_with_diagnostics(*library_root_id, db);
-        diagnostics.extend(library_diagnostics.as_slice().iter().cloned());
-        if let Some(library_graph) = library_graph {
-            named_roots.insert(
-                library_target.name.clone(),
-                NamedImportRoot::LoadedLibrary {
-                    graph: library_graph,
-                    parsed_files: parsed_files.to_vec(),
-                    path_by_file_id: file_id_by_path
-                        .iter()
-                        .map(|(path, file_id)| (*file_id, path.clone()))
-                        .collect(),
-                },
+    for parsed in parsed_files {
+        let in_scope_items = semantic
+            .global_items
+            .items_in_scope(parsed.file_id)
+            .into_iter()
+            .map(|item| (item.name.clone(), item.kind, item.id))
+            .collect::<Vec<_>>();
+        for item in &parsed.ast.items {
+            let (item_name, item_kind) = match &item.node {
+                Item::Struct(struct_decl) => (
+                    struct_decl.node.name.clone(),
+                    core_x::frontend::ItemKind::Struct,
+                ),
+                Item::Enum(enum_decl) => (
+                    enum_decl.node.name.clone(),
+                    core_x::frontend::ItemKind::Enum,
+                ),
+                Item::Protocol(protocol_decl) => (
+                    protocol_decl.node.name.clone(),
+                    core_x::frontend::ItemKind::Protocol,
+                ),
+                _ => continue,
+            };
+            let Some(item_id) = in_scope_items
+                .iter()
+                .find_map(|(name, kind, id)| {
+                    (name == &item_name && *kind == item_kind).then_some(*id)
+                })
+            else {
+                continue;
+            };
+        match &item.node {
+            Item::Struct(struct_decl) => {
+                for member in &struct_decl.node.members {
+                    match &member.node {
+                        StructMember::Function(function_decl) => {
+                            method_definitions.insert(
+                                (item_id, function_decl.node.name.clone()),
+                                DefinitionLocation {
+                                    file_id: parsed.file_id,
+                                    span: member.span,
+                                },
+                            );
+                        }
+                        StructMember::Init(_) => {
+                            method_definitions.insert(
+                                (item_id, "init".to_string()),
+                                DefinitionLocation {
+                                    file_id: parsed.file_id,
+                                    span: member.span,
+                                },
+                            );
+                        }
+                        StructMember::Field(_) => {}
+                    }
+                }
+            }
+            Item::Enum(enum_decl) => {
+                for member in &enum_decl.node.members {
+                    match &member.node {
+                        EnumMember::Function(function_decl) => {
+                            method_definitions.insert(
+                                (item_id, function_decl.node.name.clone()),
+                                DefinitionLocation {
+                                    file_id: parsed.file_id,
+                                    span: member.span,
+                                },
+                            );
+                        }
+                        EnumMember::Init(_) => {
+                            method_definitions.insert(
+                                (item_id, "init".to_string()),
+                                DefinitionLocation {
+                                    file_id: parsed.file_id,
+                                    span: member.span,
+                                },
+                            );
+                        }
+                        EnumMember::Case(_) => {}
+                    }
+                }
+            }
+            Item::Protocol(protocol_decl) => {
+                for member in &protocol_decl.node.members {
+                    match &member.node {
+                        ProtocolMember::Function(function_member) => {
+                            method_definitions.insert(
+                                (item_id, function_member.node.name.clone()),
+                                DefinitionLocation {
+                                    file_id: parsed.file_id,
+                                    span: member.span,
+                                },
+                            );
+                        }
+                        ProtocolMember::Initializer(_) => {
+                            method_definitions.insert(
+                                (item_id, "init".to_string()),
+                                DefinitionLocation {
+                                    file_id: parsed.file_id,
+                                    span: member.span,
+                                },
+                            );
+                        }
+                        ProtocolMember::AssociatedType(_)
+                        | ProtocolMember::Property(_) => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+        }
+    }
+
+    method_definitions
+}
+
+fn method_location_for_position(
+    analysis: &DocumentAnalysis,
+    semantic: &SemanticAnalysis,
+    offset: usize,
+    fallback_word: Option<&str>,
+) -> Option<Value> {
+    for body in semantic.resolved_bodies.iter() {
+        if body.containing_scope_file_id != analysis.primary_file_id {
+            continue;
+        }
+        let body_ref = semantic.hir.body_ref(&body.owner, body.body_index)?;
+        if body_ref.file_id != analysis.primary_file_id {
+            continue;
+        }
+        let module = semantic.hir.hir_modules.get(&body_ref.file_id)?;
+        let Some(method_call) = find_method_call_at_offset(
+            module,
+            body_ref.body_id,
+            offset,
+            fallback_word,
+        ) else {
+            continue;
+        };
+        let Some(receiver_ty) = semantic.expr_types.expr_type_for_hir_expr(
+            &body.owner,
+            body.body_index,
+            method_call.receiver_expr_id,
+        ) else {
+            continue;
+        };
+        let Some(receiver_item_id) = named_item_id_from_type(receiver_ty) else {
+            continue;
+        };
+        let key = (receiver_item_id, method_call.method_name.clone());
+        let Some(location) = analysis.method_definitions.get(&key) else {
+            continue;
+        };
+        if let Some(value) = location_for_file_and_span(
+            analysis,
+            location.file_id,
+            location.span,
+        ) {
+            return Some(value);
+        }
+    }
+    if let Some(word) = fallback_word {
+        let matches = analysis
+            .method_definitions
+            .iter()
+            .filter_map(|((_, name), location)| {
+                (name == word).then_some(*location)
+            })
+            .collect::<Vec<_>>();
+        if matches.len() == 1 {
+            let location = matches[0];
+            return location_for_file_and_span(
+                analysis,
+                location.file_id,
+                location.span,
             );
         }
     }
+    None
+}
 
-    for (name, root) in &target_roots.by_name {
-        match root.kind {
-            ImportRootKind::CurrentLibrary => {}
-            ImportRootKind::UnloadedGitDependency => {
-                named_roots
-                    .insert(name.clone(), NamedImportRoot::UnloadedDependency);
+#[derive(Debug, Clone)]
+struct MethodCallMatch {
+    receiver_expr_id: HirExprId,
+    method_name: String,
+    span_len: usize,
+}
+
+fn find_method_call_at_offset(
+    module: &core_x::frontend::HirModule,
+    body_id: HirBodyId,
+    offset: usize,
+    fallback_word: Option<&str>,
+) -> Option<MethodCallMatch> {
+    let body = module.bodies.get(&body_id)?;
+    let mut best = None::<MethodCallMatch>;
+    for stmt_id in &body.stmts {
+        let Some(stmt) = module.stmts.get(stmt_id) else {
+            continue;
+        };
+        match &stmt.kind {
+            HirStmtKind::Let(let_stmt) => {
+                if let Some(value) = let_stmt.value {
+                    search_method_call_in_expr(
+                        module,
+                        value,
+                        offset,
+                        fallback_word,
+                        &mut best,
+                    );
+                }
             }
-            ImportRootKind::LocalDependencyLibrary => {
-                let dependency = project_graph
-                    .local_dependencies
-                    .iter()
-                    .find(|dependency| dependency.dependency_name == *name)
-                    .ok_or_else(|| {
-                        format!(
-                            "missing loaded local dependency project for root `{name}`"
-                        )
-                    })?;
-                let library_target =
-                    dependency.project.manifest.library.as_ref().ok_or_else(
-                        || {
-                            format!(
-                                "dependency `{}` has no library target",
-                                dependency.dependency_name
-                            )
-                        },
-                    )?;
-                let (dep_db, dep_parsed_files, dep_file_id_by_path) =
-                    parse_loaded_project_files(&dependency.project)?;
-                let library_root_file_id = dep_file_id_by_path
-                    .get(&library_target.root_file)
-                    .copied()
-                    .ok_or_else(|| {
-                        format!(
-                            "missing dependency library root file {}",
-                            library_target.root_file.display()
-                        )
-                    })?;
-                let graph = resolve_project_scopes(
-                    &dep_db,
-                    &dep_parsed_files,
-                    library_root_file_id,
-                    ResolvedScopeKind::Root,
-                )
-                .map_err(|error| {
-                    format!(
-                        "failed to resolve dependency root `{}`: {error}",
-                        dependency.dependency_name
-                    )
-                })?;
-                named_roots.insert(
-                    name.clone(),
-                    NamedImportRoot::LoadedLibrary {
-                        graph,
-                        parsed_files: dep_parsed_files,
-                        path_by_file_id: dep_file_id_by_path
-                            .iter()
-                            .map(|(path, file_id)| (*file_id, path.clone()))
-                            .collect(),
-                    },
+            HirStmtKind::Expr { expr } | HirStmtKind::Semi { expr } => {
+                search_method_call_in_expr(
+                    module,
+                    *expr,
+                    offset,
+                    fallback_word,
+                    &mut best,
                 );
+            }
+            HirStmtKind::Item { .. } => {}
+        }
+    }
+    if let Some(tail_expr) = body.tail_expr {
+        search_method_call_in_expr(
+            module,
+            tail_expr,
+            offset,
+            fallback_word,
+            &mut best,
+        );
+    }
+    best
+}
+
+fn search_method_call_in_expr(
+    module: &core_x::frontend::HirModule,
+    expr_id: HirExprId,
+    offset: usize,
+    fallback_word: Option<&str>,
+    best: &mut Option<MethodCallMatch>,
+) {
+    let Some(expr) = module.exprs.get(&expr_id) else {
+        return;
+    };
+    let span = expr.origin.span;
+    if span.start <= offset && offset <= span.end {
+        if let HirExprKind::MethodCall {
+            receiver,
+            method_name,
+            ..
+        } = &expr.kind
+        {
+            if fallback_word.map_or(true, |word| word == method_name.as_str()) {
+                let candidate = MethodCallMatch {
+                    receiver_expr_id: *receiver,
+                    method_name: method_name.clone(),
+                    span_len: span.end.saturating_sub(span.start),
+                };
+                if best.as_ref().map_or(
+                    true,
+                    |existing| candidate.span_len <= existing.span_len,
+                ) {
+                    *best = Some(candidate);
+                }
             }
         }
     }
 
-    Ok(named_roots)
+    match &expr.kind {
+        HirExprKind::Array { elements } => {
+            for element in elements {
+                let child = match element {
+                    HirArrayElement::Expr(id)
+                    | HirArrayElement::Spread(id) => *id,
+                };
+                search_method_call_in_expr(
+                    module,
+                    child,
+                    offset,
+                    fallback_word,
+                    best,
+                );
+            }
+        }
+        HirExprKind::Call { callee, args } => {
+            search_method_call_in_expr(
+                module,
+                *callee,
+                offset,
+                fallback_word,
+                best,
+            );
+            for arg in args {
+                search_method_call_in_expr(
+                    module,
+                    arg.value,
+                    offset,
+                    fallback_word,
+                    best,
+                );
+            }
+        }
+        HirExprKind::Block { body } => {
+            if let Some(child) =
+                find_method_call_at_offset(module, *body, offset, fallback_word)
+            {
+                if best.as_ref().map_or(
+                    true,
+                    |existing| child.span_len <= existing.span_len,
+                ) {
+                    *best = Some(child);
+                }
+            }
+        }
+        HirExprKind::If {
+            condition,
+            then_body,
+            else_expr,
+        } => {
+            search_method_call_in_expr(
+                module,
+                *condition,
+                offset,
+                fallback_word,
+                best,
+            );
+            if let Some(child) = find_method_call_at_offset(
+                module,
+                *then_body,
+                offset,
+                fallback_word,
+            ) {
+                if best.as_ref().map_or(
+                    true,
+                    |existing| child.span_len <= existing.span_len,
+                ) {
+                    *best = Some(child);
+                }
+            }
+            if let Some(else_expr) = else_expr {
+                search_method_call_in_expr(
+                    module,
+                    *else_expr,
+                    offset,
+                    fallback_word,
+                    best,
+                );
+            }
+        }
+        HirExprKind::While { condition, body } => {
+            search_method_call_in_expr(
+                module,
+                *condition,
+                offset,
+                fallback_word,
+                best,
+            );
+            if let Some(child) =
+                find_method_call_at_offset(module, *body, offset, fallback_word)
+            {
+                if best.as_ref().map_or(
+                    true,
+                    |existing| child.span_len <= existing.span_len,
+                ) {
+                    *best = Some(child);
+                }
+            }
+        }
+        HirExprKind::For { iterator, body, .. } => {
+            search_method_call_in_expr(
+                module,
+                *iterator,
+                offset,
+                fallback_word,
+                best,
+            );
+            if let Some(child) =
+                find_method_call_at_offset(module, *body, offset, fallback_word)
+            {
+                if best.as_ref().map_or(
+                    true,
+                    |existing| child.span_len <= existing.span_len,
+                ) {
+                    *best = Some(child);
+                }
+            }
+        }
+        HirExprKind::Return { value } => {
+            if let Some(value) = value {
+                search_method_call_in_expr(
+                    module,
+                    *value,
+                    offset,
+                    fallback_word,
+                    best,
+                );
+            }
+        }
+        HirExprKind::Assign { target, value, .. } => {
+            search_method_call_in_expr(
+                module,
+                *target,
+                offset,
+                fallback_word,
+                best,
+            );
+            search_method_call_in_expr(
+                module,
+                *value,
+                offset,
+                fallback_word,
+                best,
+            );
+        }
+        HirExprKind::Unary { expr, .. }
+        | HirExprKind::ForceUnwrap { expr }
+        | HirExprKind::Cast { expr, .. }
+        | HirExprKind::Spread { expr }
+        | HirExprKind::Try { expr } => {
+            search_method_call_in_expr(
+                module,
+                *expr,
+                offset,
+                fallback_word,
+                best,
+            );
+        }
+        HirExprKind::Binary { lhs, rhs, .. } => {
+            search_method_call_in_expr(module, *lhs, offset, fallback_word, best);
+            search_method_call_in_expr(module, *rhs, offset, fallback_word, best);
+        }
+        HirExprKind::Field { base, .. }
+        | HirExprKind::OptionalField { base, .. }
+        | HirExprKind::NamespaceField { base, .. } => {
+            search_method_call_in_expr(
+                module,
+                *base,
+                offset,
+                fallback_word,
+                best,
+            );
+        }
+        HirExprKind::MethodCall { receiver, args, .. } => {
+            search_method_call_in_expr(
+                module,
+                *receiver,
+                offset,
+                fallback_word,
+                best,
+            );
+            for arg in args {
+                search_method_call_in_expr(
+                    module,
+                    arg.value,
+                    offset,
+                    fallback_word,
+                    best,
+                );
+            }
+        }
+        HirExprKind::Index { base, index }
+        | HirExprKind::OptionalIndex { base, index } => {
+            search_method_call_in_expr(
+                module,
+                *base,
+                offset,
+                fallback_word,
+                best,
+            );
+            search_method_call_in_expr(
+                module,
+                *index,
+                offset,
+                fallback_word,
+                best,
+            );
+        }
+        HirExprKind::Tuple { elements } => {
+            for element in elements {
+                search_method_call_in_expr(
+                    module,
+                    *element,
+                    offset,
+                    fallback_word,
+                    best,
+                );
+            }
+        }
+        HirExprKind::Struct { fields, .. } => {
+            for field in fields {
+                let value = match field {
+                    HirStructExprField::Named { value, .. }
+                    | HirStructExprField::Spread { value } => value,
+                };
+                search_method_call_in_expr(
+                    module,
+                    *value,
+                    offset,
+                    fallback_word,
+                    best,
+                );
+            }
+        }
+        HirExprKind::Match { subject, arms } => {
+            search_method_call_in_expr(
+                module,
+                *subject,
+                offset,
+                fallback_word,
+                best,
+            );
+            for arm in arms {
+                search_method_call_in_expr(
+                    module,
+                    arm.expr,
+                    offset,
+                    fallback_word,
+                    best,
+                );
+            }
+        }
+        HirExprKind::Closure { body, .. } => {
+            if let Some(child) =
+                find_method_call_at_offset(module, *body, offset, fallback_word)
+            {
+                if best.as_ref().map_or(
+                    true,
+                    |existing| child.span_len <= existing.span_len,
+                ) {
+                    *best = Some(child);
+                }
+            }
+        }
+        HirExprKind::Range { start, end, .. } => {
+            if let Some(start) = start {
+                search_method_call_in_expr(
+                    module,
+                    *start,
+                    offset,
+                    fallback_word,
+                    best,
+                );
+            }
+            if let Some(end) = end {
+                search_method_call_in_expr(
+                    module,
+                    *end,
+                    offset,
+                    fallback_word,
+                    best,
+                );
+            }
+        }
+        HirExprKind::Literal(_)
+        | HirExprKind::Path(_)
+        | HirExprKind::Break
+        | HirExprKind::Continue => {}
+    }
 }
 
-fn parse_loaded_project_files(
-    project: &core_x::frontend::LoadedProject,
-) -> Result<(SourceDb, Vec<DesugaredFile>, BTreeMap<PathBuf, FileId>), String> {
-    let project_files =
-        collect_project_cx_files(&project.manifest).map_err(|error| {
-            format!("failed collecting dependency files: {error}")
-        })?;
-    let mut frontend = FrontendContext::new();
-
-    for absolute_path in project_files {
-        let source = fs::read_to_string(&absolute_path).map_err(|error| {
-            format!(
-                "failed reading dependency file {}: {error}",
-                absolute_path.display()
-            )
-        })?;
-        frontend.add_file(absolute_path, source);
+fn named_item_id_from_type(ty: &core_x::frontend::Type) -> Option<ItemId> {
+    match ty {
+        core_x::frontend::Type::Named { item_id, .. } => Some(*item_id),
+        core_x::frontend::Type::Pointer { pointee, .. } => {
+            named_item_id_from_type(pointee)
+        }
+        core_x::frontend::Type::Builtin(_) | core_x::frontend::Type::Error => {
+            None
+        }
     }
-
-    let ordered_file_ids = frontend.ordered_file_ids().to_vec();
-    let desugared_files = frontend
-        .pre_resolution_pipeline(&ordered_file_ids, ExpansionOptions::default())
-        .map_err(|error| {
-            format_parse_session_error(
-                &frontend,
-                error,
-                "failed to run frontend pre-resolution pipeline for dependency file",
-            )
-        })?;
-    let file_id_by_path = frontend.file_id_by_path().clone();
-
-    Ok((frontend.into_db(), desugared_files, file_id_by_path))
 }
 
 fn diagnostic_to_lsp(
@@ -934,6 +1369,21 @@ fn location_for_definition_target(
             }))
         }
     }
+}
+
+fn macro_location_for_position(
+    analysis: &DocumentAnalysis,
+    fallback_word: Option<&str>,
+) -> Option<Value> {
+    let macro_name = fallback_word?;
+    let macro_scope_table = analysis.macro_scope_table.as_ref()?;
+    let macro_definition_index = analysis.macro_definition_index.as_ref()?;
+    let resolved_macro_name = macro_scope_table
+        .binding_for_file(analysis.primary_file_id, macro_name)
+        .map_or(macro_name, |binding| binding.macro_name.as_str());
+    let (file_id, span) =
+        macro_definition_index.declaration_location(resolved_macro_name)?;
+    location_for_file_and_span(analysis, file_id, span)
 }
 
 fn location_for_file_and_span(

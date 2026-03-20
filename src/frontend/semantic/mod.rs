@@ -12,8 +12,9 @@ mod typed_bodies;
 mod types;
 
 pub use analysis::{
-    SemanticAnalysis, SemanticAnalysisIssues, analyze_semantics,
-    analyze_semantics_with_external_lookup,
+    ResolvedHirSemanticInput, SemanticAnalysis, SemanticAnalysisIssues,
+    analyze_semantics, analyze_semantics_with_external_lookup,
+    resolve_hir_semantic_input,
 };
 pub use body_env::{
     BodyEnvIssue, BodyEnvIssueKind, BodyLocalBindingInfo, BodyTypeEnvironment,

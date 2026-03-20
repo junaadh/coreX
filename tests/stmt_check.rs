@@ -60,11 +60,16 @@ fn run_pipeline(
 ) -> Pipeline {
     let graph = resolve_library_graph(db, parsed_files, root_file_id);
     let item_table = GlobalItemTable::collect(&graph, parsed_files);
+    let hir = core_x::frontend::SemanticHirInput::build(
+        &graph,
+        parsed_files,
+        &item_table,
+    );
     let (_, imports) =
         resolve_project_imports(&graph, parsed_files).expect("imports");
     let declarations =
         resolve_declaration_types(&graph, parsed_files, &imports, &item_table);
-    let signatures = type_declaration_signatures(&declarations, &item_table);
+    let signatures = type_declaration_signatures(&hir, &item_table);
     let typed_items = build_typed_item_table(&item_table, &signatures);
     let bodies = resolve_bodies(
         &graph,
@@ -73,15 +78,8 @@ fn run_pipeline(
         &item_table,
         &declarations,
     );
-    let body_envs = build_body_type_environments(&bodies, &typed_items);
-    let stmt_types = check_statements(
-        &graph,
-        parsed_files,
-        &item_table,
-        &typed_items,
-        &bodies,
-        &body_envs,
-    );
+    let body_envs = build_body_type_environments(&hir, &bodies, &typed_items);
+    let stmt_types = check_statements(&hir, &typed_items, &bodies, &body_envs);
     Pipeline {
         item_table,
         bodies,

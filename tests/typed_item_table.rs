@@ -1,8 +1,7 @@
 use core_x::frontend::DesugaredFile;
 use core_x::frontend::parser::parse_source_file_from_source_file;
 use core_x::frontend::resolver::{
-    GlobalItemTable, ItemId, ScopeGraph, ScopeResolver,
-    resolve_declaration_types, resolve_project_imports,
+    GlobalItemTable, ItemId, ScopeGraph, ScopeResolver, resolve_project_imports,
 };
 use core_x::frontend::source::{FileId, SourceDb};
 use core_x::frontend::{
@@ -47,11 +46,10 @@ fn build_tables(
     parsed_files: &[DesugaredFile],
 ) -> (GlobalItemTable, core_x::frontend::TypedSignatureTable) {
     let global = GlobalItemTable::collect(graph, parsed_files);
-    let (_, imports) =
-        resolve_project_imports(graph, parsed_files).expect("imports");
-    let declarations =
-        resolve_declaration_types(graph, parsed_files, &imports, &global);
-    let signatures = type_declaration_signatures(&declarations, &global);
+    let hir =
+        core_x::frontend::SemanticHirInput::build(graph, parsed_files, &global);
+    let _ = resolve_project_imports(graph, parsed_files).expect("imports");
+    let signatures = type_declaration_signatures(&hir, &global);
     (global, signatures)
 }
 
