@@ -7,7 +7,6 @@ use crate::lsp::convert::{
 };
 use crate::lsp::state::ServerState;
 use core_x::frontend::ast::Item;
-use core_x::frontend::parser::parse_source_file_from_source_file_with_recovery;
 use core_x::frontend::resolver::{
     ItemId, NamedImportRoot, ResolvedScopeKind, ScopeResolver,
     resolve_project_imports_with_named_roots_and_diagnostics,
@@ -16,12 +15,12 @@ use core_x::frontend::resolver::{
 use core_x::frontend::source::{FileId, SourceDb, SourceFile};
 use core_x::frontend::{
     DefinitionLocation, DefinitionTarget, DesugaredFile, Diagnostic,
-    DiagnosticsBag, ExpansionOptions, ExternalSemanticLookup, GlobalItem,
-    GlobalItemTable, ImportRootKind, ProjectLoader, SemanticAnalysis,
-    SemanticCompletionKind, analyze_semantics_with_external_lookup,
-    build_external_semantic_lookup, build_target_roots,
-    collect_item_definition_locations, completion_candidates_for_file,
-    desugar_files, expand_parsed_files, load_local_dependency_project_graph,
+    DiagnosticsBag, ExpansionOptions, ExternalSemanticLookup, FrontendContext,
+    GlobalItem, GlobalItemTable, ImportRootKind, ParseSessionError,
+    ProjectLoader, SemanticAnalysis, SemanticCompletionKind,
+    analyze_semantics_with_external_lookup, build_external_semantic_lookup,
+    build_target_roots, collect_item_definition_locations,
+    completion_candidates_for_file, load_local_dependency_project_graph,
     local_binding_type, lookup_definition_target,
 };
 use serde_json::{Value, json};
@@ -420,18 +419,18 @@ fn analyze_standalone(
     path: PathBuf,
     text: String,
 ) -> Result<DocumentAnalysis, String> {
-    let mut db = SourceDb::new();
-    let file_id = db.add_file(path.clone(), text);
-    let Some(file) = db.file(file_id) else {
-        return Err(format!("missing source file id {}", file_id.raw()));
-    };
-    let parsed = parse_source_file_from_source_file_with_recovery(file)
-        .map_err(|error| format!("failed to initialize parser: {error}"))?;
-    // Pipeline: parse -> expand -> desugar
-    let expanded_files =
-        expand_parsed_files(&db, &[parsed], ExpansionOptions::default());
-    let desugared_files = desugar_files(&expanded_files);
-    let parsed_files = desugared_files;
+    let mut frontend = FrontendContext::new();
+    let file_id = frontend.add_file(path.clone(), text);
+    let parsed_files = frontend
+        .pre_resolution_pipeline(&[file_id], ExpansionOptions::default())
+        .map_err(|error| {
+            format_parse_session_error(
+                &frontend,
+                error,
+                "failed to run frontend pre-resolution pipeline for",
+            )
+        })?;
+    let db = frontend.into_db();
 
     let mut diagnostics = DiagnosticsBag::new();
     for parsed in &parsed_files {
@@ -529,10 +528,7 @@ fn analyze_in_project(
         return analyze_standalone(uri, path, open_text.to_string());
     }
 
-    let mut db = SourceDb::new();
-    let mut parsed = Vec::with_capacity(files.len());
-    let mut path_by_file_id = BTreeMap::new();
-    let mut file_id_by_path = BTreeMap::new();
+    let mut frontend = FrontendContext::new();
 
     for file_path in files {
         let normalized = normalize_path(&file_path);
@@ -545,24 +541,22 @@ fn analyze_in_project(
                 format!("failed reading {}: {error}", normalized.display())
             })?
         };
-        let file_id = db.add_file(normalized.clone(), source);
-        let Some(file) = db.file(file_id) else {
-            return Err(format!("missing source file id {}", file_id.raw()));
-        };
-        let parsed_file = parse_source_file_from_source_file_with_recovery(
-            file,
-        )
-        .map_err(|error| format!("failed to initialize parser: {error}"))?;
-        parsed.push(parsed_file);
-        path_by_file_id.insert(file_id, normalized.clone());
-        file_id_by_path.insert(normalized, file_id);
+        frontend.add_file(normalized, source);
     }
 
-    // Pipeline: parse -> expand -> desugar
-    let expanded_files =
-        expand_parsed_files(&db, &parsed, ExpansionOptions::default());
-    let desugared_files = desugar_files(&expanded_files);
-    let parsed_files = desugared_files;
+    let ordered_file_ids = frontend.ordered_file_ids().to_vec();
+    let parsed_files = frontend
+        .pre_resolution_pipeline(&ordered_file_ids, ExpansionOptions::default())
+        .map_err(|error| {
+            format_parse_session_error(
+                &frontend,
+                error,
+                "failed to run frontend pre-resolution pipeline for",
+            )
+        })?;
+    let path_by_file_id = frontend.path_by_file_id().clone();
+    let file_id_by_path = frontend.file_id_by_path().clone();
+    let db = frontend.into_db();
 
     let Some(primary_file_id) = file_id_by_path.get(&path).copied() else {
         return analyze_standalone(uri, path, open_text.to_string());
@@ -708,6 +702,30 @@ fn normalize_path(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+fn format_parse_session_error(
+    context: &FrontendContext,
+    error: ParseSessionError,
+    message_prefix: &str,
+) -> String {
+    match error {
+        ParseSessionError::MissingFile { file_id } => {
+            format!(
+                "{} missing source file id {}",
+                message_prefix,
+                file_id.raw()
+            )
+        }
+        ParseSessionError::Parse(file_error) => {
+            let path =
+                context.path_for_file_id(file_error.file_id).map_or_else(
+                    || format!("<unknown:{}>", file_error.file_id.raw()),
+                    |path| path.display().to_string(),
+                );
+            format!("{} {}: {}", message_prefix, path, file_error.error)
+        }
+    }
+}
+
 fn build_named_roots_for_project_analysis(
     root_kind: ResolvedScopeKind,
     scope_resolver: &ScopeResolver<'_>,
@@ -818,9 +836,7 @@ fn parse_loaded_project_files(
         collect_project_cx_files(&project.manifest).map_err(|error| {
             format!("failed collecting dependency files: {error}")
         })?;
-    let mut db = SourceDb::new();
-    let mut parsed = Vec::with_capacity(project_files.len());
-    let mut file_id_by_path = BTreeMap::new();
+    let mut frontend = FrontendContext::new();
 
     for absolute_path in project_files {
         let source = fs::read_to_string(&absolute_path).map_err(|error| {
@@ -829,32 +845,22 @@ fn parse_loaded_project_files(
                 absolute_path.display()
             )
         })?;
-        let file_id = db.add_file(absolute_path.clone(), source);
-        let Some(file) = db.file(file_id) else {
-            return Err(format!(
-                "missing dependency source file id {}",
-                file_id.raw()
-            ));
-        };
-        let parsed_file = parse_source_file_from_source_file_with_recovery(
-            file,
-        )
-        .map_err(|error| {
-            format!(
-                "failed to initialize parser for dependency file {}: {error}",
-                absolute_path.display()
-            )
-        })?;
-        parsed.push(parsed_file);
-        file_id_by_path.insert(absolute_path, file_id);
+        frontend.add_file(absolute_path, source);
     }
 
-    // Pipeline: parse -> expand -> desugar
-    let expanded_files =
-        expand_parsed_files(&db, &parsed, ExpansionOptions::default());
-    let desugared_files = desugar_files(&expanded_files);
+    let ordered_file_ids = frontend.ordered_file_ids().to_vec();
+    let desugared_files = frontend
+        .pre_resolution_pipeline(&ordered_file_ids, ExpansionOptions::default())
+        .map_err(|error| {
+            format_parse_session_error(
+                &frontend,
+                error,
+                "failed to run frontend pre-resolution pipeline for dependency file",
+            )
+        })?;
+    let file_id_by_path = frontend.file_id_by_path().clone();
 
-    Ok((db, desugared_files, file_id_by_path))
+    Ok((frontend.into_db(), desugared_files, file_id_by_path))
 }
 
 fn diagnostic_to_lsp(

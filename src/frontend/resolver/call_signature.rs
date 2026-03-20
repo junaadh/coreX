@@ -5,7 +5,9 @@
 //! by their parameter labels, enabling later phases to resolve calls based on
 //! label matching.
 
-use crate::frontend::hir::{HirFunction, HirFunctionParam, HirInitOrigin, HirParamLabel};
+use crate::frontend::hir::{
+    HirFunction, HirFunctionParam, HirInitOrigin, HirParamLabel,
+};
 use std::fmt;
 
 /// External label form for a call-site parameter.
@@ -27,7 +29,9 @@ impl CallParamLabel {
     fn from_hir_param_label(hir_label: &HirParamLabel) -> Self {
         match hir_label {
             HirParamLabel::None => CallParamLabel::None,
-            HirParamLabel::Explicit(label) => CallParamLabel::Explicit(label.clone()),
+            HirParamLabel::Explicit(label) => {
+                CallParamLabel::Explicit(label.clone())
+            }
             HirParamLabel::FromName => CallParamLabel::FromName,
         }
     }
@@ -73,7 +77,9 @@ impl CallParam {
     /// Create a CallParam from HIR function parameter.
     pub fn from_hir_param(hir_param: &HirFunctionParam) -> Self {
         CallParam {
-            label: CallParamLabel::from_hir_param_label(&hir_param.external_label),
+            label: CallParamLabel::from_hir_param_label(
+                &hir_param.external_label,
+            ),
             internal_name: hir_param.name.clone(),
         }
     }
@@ -156,8 +162,12 @@ impl fmt::Display for CallSignature {
             }
             match &param.label {
                 CallParamLabel::None => write!(f, "_ {}", param.internal_name),
-                CallParamLabel::Explicit(label) => write!(f, "{} {}", label, param.internal_name),
-                CallParamLabel::FromName => write!(f, "{}", param.internal_name),
+                CallParamLabel::Explicit(label) => {
+                    write!(f, "{} {}", label, param.internal_name)
+                }
+                CallParamLabel::FromName => {
+                    write!(f, "{}", param.internal_name)
+                }
             }?;
         }
         write!(f, ")")?;
@@ -248,11 +258,8 @@ mod tests {
     #[test]
     fn test_signature_foo_underscore_x_int() {
         // fn foo(_ x: I32)
-        let params = vec![make_hir_param(
-            HirParamLabel::None,
-            "x",
-            make_test_ty_id(),
-        )];
+        let params =
+            vec![make_hir_param(HirParamLabel::None, "x", make_test_ty_id())];
         let signature = HirFunctionSignature {
             generic_params: vec![],
             params,
@@ -324,11 +331,8 @@ mod tests {
     fn test_signature_none_vs_from_name_differ() {
         // fn foo(_ x: I32) vs fn foo(x: I32)
         // These have DIFFERENT call signatures
-        let params_none = vec![make_hir_param(
-            HirParamLabel::None,
-            "x",
-            make_test_ty_id(),
-        )];
+        let params_none =
+            vec![make_hir_param(HirParamLabel::None, "x", make_test_ty_id())];
         let signature_none = HirFunctionSignature {
             generic_params: vec![],
             params: params_none,
@@ -361,12 +365,16 @@ mod tests {
         };
 
         let call_sig_none = CallSignature::from_hir_function(&hir_func_none);
-        let call_sig_from_name = CallSignature::from_hir_function(&hir_func_from_name);
+        let call_sig_from_name =
+            CallSignature::from_hir_function(&hir_func_from_name);
 
         // Signatures differ: None vs FromName
         assert_ne!(call_sig_none, call_sig_from_name);
         assert_eq!(call_sig_none.params[0].label, CallParamLabel::None);
-        assert_eq!(call_sig_from_name.params[0].label, CallParamLabel::FromName);
+        assert_eq!(
+            call_sig_from_name.params[0].label,
+            CallParamLabel::FromName
+        );
     }
 
     #[test]

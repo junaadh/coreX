@@ -26,7 +26,11 @@ fn parsed_to_desugared(
 
 fn parse_sources(
     sources: &[(&str, &str)],
-) -> (SourceDb, Vec<core_x::frontend::DesugaredFile>, BTreeMap<String, FileId>) {
+) -> (
+    SourceDb,
+    Vec<core_x::frontend::DesugaredFile>,
+    BTreeMap<String, FileId>,
+) {
     let mut db = SourceDb::new();
     let mut parsed_files = Vec::with_capacity(sources.len());
     let mut file_ids = BTreeMap::new();
@@ -63,15 +67,18 @@ fn semantic_hir_valid_function_call_resolves_correctly() {
         resolve_project_imports(&graph, &parsed_files).expect("imports");
     let semantic = analyze_semantics(&db, &graph, &parsed_files, &imports);
 
-    assert!(!semantic.expr_types.issues.iter().any(
-        |issue| matches!(issue.kind, ExprCheckIssueKind::InvalidCallCallee)
-    ));
+    assert!(!semantic.expr_types.issues.iter().any(|issue| matches!(
+        issue.kind,
+        ExprCheckIssueKind::InvalidCallCallee
+    )));
 }
 
 #[test]
 fn semantic_hir_invalid_call_target_is_reported() {
-    let (db, parsed_files, file_ids) =
-        parse_sources(&[("src/root.cx", "fn run() -> i32 { let x = 1; x(); 0 }")]);
+    let (db, parsed_files, file_ids) = parse_sources(&[(
+        "src/root.cx",
+        "fn run() -> i32 { let x = 1; x(); 0 }",
+    )]);
     let root_file_id = file_ids["src/root.cx"];
 
     let graph = ScopeResolver::new(&db, &parsed_files)
@@ -82,9 +89,10 @@ fn semantic_hir_invalid_call_target_is_reported() {
     let semantic = analyze_semantics(&db, &graph, &parsed_files, &imports);
 
     assert!(!semantic.hir.hir_path_table.is_empty());
-    assert!(semantic.expr_types.issues.iter().any(
-        |issue| matches!(issue.kind, ExprCheckIssueKind::InvalidCallCallee)
-    ));
+    assert!(semantic.expr_types.issues.iter().any(|issue| matches!(
+        issue.kind,
+        ExprCheckIssueKind::InvalidCallCallee
+    )));
 }
 
 #[test]
@@ -121,12 +129,13 @@ fn semantic_hir_cross_target_library_to_binary_call_still_works() {
         },
     );
 
-    let (_, imports, _) = resolve_project_imports_with_named_roots_and_diagnostics(
-        &binary_graph,
-        &parsed_files,
-        &named_roots,
-        &db,
-    );
+    let (_, imports, _) =
+        resolve_project_imports_with_named_roots_and_diagnostics(
+            &binary_graph,
+            &parsed_files,
+            &named_roots,
+            &db,
+        );
     let external_lookup = build_external_semantic_lookup(
         &db,
         &named_roots,
@@ -141,10 +150,12 @@ fn semantic_hir_cross_target_library_to_binary_call_still_works() {
         &external_lookup,
     );
 
-    assert!(!semantic.expr_types.issues.iter().any(
-        |issue| matches!(issue.kind, ExprCheckIssueKind::InvalidCallCallee)
-    ));
-    assert!(semantic.expr_types.issues.iter().all(
-        |issue| !matches!(issue.kind, ExprCheckIssueKind::MissingResolvedReference { .. })
-    ));
+    assert!(!semantic.expr_types.issues.iter().any(|issue| matches!(
+        issue.kind,
+        ExprCheckIssueKind::InvalidCallCallee
+    )));
+    assert!(semantic.expr_types.issues.iter().all(|issue| !matches!(
+        issue.kind,
+        ExprCheckIssueKind::MissingResolvedReference { .. }
+    )));
 }

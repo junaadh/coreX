@@ -310,7 +310,9 @@ pub(super) fn desugar_expr(expr: &Spanned<Expr>) -> Spanned<Expr> {
             if matches!(&callee.node, Expr::MemberAccess { .. }) {
                 // Transform to MethodCall node
                 let (receiver, method_name) = match &callee.node {
-                    Expr::MemberAccess { base, member } => (base, member.clone()),
+                    Expr::MemberAccess { base, member } => {
+                        (base, member.clone())
+                    }
                     _ => unreachable!(),
                 };
 
@@ -376,7 +378,8 @@ pub(super) fn desugar_expr(expr: &Spanned<Expr>) -> Spanned<Expr> {
         Expr::ConstructorCall { type_name, args } => {
             // Desugar ConstructorCall to explicit NamespaceAccess + Call
             // Point(x, y) -> Point::init(x, y)
-            let type_expr = Spanned::new(Expr::Identifier(type_name.clone()), expr.span);
+            let type_expr =
+                Spanned::new(Expr::Identifier(type_name.clone()), expr.span);
 
             let init_access = Spanned::new(
                 Expr::NamespaceAccess {
@@ -979,14 +982,18 @@ fn infer_init_kind_from_return_type(
             // Handle Option<Self> as GenericApplication
             Type::GenericApplication { base, args } if args.len() == 1 => {
                 match &base.node {
-                    Type::Named { segments } if segments.len() == 1 && segments[0] == "Option" => {
+                    Type::Named { segments }
+                        if segments.len() == 1 && segments[0] == "Option" =>
+                    {
                         if matches!(args[0].node, Type::SelfType) {
                             InitKind::Optional
                         } else {
                             InitKind::Plain
                         }
                     }
-                    Type::Named { segments } if segments.len() == 1 && segments[0] == "Result" => {
+                    Type::Named { segments }
+                        if segments.len() == 1 && segments[0] == "Result" =>
+                    {
                         // Result<Self, E> - we only care about the OK type
                         if matches!(args[0].node, Type::SelfType) {
                             InitKind::Fallible
@@ -998,7 +1005,7 @@ fn infer_init_kind_from_return_type(
                 }
             }
             _ => InitKind::Plain, // User specified custom return type, default to Plain
-        }
+        },
     }
 }
 

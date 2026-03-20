@@ -6,9 +6,7 @@ use super::hir_scope_resolution::{
 use super::local_ids::LocalId;
 use super::model::ScopeGraph;
 use crate::frontend::ast::Span;
-use crate::frontend::hir::{
-    HirExprId, HirExprKind, HirFile, HirModule,
-};
+use crate::frontend::hir::{HirExprId, HirExprKind, HirFile, HirModule};
 use crate::frontend::source::FileId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
@@ -78,8 +76,10 @@ impl HirPathResolutionTable {
         let mut by_expr = BTreeMap::new();
         let mut by_path = BTreeMap::new();
         let mut unresolved_diagnostics = Vec::new();
-        let mut top_level_items_by_file: BTreeMap<FileId, BTreeMap<String, HirItemRef>> =
-            BTreeMap::new();
+        let mut top_level_items_by_file: BTreeMap<
+            FileId,
+            BTreeMap<String, HirItemRef>,
+        > = BTreeMap::new();
 
         for hir_file in hir_files {
             let module = hir_modules.get(&hir_file.file_id).ok_or(
@@ -103,9 +103,7 @@ impl HirPathResolutionTable {
                 ) {
                     continue;
                 }
-                names
-                    .entry(item.name.clone())
-                    .or_insert(item.item_ref);
+                names.entry(item.name.clone()).or_insert(item.item_ref);
             }
             top_level_items_by_file.insert(hir_file.file_id, names);
 
@@ -182,8 +180,10 @@ impl HirPathResolutionTable {
         let mut by_path = BTreeMap::new();
         let mut unresolved_diagnostics = Vec::new();
 
-        let mut top_level_items_by_file: BTreeMap<FileId, BTreeMap<String, HirItemRef>> =
-            BTreeMap::new();
+        let mut top_level_items_by_file: BTreeMap<
+            FileId,
+            BTreeMap<String, HirItemRef>,
+        > = BTreeMap::new();
         for hir_file in hir_files {
             let mut names = BTreeMap::new();
             for item_ref in item_table.item_refs_in_file(hir_file.file_id) {
@@ -254,12 +254,15 @@ impl HirPathResolutionTable {
                 };
 
                 let expr_ref = HirExprRef::new(hir_file.file_id, *expr_id);
-                let path_ref =
-                    HirPathRef::new(hir_file.file_id, *expr_id, segments.clone());
+                let path_ref = HirPathRef::new(
+                    hir_file.file_id,
+                    *expr_id,
+                    segments.clone(),
+                );
 
                 if segments.len() == 1
-                    && let Some(binding_id) =
-                        local_bindings.binding_for_expr(hir_file.file_id, *expr_id)
+                    && let Some(binding_id) = local_bindings
+                        .binding_for_expr(hir_file.file_id, *expr_id)
                 {
                     let resolution = HirPathResolution::Local(binding_id);
                     by_expr.insert(expr_ref, resolution);
@@ -425,7 +428,10 @@ fn namespace_base_expr_ids(module: &HirModule) -> BTreeSet<HirExprId> {
         .collect()
 }
 
-fn namespace_segments(module: &HirModule, expr_id: HirExprId) -> Option<Vec<String>> {
+fn namespace_segments(
+    module: &HirModule,
+    expr_id: HirExprId,
+) -> Option<Vec<String>> {
     let expr = module.exprs.get(&expr_id)?;
     match &expr.kind {
         HirExprKind::Path(path) => Some(path.segments.clone()),
@@ -449,7 +455,8 @@ fn resolve_hir_path_with_context(
     let first = segments.first()?;
 
     if let Some(imports) = imports
-        && let Some(binding) = imports.get(file_id).and_then(|table| table.get(first))
+        && let Some(binding) =
+            imports.get(file_id).and_then(|table| table.get(first))
     {
         if segments.len() == 1 {
             if binding.kind == HirImportBindingKind::Item {
@@ -472,7 +479,9 @@ fn resolve_hir_path_with_context(
     if let Some(scope_path) = scope_paths_by_file.get(&file_id) {
         let mut local_full_path = scope_path.clone();
         local_full_path.extend(segments.iter().cloned());
-        if let Some(item_ref) = current_item_paths.get(&local_full_path).copied() {
+        if let Some(item_ref) =
+            current_item_paths.get(&local_full_path).copied()
+        {
             return Some(item_ref);
         }
     }
@@ -520,8 +529,9 @@ pub fn build_hir_path_resolution_table_with_graph_and_imports(
 ) -> Result<HirPathResolutionTable, HirPathResolutionError> {
     let local_bindings = build_hir_local_binding_table(hir_files, hir_modules)
         .map_err(HirPathResolutionError::MissingLocalBindingTable)?;
-    let item_table = super::hir_item_table::build_hir_item_table(hir_files, hir_modules)
-        .map_err(HirPathResolutionError::MissingItemTable)?;
+    let item_table =
+        super::hir_item_table::build_hir_item_table(hir_files, hir_modules)
+            .map_err(HirPathResolutionError::MissingItemTable)?;
     HirPathResolutionTable::resolve_with_graph_and_imports(
         hir_files,
         hir_modules,

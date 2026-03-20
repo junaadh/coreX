@@ -12,7 +12,8 @@ use core_x::frontend::source::SourceDb;
 fn parse_source(db: &mut SourceDb, source: &str) -> File {
     let file_id = db.add_file("test.cx", source);
     let file = db.file(file_id).expect("file should exist");
-    let parsed = parse_source_file_from_source_file(file).expect("parse should succeed");
+    let parsed =
+        parse_source_file_from_source_file(file).expect("parse should succeed");
     assert!(
         parsed.diagnostics.is_empty(),
         "strict parse should not emit diagnostics"
@@ -35,7 +36,8 @@ fn test_parser_underscore_param() {
 
     let mut db = SourceDb::new();
     let file = parse_source(&mut db, source);
-    let params = get_first_function_params(&file).expect("should have function");
+    let params =
+        get_first_function_params(&file).expect("should have function");
     assert_eq!(params.len(), 1);
 
     let param = &params[0].node;
@@ -51,7 +53,8 @@ fn test_parser_from_name_param() {
 
     let mut db = SourceDb::new();
     let file = parse_source(&mut db, source);
-    let params = get_first_function_params(&file).expect("should have function");
+    let params =
+        get_first_function_params(&file).expect("should have function");
     assert_eq!(params.len(), 1);
 
     let param = &params[0].node;
@@ -67,7 +70,8 @@ fn test_parser_explicit_label_param() {
 
     let mut db = SourceDb::new();
     let file = parse_source(&mut db, source);
-    let params = get_first_function_params(&file).expect("should have function");
+    let params =
+        get_first_function_params(&file).expect("should have function");
     assert_eq!(params.len(), 1);
 
     let param = &params[0].node;
@@ -86,7 +90,8 @@ fn test_parser_multiple_params_mixed_labels() {
 
     let mut db = SourceDb::new();
     let file = parse_source(&mut db, source);
-    let params = get_first_function_params(&file).expect("should have function");
+    let params =
+        get_first_function_params(&file).expect("should have function");
     assert_eq!(params.len(), 3);
 
     // First param: `_ x: I32` -> None
@@ -121,16 +126,29 @@ fn test_parser_preserves_param_labels_through_struct_init() {
 
     match item {
         Item::Struct(struct_decl) => {
-            let member = &struct_decl.node.members.first().expect("should have member").node;
+            let member = &struct_decl
+                .node
+                .members
+                .first()
+                .expect("should have member")
+                .node;
             match member {
                 StructMember::Init(init) => {
                     assert_eq!(init.node.params.len(), 3);
 
                     // Verify all labels in init declaration
-                    assert!(matches!(init.node.params[0].node.label, ParamLabel::None));
-                    assert!(matches!(init.node.params[1].node.label, ParamLabel::FromName));
+                    assert!(matches!(
+                        init.node.params[0].node.label,
+                        ParamLabel::None
+                    ));
+                    assert!(matches!(
+                        init.node.params[1].node.label,
+                        ParamLabel::FromName
+                    ));
                     match &init.node.params[2].node.label {
-                        ParamLabel::Explicit(label) => assert_eq!(label, "label"),
+                        ParamLabel::Explicit(label) => {
+                            assert_eq!(label, "label")
+                        }
                         _ => panic!("expected Explicit label"),
                     }
                 }
@@ -157,16 +175,29 @@ fn test_parser_preserves_param_labels_in_protocol_function() {
 
     match item {
         Item::Protocol(protocol_decl) => {
-            let member = &protocol_decl.node.members.first().expect("should have member").node;
+            let member = &protocol_decl
+                .node
+                .members
+                .first()
+                .expect("should have member")
+                .node;
             match member {
                 ProtocolMember::Function(func) => {
                     assert_eq!(func.node.params.len(), 3);
 
                     // Verify all labels in protocol function
-                    assert!(matches!(func.node.params[0].node.label, ParamLabel::None));
-                    assert!(matches!(func.node.params[1].node.label, ParamLabel::FromName));
+                    assert!(matches!(
+                        func.node.params[0].node.label,
+                        ParamLabel::None
+                    ));
+                    assert!(matches!(
+                        func.node.params[1].node.label,
+                        ParamLabel::FromName
+                    ));
                     match &func.node.params[2].node.label {
-                        ParamLabel::Explicit(label) => assert_eq!(label, "label"),
+                        ParamLabel::Explicit(label) => {
+                            assert_eq!(label, "label")
+                        }
                         _ => panic!("expected Explicit label"),
                     }
                 }
@@ -193,16 +224,29 @@ fn test_parser_preserves_param_labels_in_extern_function() {
 
     match item {
         Item::ExternBlock(extern_block) => {
-            let member = &extern_block.node.members.first().expect("should have member").node;
+            let member = &extern_block
+                .node
+                .members
+                .first()
+                .expect("should have member")
+                .node;
             match member {
                 ExternMember::Function(func) => {
                     assert_eq!(func.node.params.len(), 3);
 
                     // Verify all labels in extern function
-                    assert!(matches!(func.node.params[0].node.label, ParamLabel::None));
-                    assert!(matches!(func.node.params[1].node.label, ParamLabel::FromName));
+                    assert!(matches!(
+                        func.node.params[0].node.label,
+                        ParamLabel::None
+                    ));
+                    assert!(matches!(
+                        func.node.params[1].node.label,
+                        ParamLabel::FromName
+                    ));
                     match &func.node.params[2].node.label {
-                        ParamLabel::Explicit(label) => assert_eq!(label, "label"),
+                        ParamLabel::Explicit(label) => {
+                            assert_eq!(label, "label")
+                        }
                         _ => panic!("expected Explicit label"),
                     }
                 }
@@ -229,16 +273,29 @@ fn test_parser_preserves_param_labels_in_enum_init() {
 
     match item {
         Item::Enum(enum_decl) => {
-            let member = &enum_decl.node.members.first().expect("should have member").node;
+            let member = &enum_decl
+                .node
+                .members
+                .first()
+                .expect("should have member")
+                .node;
             match member {
                 EnumMember::Init(init) => {
                     assert_eq!(init.node.params.len(), 3);
 
                     // Verify all labels in enum init declaration
-                    assert!(matches!(init.node.params[0].node.label, ParamLabel::None));
-                    assert!(matches!(init.node.params[1].node.label, ParamLabel::FromName));
+                    assert!(matches!(
+                        init.node.params[0].node.label,
+                        ParamLabel::None
+                    ));
+                    assert!(matches!(
+                        init.node.params[1].node.label,
+                        ParamLabel::FromName
+                    ));
                     match &init.node.params[2].node.label {
-                        ParamLabel::Explicit(label) => assert_eq!(label, "label"),
+                        ParamLabel::Explicit(label) => {
+                            assert_eq!(label, "label")
+                        }
                         _ => panic!("expected Explicit label"),
                     }
                 }
@@ -265,16 +322,29 @@ fn test_parser_preserves_param_labels_in_protocol_init() {
 
     match item {
         Item::Protocol(protocol_decl) => {
-            let member = &protocol_decl.node.members.first().expect("should have member").node;
+            let member = &protocol_decl
+                .node
+                .members
+                .first()
+                .expect("should have member")
+                .node;
             match member {
                 ProtocolMember::Initializer(init) => {
                     assert_eq!(init.node.params.len(), 3);
 
                     // Verify all labels in protocol init declaration
-                    assert!(matches!(init.node.params[0].node.label, ParamLabel::None));
-                    assert!(matches!(init.node.params[1].node.label, ParamLabel::FromName));
+                    assert!(matches!(
+                        init.node.params[0].node.label,
+                        ParamLabel::None
+                    ));
+                    assert!(matches!(
+                        init.node.params[1].node.label,
+                        ParamLabel::FromName
+                    ));
                     match &init.node.params[2].node.label {
-                        ParamLabel::Explicit(label) => assert_eq!(label, "label"),
+                        ParamLabel::Explicit(label) => {
+                            assert_eq!(label, "label")
+                        }
                         _ => panic!("expected Explicit label"),
                     }
                 }
@@ -301,16 +371,29 @@ fn test_parser_preserves_param_labels_in_impl_init() {
 
     match item {
         Item::Impl(impl_decl) => {
-            let member = &impl_decl.node.members.first().expect("should have member").node;
+            let member = &impl_decl
+                .node
+                .members
+                .first()
+                .expect("should have member")
+                .node;
             match member {
                 ImplMember::Init(init) => {
                     assert_eq!(init.node.params.len(), 3);
 
                     // Verify all labels in impl init declaration
-                    assert!(matches!(init.node.params[0].node.label, ParamLabel::None));
-                    assert!(matches!(init.node.params[1].node.label, ParamLabel::FromName));
+                    assert!(matches!(
+                        init.node.params[0].node.label,
+                        ParamLabel::None
+                    ));
+                    assert!(matches!(
+                        init.node.params[1].node.label,
+                        ParamLabel::FromName
+                    ));
                     match &init.node.params[2].node.label {
-                        ParamLabel::Explicit(label) => assert_eq!(label, "label"),
+                        ParamLabel::Explicit(label) => {
+                            assert_eq!(label, "label")
+                        }
                         _ => panic!("expected Explicit label"),
                     }
                 }
@@ -323,7 +406,7 @@ fn test_parser_preserves_param_labels_in_impl_init() {
 
 #[test]
 fn test_parser_preserves_param_labels_in_optional_init() {
-    use core_x::frontend::ast::{StructMember, InitKind};
+    use core_x::frontend::ast::{InitKind, StructMember};
 
     let source = r#"
         struct Point {
@@ -337,17 +420,30 @@ fn test_parser_preserves_param_labels_in_optional_init() {
 
     match item {
         Item::Struct(struct_decl) => {
-            let member = &struct_decl.node.members.first().expect("should have member").node;
+            let member = &struct_decl
+                .node
+                .members
+                .first()
+                .expect("should have member")
+                .node;
             match member {
                 StructMember::Init(init) => {
                     assert_eq!(init.node.kind, InitKind::Plain); // Will be inferred during desugaring
                     assert_eq!(init.node.params.len(), 3);
 
                     // Verify all labels in optional init declaration
-                    assert!(matches!(init.node.params[0].node.label, ParamLabel::None));
-                    assert!(matches!(init.node.params[1].node.label, ParamLabel::FromName));
+                    assert!(matches!(
+                        init.node.params[0].node.label,
+                        ParamLabel::None
+                    ));
+                    assert!(matches!(
+                        init.node.params[1].node.label,
+                        ParamLabel::FromName
+                    ));
                     match &init.node.params[2].node.label {
-                        ParamLabel::Explicit(label) => assert_eq!(label, "label"),
+                        ParamLabel::Explicit(label) => {
+                            assert_eq!(label, "label")
+                        }
                         _ => panic!("expected Explicit label"),
                     }
                 }
@@ -360,7 +456,7 @@ fn test_parser_preserves_param_labels_in_optional_init() {
 
 #[test]
 fn test_parser_preserves_param_labels_in_fallible_init() {
-    use core_x::frontend::ast::{StructMember, InitKind};
+    use core_x::frontend::ast::{InitKind, StructMember};
 
     let source = r#"
         struct Point {
@@ -374,17 +470,30 @@ fn test_parser_preserves_param_labels_in_fallible_init() {
 
     match item {
         Item::Struct(struct_decl) => {
-            let member = &struct_decl.node.members.first().expect("should have member").node;
+            let member = &struct_decl
+                .node
+                .members
+                .first()
+                .expect("should have member")
+                .node;
             match member {
                 StructMember::Init(init) => {
                     assert_eq!(init.node.kind, InitKind::Plain); // Will be inferred during desugaring
                     assert_eq!(init.node.params.len(), 3);
 
                     // Verify all labels in fallible init declaration
-                    assert!(matches!(init.node.params[0].node.label, ParamLabel::None));
-                    assert!(matches!(init.node.params[1].node.label, ParamLabel::FromName));
+                    assert!(matches!(
+                        init.node.params[0].node.label,
+                        ParamLabel::None
+                    ));
+                    assert!(matches!(
+                        init.node.params[1].node.label,
+                        ParamLabel::FromName
+                    ));
                     match &init.node.params[2].node.label {
-                        ParamLabel::Explicit(label) => assert_eq!(label, "label"),
+                        ParamLabel::Explicit(label) => {
+                            assert_eq!(label, "label")
+                        }
                         _ => panic!("expected Explicit label"),
                     }
                 }

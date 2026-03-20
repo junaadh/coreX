@@ -6,7 +6,9 @@
 use core_x::frontend::ast::{Expr, File, Item, Spanned, Stmt};
 use core_x::frontend::parser::parse_source_file_from_source_file;
 use core_x::frontend::source::SourceDb;
-use core_x::frontend::{DesugaredFile, ExpansionOptions, desugar_files, expand_parsed_files};
+use core_x::frontend::{
+    DesugaredFile, ExpansionOptions, desugar_files, expand_parsed_files,
+};
 
 fn parse_single_file(
     db: &mut SourceDb,
@@ -15,8 +17,12 @@ fn parse_single_file(
 ) -> Vec<core_x::frontend::ParsedFile> {
     let file_id = db.add_file(path, source);
     let file = db.file(file_id).expect("file should exist");
-    let parsed = parse_source_file_from_source_file(file).expect("parse should succeed");
-    assert!(parsed.diagnostics.is_empty(), "parse should not emit diagnostics");
+    let parsed =
+        parse_source_file_from_source_file(file).expect("parse should succeed");
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "parse should not emit diagnostics"
+    );
     vec![parsed]
 }
 
@@ -24,7 +30,8 @@ fn expand_and_desugar(
     db: &SourceDb,
     parsed_files: &[core_x::frontend::ParsedFile],
 ) -> Vec<DesugaredFile> {
-    let expanded = expand_parsed_files(db, parsed_files, ExpansionOptions::default());
+    let expanded =
+        expand_parsed_files(db, parsed_files, ExpansionOptions::default());
     desugar_files(&expanded)
 }
 
@@ -200,7 +207,10 @@ fn test_namespace_access_unchanged() {
             if func.node.name == "test" {
                 if let Some(tail) = &func.node.body.tail_expr {
                     if let Expr::Call { callee, .. } = &tail.node {
-                        assert!(matches!(&callee.node, Expr::NamespaceAccess { .. }));
+                        assert!(matches!(
+                            &callee.node,
+                            Expr::NamespaceAccess { .. }
+                        ));
                         return; // Test passed
                     }
                 }

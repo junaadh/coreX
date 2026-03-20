@@ -1,12 +1,13 @@
 use core_x::frontend::parser::parse_source_file_from_source_file;
 use core_x::frontend::resolver::{
     HirImportError, HirImportTables, HirPathResolution, build_hir_item_table,
-    build_hir_path_resolution_table_with_graph_and_imports, resolve_project_scopes,
+    build_hir_path_resolution_table_with_graph_and_imports,
+    resolve_project_scopes,
 };
 use core_x::frontend::source::{FileId, SourceDb};
 use core_x::frontend::{
-    DesugaredFile, HirExprId, HirExprKind, HirFile, HirItemRef, HirModule, ResolvedScopeKind,
-    lower_to_hir,
+    DesugaredFile, HirExprId, HirExprKind, HirFile, HirItemRef, HirModule,
+    ResolvedScopeKind, lower_to_hir,
 };
 use std::collections::BTreeMap;
 
@@ -24,7 +25,8 @@ fn parsed_to_desugared(parsed: core_x::frontend::ParsedFile) -> DesugaredFile {
 fn add_and_parse(db: &mut SourceDb, path: &str, source: &str) -> DesugaredFile {
     let file_id = db.add_file(path, source);
     let file = db.file(file_id).expect("file should exist");
-    let parsed = parse_source_file_from_source_file(file).expect("parse should succeed");
+    let parsed =
+        parse_source_file_from_source_file(file).expect("parse should succeed");
     assert!(
         parsed.diagnostics.is_empty(),
         "strict parse should not emit diagnostics"
@@ -32,7 +34,9 @@ fn add_and_parse(db: &mut SourceDb, path: &str, source: &str) -> DesugaredFile {
     parsed_to_desugared(parsed)
 }
 
-fn lower_project_hir(files: &[DesugaredFile]) -> (Vec<HirFile>, BTreeMap<FileId, HirModule>) {
+fn lower_project_hir(
+    files: &[DesugaredFile],
+) -> (Vec<HirFile>, BTreeMap<FileId, HirModule>) {
     let mut hir_files = Vec::new();
     let mut hir_modules = BTreeMap::new();
 
@@ -50,8 +54,13 @@ fn resolve_library_graph(
     parsed_files: &[DesugaredFile],
     root_file_id: FileId,
 ) -> core_x::frontend::ScopeGraph {
-    resolve_project_scopes(db, parsed_files, root_file_id, ResolvedScopeKind::Root)
-        .expect("scope graph should resolve")
+    resolve_project_scopes(
+        db,
+        parsed_files,
+        root_file_id,
+        ResolvedScopeKind::Root,
+    )
+    .expect("scope graph should resolve")
 }
 
 fn item_ref_by_name_in_file(
@@ -76,7 +85,9 @@ fn find_path_expr_id(module: &HirModule, name: &str) -> HirExprId {
         .exprs
         .iter()
         .find_map(|(expr_id, expr)| match &expr.kind {
-            HirExprKind::Path(path) if path.segments.as_slice() == [name.to_string()] => {
+            HirExprKind::Path(path)
+                if path.segments.as_slice() == [name.to_string()] =>
+            {
                 Some(*expr_id)
             }
             _ => None,
@@ -84,7 +95,10 @@ fn find_path_expr_id(module: &HirModule, name: &str) -> HirExprId {
         .expect("expected path expression")
 }
 
-fn namespace_segments(module: &HirModule, expr_id: HirExprId) -> Option<Vec<String>> {
+fn namespace_segments(
+    module: &HirModule,
+    expr_id: HirExprId,
+) -> Option<Vec<String>> {
     let expr = module.exprs.get(&expr_id)?;
     match &expr.kind {
         HirExprKind::Path(path) => Some(path.segments.clone()),
@@ -103,23 +117,35 @@ fn find_namespace_expr_id(module: &HirModule, expected: &[&str]) -> HirExprId {
         .exprs
         .keys()
         .copied()
-        .find(|expr_id| namespace_segments(module, *expr_id).as_deref() == Some(expected.as_slice()))
+        .find(|expr_id| {
+            namespace_segments(module, *expr_id).as_deref()
+                == Some(expected.as_slice())
+        })
         .expect("expected namespace expression")
 }
 
 #[test]
 fn resolves_cross_file_function_via_module_path() {
     let mut db = SourceDb::new();
-    let root = add_and_parse(&mut db, "src/root.cx", "scope net; fn run() { net::helper(); }");
+    let root = add_and_parse(
+        &mut db,
+        "src/root.cx",
+        "scope net; fn run() { net::helper(); }",
+    );
     let net = add_and_parse(&mut db, "src/net.cx", "fn helper() {}");
     let parsed_files = vec![root.clone(), net.clone()];
 
     let graph = resolve_library_graph(&db, &parsed_files, root.file_id);
     let (hir_files, hir_modules) = lower_project_hir(&parsed_files);
-    let item_table = build_hir_item_table(&hir_files, &hir_modules).expect("item table");
-    let imports =
-        HirImportTables::resolve_with_graph(&graph, &hir_files, &hir_modules, &item_table)
-            .expect("imports should resolve");
+    let item_table =
+        build_hir_item_table(&hir_files, &hir_modules).expect("item table");
+    let imports = HirImportTables::resolve_with_graph(
+        &graph,
+        &hir_files,
+        &hir_modules,
+        &item_table,
+    )
+    .expect("imports should resolve");
     let path_table = build_hir_path_resolution_table_with_graph_and_imports(
         &hir_files,
         &hir_modules,
@@ -130,7 +156,8 @@ fn resolves_cross_file_function_via_module_path() {
 
     let root_module = hir_modules.get(&root.file_id).expect("root module");
     let expr_id = find_namespace_expr_id(root_module, &["net", "helper"]);
-    let helper_ref = item_ref_by_name_in_file(&item_table, net.file_id, "helper");
+    let helper_ref =
+        item_ref_by_name_in_file(&item_table, net.file_id, "helper");
     let helper_segments = vec!["net".to_string(), "helper".to_string()];
 
     assert_eq!(
@@ -157,10 +184,15 @@ fn resolves_import_alias_to_cross_file_function() {
 
     let graph = resolve_library_graph(&db, &parsed_files, root.file_id);
     let (hir_files, hir_modules) = lower_project_hir(&parsed_files);
-    let item_table = build_hir_item_table(&hir_files, &hir_modules).expect("item table");
-    let imports =
-        HirImportTables::resolve_with_graph(&graph, &hir_files, &hir_modules, &item_table)
-            .expect("imports should resolve");
+    let item_table =
+        build_hir_item_table(&hir_files, &hir_modules).expect("item table");
+    let imports = HirImportTables::resolve_with_graph(
+        &graph,
+        &hir_files,
+        &hir_modules,
+        &item_table,
+    )
+    .expect("imports should resolve");
     let path_table = build_hir_path_resolution_table_with_graph_and_imports(
         &hir_files,
         &hir_modules,
@@ -171,7 +203,8 @@ fn resolves_import_alias_to_cross_file_function() {
 
     let app_module = hir_modules.get(&app.file_id).expect("app module");
     let remote_expr = find_path_expr_id(app_module, "remote");
-    let helper_ref = item_ref_by_name_in_file(&item_table, net.file_id, "helper");
+    let helper_ref =
+        item_ref_by_name_in_file(&item_table, net.file_id, "helper");
 
     assert_eq!(
         path_table.by_expr(app.file_id, remote_expr),
@@ -193,15 +226,17 @@ fn unresolved_hir_import_is_reported_as_diagnostic() {
 
     let graph = resolve_library_graph(&db, &parsed_files, root.file_id);
     let (hir_files, hir_modules) = lower_project_hir(&parsed_files);
-    let item_table = build_hir_item_table(&hir_files, &hir_modules).expect("item table");
-    let (imports, diagnostics) = HirImportTables::resolve_with_graph_and_named_roots_and_diagnostics(
-        &graph,
-        &hir_files,
-        &hir_modules,
-        &item_table,
-        &BTreeMap::new(),
-    )
-    .expect("diagnostic import resolution should succeed");
+    let item_table =
+        build_hir_item_table(&hir_files, &hir_modules).expect("item table");
+    let (imports, diagnostics) =
+        HirImportTables::resolve_with_graph_and_named_roots_and_diagnostics(
+            &graph,
+            &hir_files,
+            &hir_modules,
+            &item_table,
+            &BTreeMap::new(),
+        )
+        .expect("diagnostic import resolution should succeed");
 
     assert!(diagnostics.iter().any(|diagnostic| {
         matches!(

@@ -1,15 +1,13 @@
 use crate::cli_driver::DynError;
-use core_x::frontend::parser::{
-    parse_source_file_from_source_file_with_recovery,
-    parse_source_file_with_recovery,
-};
+use core_x::frontend::parser::parse_source_file_with_recovery;
 use core_x::frontend::resolver::{ResolvedScopeKind, resolve_project_scopes};
-use core_x::frontend::source::{FileId, SourceDb};
-use core_x::frontend::{DesugaredFile, ParsedFile};
+use core_x::frontend::source::FileId;
+use core_x::frontend::source::SourceDb;
 use core_x::frontend::{
-    ExpansionOptions, ImportRootKind, NamedImportRoot, ProjectGraph,
+    DesugaredFile, ExpansionOptions, FrontendContext, ImportRootKind,
+    NamedImportRoot, ParseSessionError, ParsedFile, ProjectGraph,
     ProjectLoader, ProjectManifest, TargetRoots, build_target_roots,
-    desugar_files, expand_parsed_files, load_local_dependency_project_graph,
+    load_local_dependency_project_graph,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
@@ -47,23 +45,21 @@ pub fn parse_single_file(
     path: &Path,
 ) -> Result<(SourceDb, DesugaredFile, FileId), DynError> {
     let source = fs::read_to_string(path)?;
-    let mut db = SourceDb::new();
-    let file_id = db.add_file(path.to_path_buf(), source);
-    let file = db
-        .file(file_id)
-        .ok_or_else(|| format!("missing source file id {}", file_id.raw()))?;
-    let parsed = parse_source_file_from_source_file_with_recovery(file)
+    let mut context = FrontendContext::new();
+    let file_id = context.add_file(path.to_path_buf(), source);
+    let mut desugared = context
+        .pre_resolution_pipeline(&[file_id], ExpansionOptions::default())
         .map_err(|error| {
-            format!(
-                "failed to initialize parser for {}: {error}",
-                path.display()
+            format_parse_session_error(
+                &context,
+                error,
+                "failed to run frontend pre-resolution pipeline for",
             )
         })?;
-    // Pipeline: parse -> expand -> desugar
-    let expanded =
-        expand_parsed_files(&db, &[parsed], ExpansionOptions::default());
-    let desugared = desugar_files(&expanded);
-    Ok((db, desugared.into_iter().next().unwrap(), file_id))
+    let desugared = desugared
+        .pop()
+        .expect("single-file pipeline should return one file");
+    Ok((context.into_db(), desugared, file_id))
 }
 
 pub fn load_project_context(
@@ -82,40 +78,29 @@ pub fn load_project_context(
     let project_root = loaded_project.project_dir.clone();
     let project_files = collect_project_cx_files(&manifest)?;
 
-    let mut db = SourceDb::new();
-    let mut parsed = Vec::with_capacity(project_files.len());
-    let mut ordered_file_ids = Vec::with_capacity(project_files.len());
-    let mut path_by_file_id = BTreeMap::new();
+    let mut frontend = FrontendContext::new();
     let mut file_id_by_path = BTreeMap::new();
 
     for absolute_path in project_files {
         let display_path =
             project_relative_or_absolute_path(&project_root, &absolute_path);
         let source = fs::read_to_string(&absolute_path)?;
-        let file_id = db.add_file(display_path.clone(), source);
-        let file = db.file(file_id).ok_or_else(|| {
-            format!("missing source file id {}", file_id.raw())
-        })?;
-        let parsed_file = parse_source_file_from_source_file_with_recovery(
-            file,
-        )
-        .map_err(|error| {
-            format!(
-                "failed to initialize parser for project file {}: {error}",
-                display_path.display()
-            )
-        })?;
+        let file_id = frontend.add_file(display_path.clone(), source);
 
-        ordered_file_ids.push(file_id);
-        path_by_file_id.insert(file_id, display_path);
         file_id_by_path.insert(absolute_path, file_id);
-        parsed.push(parsed_file);
     }
 
-    // Pipeline: parse -> expand -> desugar
-    let expanded_files =
-        expand_parsed_files(&db, &parsed, ExpansionOptions::default());
-    let desugared_files = desugar_files(&expanded_files);
+    let ordered_file_ids = frontend.ordered_file_ids().to_vec();
+    let path_by_file_id = frontend.path_by_file_id().clone();
+    let desugared_files = frontend
+        .pre_resolution_pipeline(&ordered_file_ids, ExpansionOptions::default())
+        .map_err(|error| {
+            format_parse_session_error(
+                &frontend,
+                error,
+                "failed to run frontend pre-resolution pipeline for project file",
+            )
+        })?;
 
     let library_target = if let Some(target) = manifest.library.as_ref() {
         let file_id =
@@ -154,7 +139,7 @@ pub fn load_project_context(
         build_dependency_named_roots(&project_graph, &target_roots)?;
 
     Ok(ProjectContext {
-        db,
+        db: frontend.into_db(),
         parsed_files: desugared_files,
         ordered_file_ids,
         path_by_file_id,
@@ -290,6 +275,29 @@ fn project_relative_or_absolute_path(
         .map_or_else(|_| absolute_path.to_path_buf(), Path::to_path_buf)
 }
 
+fn format_parse_session_error(
+    context: &FrontendContext,
+    error: ParseSessionError,
+    message_prefix: &str,
+) -> DynError {
+    match error {
+        ParseSessionError::MissingFile { file_id } => format!(
+            "{} missing source file id {}",
+            message_prefix,
+            file_id.raw()
+        )
+        .into(),
+        ParseSessionError::Parse(file_error) => {
+            let path =
+                context.path_for_file_id(file_error.file_id).map_or_else(
+                    || format!("<unknown:{}>", file_error.file_id.raw()),
+                    |path| path.display().to_string(),
+                );
+            format!("{} {}: {}", message_prefix, path, file_error.error).into()
+        }
+    }
+}
+
 fn build_dependency_named_roots(
     project_graph: &ProjectGraph,
     target_roots: &TargetRoots,
@@ -362,8 +370,7 @@ fn parse_loaded_project_files(
     project: &core_x::frontend::LoadedProject,
 ) -> Result<ParsedProjectFiles, DynError> {
     let project_files = collect_project_cx_files(&project.manifest)?;
-    let mut db = SourceDb::new();
-    let mut parsed = Vec::with_capacity(project_files.len());
+    let mut frontend = FrontendContext::new();
     let mut file_id_by_path = BTreeMap::new();
 
     for absolute_path in project_files {
@@ -372,30 +379,22 @@ fn parse_loaded_project_files(
             &absolute_path,
         );
         let source = fs::read_to_string(&absolute_path)?;
-        let file_id = db.add_file(display_path, source);
-        let file = db.file(file_id).ok_or_else(|| {
-            format!("missing dependency source file id {}", file_id.raw())
-        })?;
-        let parsed_file = parse_source_file_from_source_file_with_recovery(
-            file,
-        )
-        .map_err(|error| {
-            format!(
-                "failed to initialize parser for dependency file {}: {error}",
-                absolute_path.display()
-            )
-        })?;
-
-        parsed.push(parsed_file);
+        let file_id = frontend.add_file(display_path, source);
         file_id_by_path.insert(absolute_path, file_id);
     }
 
-    // Pipeline: parse -> expand -> desugar
-    let expanded_files =
-        expand_parsed_files(&db, &parsed, ExpansionOptions::default());
-    let desugared_files = desugar_files(&expanded_files);
+    let ordered_file_ids = frontend.ordered_file_ids().to_vec();
+    let desugared_files = frontend
+        .pre_resolution_pipeline(&ordered_file_ids, ExpansionOptions::default())
+        .map_err(|error| {
+            format_parse_session_error(
+                &frontend,
+                error,
+                "failed to run frontend pre-resolution pipeline for dependency file",
+            )
+        })?;
 
-    Ok((db, desugared_files, file_id_by_path))
+    Ok((frontend.into_db(), desugared_files, file_id_by_path))
 }
 
 pub fn classify_single_root_target(

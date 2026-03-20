@@ -3,15 +3,21 @@
 //! This test verifies that the HIR correctly preserves external label information
 //! from AST through the lowering process.
 
-use core_x::frontend::hir::{HirFile, HirFunctionParam, HirParamLabel, HirItemKind};
+use core_x::frontend::hir::{
+    HirFile, HirFunctionParam, HirItemKind, HirParamLabel,
+};
 use core_x::frontend::parser::parse_source_file_from_source_file;
 use core_x::frontend::source::SourceDb;
 use core_x::frontend::{DesugaredFile, lower_to_hir};
 
-fn parse_and_lower(db: &mut SourceDb, source: &str) -> (HirFile, DesugaredFile) {
+fn parse_and_lower(
+    db: &mut SourceDb,
+    source: &str,
+) -> (HirFile, DesugaredFile) {
     let file_id = db.add_file("test.cx", source);
     let file = db.file(file_id).expect("file should exist");
-    let parsed = parse_source_file_from_source_file(file).expect("parse should succeed");
+    let parsed =
+        parse_source_file_from_source_file(file).expect("parse should succeed");
     assert!(
         parsed.diagnostics.is_empty(),
         "strict parse should not emit diagnostics"
@@ -22,7 +28,9 @@ fn parse_and_lower(db: &mut SourceDb, source: &str) -> (HirFile, DesugaredFile) 
         file_id: parsed.file_id,
         ast: parsed.ast,
         diagnostics: parsed.diagnostics,
-        provenance_map: core_x::frontend::expansion::ProvenanceMap::new(parsed.file_id),
+        provenance_map: core_x::frontend::expansion::ProvenanceMap::new(
+            parsed.file_id,
+        ),
     };
 
     let (hir_file, _) = lower_to_hir(&desugared);
@@ -34,7 +42,10 @@ fn get_first_function_hir_params<'a>(
     hir_module: &'a core_x::frontend::hir::HirModule,
 ) -> &'a [HirFunctionParam] {
     let first_item_id = &hir_file.root_items[0];
-    let hir_item = hir_module.items.get(first_item_id).expect("item should exist");
+    let hir_item = hir_module
+        .items
+        .get(first_item_id)
+        .expect("item should exist");
     let HirItemKind::Function(hir_func) = &hir_item.kind else {
         panic!("expected function item");
     };
@@ -143,7 +154,10 @@ fn test_hir_init_lowering_preserves_labels() {
 
     // Get the first HIR item (struct)
     let struct_item_id = &hir_file.root_items[0];
-    let struct_item = hir_module.items.get(struct_item_id).expect("item should exist");
+    let struct_item = hir_module
+        .items
+        .get(struct_item_id)
+        .expect("item should exist");
     let HirItemKind::Struct(hir_struct) = &struct_item.kind else {
         panic!("expected struct item");
     };
@@ -179,7 +193,10 @@ fn test_hir_protocol_function_preserves_labels() {
 
     // Get the first HIR item (protocol)
     let protocol_item_id = &hir_file.root_items[0];
-    let protocol_item = hir_module.items.get(protocol_item_id).expect("item should exist");
+    let protocol_item = hir_module
+        .items
+        .get(protocol_item_id)
+        .expect("item should exist");
     let HirItemKind::Protocol(hir_protocol) = &protocol_item.kind else {
         panic!("expected protocol item");
     };
@@ -215,7 +232,10 @@ fn test_hir_extern_function_preserves_labels() {
 
     // Get the first HIR item (extern)
     let extern_item_id = &hir_file.root_items[0];
-    let extern_item = hir_module.items.get(extern_item_id).expect("item should exist");
+    let extern_item = hir_module
+        .items
+        .get(extern_item_id)
+        .expect("item should exist");
     let HirItemKind::Extern(hir_extern) = &extern_item.kind else {
         panic!("expected extern item");
     };

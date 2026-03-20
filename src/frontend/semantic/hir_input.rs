@@ -1,7 +1,8 @@
 use crate::frontend::hir::{HirFile, HirModule, lower_to_hir};
 use crate::frontend::resolver::{
     GlobalItemTable, HirImportTables, HirItemRef, HirItemTable,
-    build_hir_item_table, build_hir_path_resolution_table_with_graph_and_imports,
+    build_hir_item_table,
+    build_hir_path_resolution_table_with_graph_and_imports,
 };
 use crate::frontend::source::FileId;
 use crate::frontend::{DesugaredFile, ItemId, ScopeGraph};
@@ -39,11 +40,11 @@ impl SemanticHirInput {
             hir_files.push(hir_file);
         }
 
-        let hir_item_table =
-            build_hir_item_table(&hir_files, &hir_modules).unwrap_or_else(
-                |_| HirItemTable::collect(&[], &BTreeMap::new())
-                    .expect("empty hir item table should collect"),
-            );
+        let hir_item_table = build_hir_item_table(&hir_files, &hir_modules)
+            .unwrap_or_else(|_| {
+                HirItemTable::collect(&[], &BTreeMap::new())
+                    .expect("empty hir item table should collect")
+            });
 
         let hir_imports = HirImportTables::resolve_with_graph(
             graph,
@@ -63,32 +64,35 @@ impl SemanticHirInput {
         })
         .unwrap_or_else(|_| HirImportTables::new());
 
-        let hir_path_table = build_hir_path_resolution_table_with_graph_and_imports(
-            &hir_files,
-            &hir_modules,
-            graph,
-            Some(&hir_imports),
-        )
-        .unwrap_or_else(|_| {
+        let hir_path_table =
             build_hir_path_resolution_table_with_graph_and_imports(
                 &hir_files,
                 &hir_modules,
                 graph,
-                None,
+                Some(&hir_imports),
             )
             .unwrap_or_else(|_| {
-                crate::frontend::resolver::build_hir_path_resolution_table(
+                build_hir_path_resolution_table_with_graph_and_imports(
                     &hir_files,
                     &hir_modules,
+                    graph,
+                    None,
                 )
-                .expect("fallback HIR path table should build")
-            })
-        });
+                .unwrap_or_else(|_| {
+                    crate::frontend::resolver::build_hir_path_resolution_table(
+                        &hir_files,
+                        &hir_modules,
+                    )
+                    .expect("fallback HIR path table should build")
+                })
+            });
 
         let mut item_id_by_hir_item_ref = BTreeMap::new();
         if let Some(item_paths) = hir_imports.item_paths_for_root(None) {
             for (full_path, item_ref) in item_paths {
-                if let Some(item_id) = global_items.item_id_by_full_path(full_path) {
+                if let Some(item_id) =
+                    global_items.item_id_by_full_path(full_path)
+                {
                     item_id_by_hir_item_ref.insert(*item_ref, item_id);
                 }
             }

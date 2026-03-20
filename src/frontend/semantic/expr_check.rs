@@ -477,7 +477,8 @@ struct BodyExprChecker<'a> {
 #[derive(Clone, Copy)]
 struct HirResolutionView<'a> {
     hir_imports: &'a crate::frontend::resolver::HirImportTables,
-    item_id_by_hir_item_ref: &'a BTreeMap<crate::frontend::resolver::HirItemRef, ItemId>,
+    item_id_by_hir_item_ref:
+        &'a BTreeMap<crate::frontend::resolver::HirItemRef, ItemId>,
 }
 
 impl<'a> BodyExprChecker<'a> {
@@ -1257,7 +1258,12 @@ impl<'a> BodyExprChecker<'a> {
         issues: &mut Vec<ExprCheckIssue>,
     ) -> Type {
         if let Some(item_id) = self.resolve_item_id_from_hir_path(&segments) {
-            return self.type_for_item_reference(span, item_id, typed_items, issues);
+            return self.type_for_item_reference(
+                span,
+                item_id,
+                typed_items,
+                issues,
+            );
         }
 
         let Some(resolved) = self
@@ -1401,13 +1407,22 @@ impl<'a> BodyExprChecker<'a> {
         let file_id = self.body.containing_scope_file_id;
         let imports = view.hir_imports;
 
-        if let Some(binding) = imports.get(file_id).and_then(|table| table.get(first)) {
+        if let Some(binding) =
+            imports.get(file_id).and_then(|table| table.get(first))
+        {
             if path.len() == 1 {
-                if binding.kind == crate::frontend::resolver::HirImportBindingKind::Item {
+                if binding.kind
+                    == crate::frontend::resolver::HirImportBindingKind::Item
+                {
                     let item_ref = binding.target_item?;
-                    return view.item_id_by_hir_item_ref.get(&item_ref).copied();
+                    return view
+                        .item_id_by_hir_item_ref
+                        .get(&item_ref)
+                        .copied();
                 }
-            } else if binding.kind == crate::frontend::resolver::HirImportBindingKind::Scope {
+            } else if binding.kind
+                == crate::frontend::resolver::HirImportBindingKind::Scope
+            {
                 let mut full_path = binding.target_path.clone();
                 full_path.extend(path.iter().skip(1).cloned());
                 let root_name = binding.source_root.as_deref();
@@ -1420,7 +1435,8 @@ impl<'a> BodyExprChecker<'a> {
             }
         }
 
-        let mut local_full_path = imports.scope_path_for_file(file_id)?.to_vec();
+        let mut local_full_path =
+            imports.scope_path_for_file(file_id)?.to_vec();
         local_full_path.extend(path.iter().cloned());
         let item_ref = imports
             .item_paths_for_root(None)?

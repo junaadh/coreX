@@ -9,7 +9,9 @@ use super::hir_item_table::{
 };
 use super::import_resolver::NamedImportRoot;
 use super::model::{ResolvedScope, ScopeGraph};
-use crate::frontend::hir::{HirFile, HirItemKind, HirModule, HirUseTree, lower_to_hir};
+use crate::frontend::hir::{
+    HirFile, HirItemKind, HirModule, HirUseTree, lower_to_hir,
+};
 use crate::frontend::source::FileId;
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
@@ -17,15 +19,38 @@ use std::fmt::{Display, Formatter};
 /// HIR import resolution errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HirImportError {
-    MissingHirFile { file_id: FileId },
-    MissingModule { file_id: FileId },
-    MissingItem { item_ref: HirItemRef },
-    UnknownRoot { from_file_id: FileId, root: String },
-    UnloadedDependencyRoot { from_file_id: FileId, root: String },
-    UnresolvedPath { from_file_id: FileId, path: Vec<String> },
-    InvalidSelfImport { from_file_id: FileId },
-    InvalidGlobTarget { from_file_id: FileId, path: Vec<String> },
-    DuplicateBinding { file_id: FileId, binding_name: String },
+    MissingHirFile {
+        file_id: FileId,
+    },
+    MissingModule {
+        file_id: FileId,
+    },
+    MissingItem {
+        item_ref: HirItemRef,
+    },
+    UnknownRoot {
+        from_file_id: FileId,
+        root: String,
+    },
+    UnloadedDependencyRoot {
+        from_file_id: FileId,
+        root: String,
+    },
+    UnresolvedPath {
+        from_file_id: FileId,
+        path: Vec<String>,
+    },
+    InvalidSelfImport {
+        from_file_id: FileId,
+    },
+    InvalidGlobTarget {
+        from_file_id: FileId,
+        path: Vec<String>,
+    },
+    DuplicateBinding {
+        file_id: FileId,
+        binding_name: String,
+    },
     NamedRootItemTable {
         root: String,
         error: super::hir_item_table::HirItemTableError,
@@ -176,21 +201,21 @@ pub fn hir_scope_symbols_from_hir_item_table(
     let mut by_scope = BTreeMap::new();
 
     for item in table.iter() {
-        let scope_symbols = by_scope
-            .entry(item.file_id)
-            .or_insert_with(|| HirScopeSymbols {
-                file_id: item.file_id,
-                symbols: BTreeMap::new(),
-            });
+        let scope_symbols =
+            by_scope
+                .entry(item.file_id)
+                .or_insert_with(|| HirScopeSymbols {
+                    file_id: item.file_id,
+                    symbols: BTreeMap::new(),
+                });
 
-        scope_symbols
-            .symbols
-            .entry(item.name.clone())
-            .or_insert(HirScopeSymbol {
+        scope_symbols.symbols.entry(item.name.clone()).or_insert(
+            HirScopeSymbol {
                 name: item.name.clone(),
                 kind: item.kind,
                 item_ref: item.item_ref,
-            });
+            },
+        );
     }
 
     by_scope
@@ -201,7 +226,8 @@ pub fn hir_scope_symbols_from_hir_item_table(
 pub struct HirImportTables {
     by_file: BTreeMap<FileId, HirImportTable>,
     scope_paths_by_file: BTreeMap<FileId, Vec<String>>,
-    item_paths_by_root: BTreeMap<Option<String>, BTreeMap<Vec<String>, HirItemRef>>,
+    item_paths_by_root:
+        BTreeMap<Option<String>, BTreeMap<Vec<String>, HirItemRef>>,
 }
 
 impl HirImportTables {
@@ -255,11 +281,11 @@ impl HirImportTables {
         let mut tables = Self::new();
 
         for hir_file in hir_files {
-            let module = hir_modules
-                .get(&hir_file.file_id)
-                .ok_or(HirImportError::MissingModule {
+            let module = hir_modules.get(&hir_file.file_id).ok_or(
+                HirImportError::MissingModule {
                     file_id: hir_file.file_id,
-                })?;
+                },
+            )?;
 
             let table = tables.get_or_create(hir_file.file_id);
             for item_id in &hir_file.root_items {
@@ -367,7 +393,8 @@ impl HirImportTables {
             let RegisteredNamedRoot::Loaded(context) = root else {
                 continue;
             };
-            item_paths_by_root.insert(Some(name.clone()), context.item_paths.clone());
+            item_paths_by_root
+                .insert(Some(name.clone()), context.item_paths.clone());
         }
 
         Ok((
@@ -482,7 +509,10 @@ fn build_named_root_contexts(
     for (name, root) in named_roots {
         match root {
             NamedImportRoot::UnloadedDependency => {
-                resolved.insert(name.clone(), RegisteredNamedRoot::UnloadedDependency);
+                resolved.insert(
+                    name.clone(),
+                    RegisteredNamedRoot::UnloadedDependency,
+                );
             }
             NamedImportRoot::LoadedLibrary {
                 graph,
@@ -502,7 +532,8 @@ fn build_named_root_contexts(
                         root: name.clone(),
                         error,
                     })?;
-                let scope_symbols = hir_scope_symbols_from_hir_item_table(&item_table);
+                let scope_symbols =
+                    hir_scope_symbols_from_hir_item_table(&item_table);
                 let item_paths = build_item_path_index(graph, &item_table);
                 resolved.insert(
                     name.clone(),
@@ -736,8 +767,12 @@ impl HirImportResolver<'_> {
         parent_map: &BTreeMap<FileId, FileId>,
         table: &mut HirImportTable,
     ) -> Result<(), HirImportError> {
-        let target =
-            self.resolve_use_path(from_file_id, current_scope_id, path, parent_map)?;
+        let target = self.resolve_use_path(
+            from_file_id,
+            current_scope_id,
+            path,
+            parent_map,
+        )?;
         let (target_scope_id, root_source) = match target {
             ResolvedPathTarget::Scope {
                 file_id,
@@ -760,7 +795,9 @@ impl HirImportResolver<'_> {
 
         let mut child_scopes = BTreeMap::new();
         for child_file_id in &target_scope.child_scope_ids {
-            if let Some(child_scope) = scope_by_id(context.graph, *child_file_id) {
+            if let Some(child_scope) =
+                scope_by_id(context.graph, *child_file_id)
+            {
                 child_scopes
                     .entry(child_scope.name.clone())
                     .or_insert(*child_file_id);
@@ -783,7 +820,8 @@ impl HirImportResolver<'_> {
             )?;
         }
 
-        if let Some(scope_symbols) = context.scope_symbols.get(&target_scope_id) {
+        if let Some(scope_symbols) = context.scope_symbols.get(&target_scope_id)
+        {
             for (name, symbol) in &scope_symbols.symbols {
                 let mut target_path = target_scope.scope_path.clone();
                 target_path.push(name.clone());
@@ -858,8 +896,12 @@ impl HirImportResolver<'_> {
                 });
             }
 
-            let symbol = lookup_symbol_in_scope(context.scope_symbols, scope_id, segment)
-                .ok_or_else(|| unresolved_path(from_file_id, path))?;
+            let symbol = lookup_symbol_in_scope(
+                context.scope_symbols,
+                scope_id,
+                segment,
+            )
+            .ok_or_else(|| unresolved_path(from_file_id, path))?;
             let scope = scope_by_id(context.graph, scope_id)
                 .ok_or_else(|| unresolved_path(from_file_id, path))?;
             let mut target_path = scope.scope_path.clone();
@@ -883,20 +925,21 @@ impl HirImportResolver<'_> {
     ) -> Result<(ResolvedRootSource, FileId), HirImportError> {
         let first = &path[0];
         match first.as_str() {
-            "root" => Ok((ResolvedRootSource::Current, self.graph.root_file_id)),
+            "root" => {
+                Ok((ResolvedRootSource::Current, self.graph.root_file_id))
+            }
             "super" => parent_map
                 .get(&current_scope_id)
                 .copied()
                 .map(|scope_id| (ResolvedRootSource::Current, scope_id))
                 .ok_or_else(|| unresolved_path(from_file_id, path)),
             other => {
-                let named = self
-                    .named_roots
-                    .get(other)
-                    .ok_or_else(|| HirImportError::UnknownRoot {
+                let named = self.named_roots.get(other).ok_or_else(|| {
+                    HirImportError::UnknownRoot {
                         from_file_id,
                         root: other.to_string(),
-                    })?;
+                    }
+                })?;
                 match named {
                     RegisteredNamedRoot::Loaded(context) => Ok((
                         ResolvedRootSource::Named(other.to_string()),
@@ -926,11 +969,13 @@ impl HirImportResolver<'_> {
             ResolvedRootSource::Named(name) => {
                 let root = self.named_roots.get(name)?;
                 match root {
-                    RegisteredNamedRoot::Loaded(context) => Some(ResolutionContext {
-                        graph: &context.graph,
-                        scope_symbols: &context.scope_symbols,
-                        item_paths: &context.item_paths,
-                    }),
+                    RegisteredNamedRoot::Loaded(context) => {
+                        Some(ResolutionContext {
+                            graph: &context.graph,
+                            scope_symbols: &context.scope_symbols,
+                            item_paths: &context.item_paths,
+                        })
+                    }
                     RegisteredNamedRoot::UnloadedDependency => None,
                 }
             }

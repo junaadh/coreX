@@ -556,7 +556,10 @@ mod tests {
                     Span::new(9, 15),
                 )],
                 return_type: Some(Spanned::new(
-                    Type::Optional(Box::new(Spanned::new(Type::SelfType, Span::new(0, 4)))),
+                    Type::Optional(Box::new(Spanned::new(
+                        Type::SelfType,
+                        Span::new(0, 4),
+                    ))),
                     Span::new(0, 4),
                 )), // Explicit return type to make it optional
                 body: crate::frontend::ast::Block {

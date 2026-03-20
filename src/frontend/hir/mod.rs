@@ -18,7 +18,7 @@ pub use nodes::{
     HirImpl, HirInitOrigin, HirItem, HirItemKind, HirLetStmt, HirLiteral,
     HirMatchArm, HirMutability, HirParamLabel, HirPat, HirPatKind, HirPath,
     HirProtocol, HirProtocolFunction, HirStmt, HirStmtKind, HirStruct,
-    HirStructExprField, HirStructField, HirStructPatField, HirType, HirTypeKind,
-    HirUnaryOp, HirUse, HirUseTree,
+    HirStructExprField, HirStructField, HirStructPatField, HirType,
+    HirTypeKind, HirUnaryOp, HirUse, HirUseTree,
 };
 pub use origin::HirOrigin;

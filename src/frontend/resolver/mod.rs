@@ -20,9 +20,7 @@ pub use body_resolution::{
     ResolvedBodyReference, ResolvedBodyTable, ResolvedLocalBinding,
     UnresolvedBodyReference, resolve_bodies,
 };
-pub use call_signature::{
-    CallParam, CallParamLabel, CallSignature,
-};
+pub use call_signature::{CallParam, CallParamLabel, CallSignature};
 pub use declaration_resolution::{
     DeclarationOwner, ResolvedDeclaration, ResolvedDeclarationTable,
     ResolvedEnumCaseType, ResolvedEnumDeclaration, ResolvedEnumPayloadType,
@@ -33,6 +31,11 @@ pub use declaration_resolution::{
     resolve_declaration_types,
 };
 pub use error::ResolveError;
+pub use hir_import_resolution::{
+    HirImportBinding, HirImportBindingKind, HirImportError, HirImportTable,
+    HirImportTables, HirScopeSymbol, HirScopeSymbols,
+    hir_scope_symbols_from_hir_item_table,
+};
 pub use hir_item_table::{
     HirCollectedItem, HirCollectedItemKind, HirItemRef, HirItemTable,
     HirItemTableError, build_hir_item_table,
@@ -47,11 +50,6 @@ pub use hir_path_resolution::{
 pub use hir_scope_resolution::{
     HirExprRef, HirLocalBinding, HirLocalBindingTable, HirPatRef,
     HirScopeResolutionError, build_hir_local_binding_table,
-};
-pub use hir_import_resolution::{
-    HirImportBinding, HirImportBindingKind, HirImportError, HirImportTable,
-    HirImportTables, HirScopeSymbol, HirScopeSymbols,
-    hir_scope_symbols_from_hir_item_table,
 };
 pub use import_error::ImportResolveError;
 pub use import_resolver::{

@@ -62,8 +62,8 @@
 //! ## Usage Example
 //!
 //! ```ignore
-//! // Expand a file with macros
-//! let expanded = expand_file(&db, &parsed, &macros, options)?;
+//! // Expand a file with pre-built macro index/scope context
+//! let expanded = expand_file(&db, &parsed, &index, &scope_table, options)?;
 //!
 //! // Later, when reporting an error at a span:
 //! if let Some(prov) = expanded.provenance_map.get(error_span) {
@@ -172,6 +172,7 @@ use crate::frontend::diagnostics::{
 use crate::frontend::source::FileId;
 use std::collections::BTreeMap;
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 
 /// Expanded parsed unit produced by [`expand_file`].
 ///
@@ -272,6 +273,715 @@ pub struct SelectedMacroClause<'a> {
     pub clause: &'a MacroClause,
 }
 
+/// Indexed macro definition entry collected from parsed source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedMacroDefinition {
+    pub name: String,
+    pub importable_name: String,
+    pub defining_file_id: FileId,
+    pub scope_path: Vec<String>,
+    pub visibility: Option<crate::frontend::ast::Visibility>,
+    pub definition: MacroDefinition,
+    declaration_span: crate::frontend::ast::Span,
+}
+
+/// Deterministic macro-definition index built from parsed files.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MacroDefinitionIndex {
+    declarations: BTreeMap<String, IndexedMacroDefinition>,
+    diagnostics: DiagnosticsBag,
+}
+
+impl MacroDefinitionIndex {
+    /// Creates an empty index.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Builds an index from parsed files without path metadata.
+    #[must_use]
+    pub fn from_parsed_files(parsed_files: &[ParsedFile]) -> Self {
+        Self::from_parsed_files_with_paths(parsed_files, &BTreeMap::new())
+    }
+
+    /// Builds an index from parsed files and file-path metadata.
+    ///
+    /// Duplicate definitions keep first declaration deterministically and emit
+    /// duplicate-name diagnostics.
+    #[must_use]
+    pub fn from_parsed_files_with_paths(
+        parsed_files: &[ParsedFile],
+        path_by_file_id: &BTreeMap<FileId, PathBuf>,
+    ) -> Self {
+        let mut index = Self::new();
+
+        for parsed in parsed_files {
+            let scope_path = path_by_file_id
+                .get(&parsed.file_id)
+                .map_or_else(Vec::new, |path| scope_path_from_file_path(path));
+            for item in &parsed.ast.items {
+                let Item::Macro(macro_decl) = &item.node else {
+                    continue;
+                };
+
+                let name = macro_decl.node.name.clone();
+                let candidate = IndexedMacroDefinition {
+                    importable_name: name.clone(),
+                    definition: MacroDefinition::from_ast(
+                        &macro_decl.node,
+                        parsed.file_id,
+                    ),
+                    name: name.clone(),
+                    defining_file_id: parsed.file_id,
+                    scope_path: scope_path.clone(),
+                    visibility: None,
+                    declaration_span: item.span,
+                };
+
+                if let Some(first) = index.declarations.get(&name) {
+                    index.diagnostics.push(duplicate_macro_diagnostic(
+                        &name,
+                        parsed.file_id,
+                        item.span,
+                        first.defining_file_id,
+                        first.declaration_span,
+                    ));
+                    continue;
+                }
+
+                index.declarations.insert(name, candidate);
+            }
+        }
+
+        index
+    }
+
+    /// Returns an indexed definition by importable name.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&IndexedMacroDefinition> {
+        self.declarations.get(name)
+    }
+
+    /// Returns deterministic duplicate-definition diagnostics.
+    #[must_use]
+    pub fn diagnostics(&self) -> &DiagnosticsBag {
+        &self.diagnostics
+    }
+
+    /// Returns diagnostics that reference a specific source file.
+    #[must_use]
+    pub fn diagnostics_for_file(&self, file_id: FileId) -> DiagnosticsBag {
+        let mut diagnostics = DiagnosticsBag::new();
+        diagnostics.extend(
+            self.diagnostics
+                .as_slice()
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic
+                        .labels
+                        .iter()
+                        .any(|label| label.span.file_id == file_id)
+                })
+                .cloned(),
+        );
+        diagnostics
+    }
+
+    /// Returns number of indexed definitions.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.declarations.len()
+    }
+
+    /// Returns true when index has no definitions.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.declarations.is_empty()
+    }
+}
+
+/// Origin for one macro binding in scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MacroBindingSource {
+    LocalDefinition,
+    ExplicitImport { path: Vec<String> },
+    GlobImport { path: Vec<String> },
+}
+
+/// One macro binding visible in a file/module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacroScopeBinding {
+    pub local_name: String,
+    pub macro_name: String,
+    pub defining_file_id: FileId,
+    pub target_scope_path: Vec<String>,
+    pub source: MacroBindingSource,
+}
+
+/// Macro bindings visible for one file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacroScope {
+    pub file_id: FileId,
+    pub bindings: BTreeMap<String, MacroScopeBinding>,
+}
+
+/// Macro-only scope/import resolution table.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MacroScopeTable {
+    scopes: BTreeMap<FileId, MacroScope>,
+    diagnostics: DiagnosticsBag,
+}
+
+impl MacroScopeTable {
+    /// Creates an empty table.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Builds macro scopes from parsed files, global macro index and path map.
+    ///
+    /// This pass performs macro-only import resolution and never parses source.
+    #[must_use]
+    pub fn from_parsed_files_with_index(
+        parsed_files: &[ParsedFile],
+        index: &MacroDefinitionIndex,
+        path_by_file_id: &BTreeMap<FileId, PathBuf>,
+    ) -> Self {
+        let mut scope_path_by_file_id = BTreeMap::new();
+        for parsed in parsed_files {
+            let scope_path = path_by_file_id
+                .get(&parsed.file_id)
+                .map_or_else(Vec::new, |path| scope_path_from_file_path(path));
+            scope_path_by_file_id.insert(parsed.file_id, scope_path);
+        }
+
+        let mut file_id_by_scope_path = BTreeMap::new();
+        for parsed in parsed_files {
+            let scope_path = scope_path_by_file_id
+                .get(&parsed.file_id)
+                .cloned()
+                .unwrap_or_default();
+            file_id_by_scope_path
+                .entry(scope_path)
+                .or_insert(parsed.file_id);
+        }
+
+        let mut macros_by_scope_path: BTreeMap<
+            Vec<String>,
+            BTreeMap<String, IndexedMacroDefinition>,
+        > = BTreeMap::new();
+        for definition in index.declarations.values() {
+            macros_by_scope_path
+                .entry(definition.scope_path.clone())
+                .or_default()
+                .insert(definition.name.clone(), definition.clone());
+        }
+
+        let primary_root_scope_exists =
+            file_id_by_scope_path.contains_key(&Vec::<String>::new());
+        let mut table = Self::new();
+        table
+            .diagnostics
+            .extend(index.diagnostics().as_slice().iter().cloned());
+
+        for parsed in parsed_files {
+            let file_id = parsed.file_id;
+            let current_scope_path = scope_path_by_file_id
+                .get(&file_id)
+                .cloned()
+                .unwrap_or_default();
+            let mut bindings = BTreeMap::new();
+
+            for definition in index
+                .declarations
+                .values()
+                .filter(|definition| definition.defining_file_id == file_id)
+            {
+                let binding = MacroScopeBinding {
+                    local_name: definition.name.clone(),
+                    macro_name: definition.name.clone(),
+                    defining_file_id: definition.defining_file_id,
+                    target_scope_path: definition.scope_path.clone(),
+                    source: MacroBindingSource::LocalDefinition,
+                };
+                bindings.insert(binding.local_name.clone(), binding);
+            }
+
+            for item in &parsed.ast.items {
+                let Item::Use(use_item) = &item.node else {
+                    continue;
+                };
+                resolve_macro_use_tree_into(
+                    file_id,
+                    &current_scope_path,
+                    &use_item.node.tree,
+                    &[],
+                    &macros_by_scope_path,
+                    &file_id_by_scope_path,
+                    primary_root_scope_exists,
+                    &mut bindings,
+                    &mut table.diagnostics,
+                );
+            }
+
+            table
+                .scopes
+                .insert(file_id, MacroScope { file_id, bindings });
+        }
+
+        table
+    }
+
+    /// Returns the scope binding table for one file.
+    #[must_use]
+    pub fn scope(&self, file_id: FileId) -> Option<&MacroScope> {
+        self.scopes.get(&file_id)
+    }
+
+    /// Returns all bindings visible in one file.
+    #[must_use]
+    pub fn bindings_for_file(
+        &self,
+        file_id: FileId,
+    ) -> Option<&BTreeMap<String, MacroScopeBinding>> {
+        self.scope(file_id).map(|scope| &scope.bindings)
+    }
+
+    /// Returns diagnostics collected during macro scope/import resolution.
+    #[must_use]
+    pub fn diagnostics(&self) -> &DiagnosticsBag {
+        &self.diagnostics
+    }
+
+    /// Returns one binding by local macro name for a specific file scope.
+    #[must_use]
+    pub fn binding_for_file(
+        &self,
+        file_id: FileId,
+        local_name: &str,
+    ) -> Option<&MacroScopeBinding> {
+        self.bindings_for_file(file_id)
+            .and_then(|bindings| bindings.get(local_name))
+    }
+
+    /// Returns diagnostics that reference a specific source file.
+    #[must_use]
+    pub fn diagnostics_for_file(&self, file_id: FileId) -> DiagnosticsBag {
+        let mut diagnostics = DiagnosticsBag::new();
+        diagnostics.extend(
+            self.diagnostics
+                .as_slice()
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic
+                        .labels
+                        .iter()
+                        .any(|label| label.span.file_id == file_id)
+                })
+                .cloned(),
+        );
+        diagnostics
+    }
+
+    /// Returns number of file scopes.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.scopes.len()
+    }
+
+    /// Returns true when table has no scope entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.scopes.is_empty()
+    }
+}
+
+enum MacroResolvedPathTarget {
+    Scope { scope_path: Vec<String> },
+    Macro(IndexedMacroDefinition),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_macro_use_tree_into(
+    from_file_id: FileId,
+    current_scope_path: &[String],
+    tree: &Spanned<crate::frontend::ast::UseTree>,
+    prefix: &[String],
+    macros_by_scope_path: &BTreeMap<
+        Vec<String>,
+        BTreeMap<String, IndexedMacroDefinition>,
+    >,
+    file_id_by_scope_path: &BTreeMap<Vec<String>, FileId>,
+    primary_root_scope_exists: bool,
+    bindings: &mut BTreeMap<String, MacroScopeBinding>,
+    diagnostics: &mut DiagnosticsBag,
+) {
+    use crate::frontend::ast::UseTree;
+
+    match &tree.node {
+        UseTree::Path { path } => {
+            let full_path = prefixed_path(prefix, &path.segments);
+            match resolve_macro_path(
+                current_scope_path,
+                &full_path,
+                macros_by_scope_path,
+                file_id_by_scope_path,
+                primary_root_scope_exists,
+            ) {
+                Ok(MacroResolvedPathTarget::Macro(definition)) => {
+                    let local_name = full_path
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| definition.name.clone());
+                    insert_macro_binding_checked(
+                        from_file_id,
+                        tree.span,
+                        bindings,
+                        MacroScopeBinding {
+                            local_name,
+                            macro_name: definition.name.clone(),
+                            defining_file_id: definition.defining_file_id,
+                            target_scope_path: definition.scope_path.clone(),
+                            source: MacroBindingSource::ExplicitImport {
+                                path: full_path,
+                            },
+                        },
+                        diagnostics,
+                    );
+                }
+                _ => diagnostics.push(unresolved_macro_import_diagnostic(
+                    from_file_id,
+                    tree.span,
+                    &full_path,
+                )),
+            }
+        }
+        UseTree::Alias { path, alias } => {
+            let full_path = prefixed_path(prefix, &path.segments);
+            match resolve_macro_path(
+                current_scope_path,
+                &full_path,
+                macros_by_scope_path,
+                file_id_by_scope_path,
+                primary_root_scope_exists,
+            ) {
+                Ok(MacroResolvedPathTarget::Macro(definition)) => {
+                    insert_macro_binding_checked(
+                        from_file_id,
+                        tree.span,
+                        bindings,
+                        MacroScopeBinding {
+                            local_name: alias.clone(),
+                            macro_name: definition.name.clone(),
+                            defining_file_id: definition.defining_file_id,
+                            target_scope_path: definition.scope_path.clone(),
+                            source: MacroBindingSource::ExplicitImport {
+                                path: full_path,
+                            },
+                        },
+                        diagnostics,
+                    );
+                }
+                _ => diagnostics.push(unresolved_macro_import_diagnostic(
+                    from_file_id,
+                    tree.span,
+                    &full_path,
+                )),
+            }
+        }
+        UseTree::Glob { path } => {
+            let full_path = prefixed_path(prefix, &path.segments);
+            match resolve_macro_path(
+                current_scope_path,
+                &full_path,
+                macros_by_scope_path,
+                file_id_by_scope_path,
+                primary_root_scope_exists,
+            ) {
+                Ok(MacroResolvedPathTarget::Scope { scope_path }) => {
+                    if let Some(scope_macros) =
+                        macros_by_scope_path.get(&scope_path)
+                    {
+                        for definition in scope_macros.values() {
+                            insert_macro_binding_checked(
+                                from_file_id,
+                                tree.span,
+                                bindings,
+                                MacroScopeBinding {
+                                    local_name: definition.name.clone(),
+                                    macro_name: definition.name.clone(),
+                                    defining_file_id: definition
+                                        .defining_file_id,
+                                    target_scope_path: definition
+                                        .scope_path
+                                        .clone(),
+                                    source: MacroBindingSource::GlobImport {
+                                        path: full_path.clone(),
+                                    },
+                                },
+                                diagnostics,
+                            );
+                        }
+                    }
+                }
+                _ => diagnostics.push(unresolved_macro_import_diagnostic(
+                    from_file_id,
+                    tree.span,
+                    &full_path,
+                )),
+            }
+        }
+        UseTree::Group { path, items } => {
+            let mut next_prefix = prefix.to_vec();
+            if let Some(path) = path {
+                next_prefix.extend(path.segments.iter().cloned());
+            }
+            for item in items {
+                resolve_macro_use_tree_into(
+                    from_file_id,
+                    current_scope_path,
+                    item,
+                    &next_prefix,
+                    macros_by_scope_path,
+                    file_id_by_scope_path,
+                    primary_root_scope_exists,
+                    bindings,
+                    diagnostics,
+                );
+            }
+        }
+        UseTree::SelfImport => {
+            if prefix.is_empty() {
+                diagnostics.push(unresolved_macro_import_diagnostic(
+                    from_file_id,
+                    tree.span,
+                    prefix,
+                ));
+                return;
+            }
+            match resolve_macro_path(
+                current_scope_path,
+                prefix,
+                macros_by_scope_path,
+                file_id_by_scope_path,
+                primary_root_scope_exists,
+            ) {
+                Ok(MacroResolvedPathTarget::Macro(definition)) => {
+                    let local_name = prefix
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| definition.name.clone());
+                    insert_macro_binding_checked(
+                        from_file_id,
+                        tree.span,
+                        bindings,
+                        MacroScopeBinding {
+                            local_name,
+                            macro_name: definition.name.clone(),
+                            defining_file_id: definition.defining_file_id,
+                            target_scope_path: definition.scope_path.clone(),
+                            source: MacroBindingSource::ExplicitImport {
+                                path: prefix.to_vec(),
+                            },
+                        },
+                        diagnostics,
+                    );
+                }
+                _ => diagnostics.push(unresolved_macro_import_diagnostic(
+                    from_file_id,
+                    tree.span,
+                    prefix,
+                )),
+            }
+        }
+        UseTree::SelfAlias { alias } => {
+            if prefix.is_empty() {
+                diagnostics.push(unresolved_macro_import_diagnostic(
+                    from_file_id,
+                    tree.span,
+                    prefix,
+                ));
+                return;
+            }
+            match resolve_macro_path(
+                current_scope_path,
+                prefix,
+                macros_by_scope_path,
+                file_id_by_scope_path,
+                primary_root_scope_exists,
+            ) {
+                Ok(MacroResolvedPathTarget::Macro(definition)) => {
+                    insert_macro_binding_checked(
+                        from_file_id,
+                        tree.span,
+                        bindings,
+                        MacroScopeBinding {
+                            local_name: alias.clone(),
+                            macro_name: definition.name.clone(),
+                            defining_file_id: definition.defining_file_id,
+                            target_scope_path: definition.scope_path.clone(),
+                            source: MacroBindingSource::ExplicitImport {
+                                path: prefix.to_vec(),
+                            },
+                        },
+                        diagnostics,
+                    );
+                }
+                _ => diagnostics.push(unresolved_macro_import_diagnostic(
+                    from_file_id,
+                    tree.span,
+                    prefix,
+                )),
+            }
+        }
+    }
+}
+
+fn prefixed_path(prefix: &[String], path: &[String]) -> Vec<String> {
+    let mut combined = Vec::with_capacity(prefix.len() + path.len());
+    combined.extend(prefix.iter().cloned());
+    combined.extend(path.iter().cloned());
+    combined
+}
+
+fn resolve_macro_path(
+    current_scope_path: &[String],
+    path: &[String],
+    macros_by_scope_path: &BTreeMap<
+        Vec<String>,
+        BTreeMap<String, IndexedMacroDefinition>,
+    >,
+    file_id_by_scope_path: &BTreeMap<Vec<String>, FileId>,
+    primary_root_scope_exists: bool,
+) -> Result<MacroResolvedPathTarget, ()> {
+    if path.is_empty() {
+        return Err(());
+    }
+
+    let first = path.first().expect("path should not be empty");
+    let mut scope_path = match first.as_str() {
+        "root" if primary_root_scope_exists => Vec::new(),
+        "super" => {
+            let mut parent = current_scope_path.to_vec();
+            if parent.is_empty() {
+                return Err(());
+            }
+            parent.pop();
+            parent
+        }
+        _ => return Err(()),
+    };
+
+    if path.len() < 2 {
+        return Err(());
+    }
+
+    for segment in path.iter().skip(1).take(path.len().saturating_sub(2)) {
+        scope_path.push(segment.clone());
+        if !file_id_by_scope_path.contains_key(&scope_path) {
+            return Err(());
+        }
+    }
+
+    let final_segment = path.last().expect("path should not be empty");
+    if let Some(scope_macros) = macros_by_scope_path.get(&scope_path)
+        && let Some(definition) = scope_macros.get(final_segment)
+    {
+        return Ok(MacroResolvedPathTarget::Macro(definition.clone()));
+    }
+
+    let mut child_scope_path = scope_path;
+    child_scope_path.push(final_segment.clone());
+    if file_id_by_scope_path.contains_key(&child_scope_path) {
+        return Ok(MacroResolvedPathTarget::Scope {
+            scope_path: child_scope_path,
+        });
+    }
+
+    Err(())
+}
+
+fn insert_macro_binding_checked(
+    file_id: FileId,
+    span: crate::frontend::ast::Span,
+    bindings: &mut BTreeMap<String, MacroScopeBinding>,
+    binding: MacroScopeBinding,
+    diagnostics: &mut DiagnosticsBag,
+) {
+    if let Some(existing) = bindings.get(&binding.local_name) {
+        let same_target = existing.defining_file_id == binding.defining_file_id
+            && existing.macro_name == binding.macro_name
+            && existing.target_scope_path == binding.target_scope_path;
+        if !same_target {
+            diagnostics.push(ambiguous_macro_import_diagnostic(
+                file_id,
+                span,
+                &binding.local_name,
+                existing,
+                &binding,
+            ));
+        }
+        return;
+    }
+
+    bindings.insert(binding.local_name.clone(), binding);
+}
+
+fn unresolved_macro_import_diagnostic(
+    file_id: FileId,
+    span: crate::frontend::ast::Span,
+    path: &[String],
+) -> Diagnostic {
+    let rendered = if path.is_empty() {
+        "<empty>".to_string()
+    } else {
+        path.join("::")
+    };
+    Diagnostic::error("unresolved macro import").with_label(
+        DiagnosticLabel::primary(
+            FileSpan::new(file_id, span),
+            format!("cannot resolve macro import `{rendered}`"),
+        ),
+    )
+}
+
+fn ambiguous_macro_import_diagnostic(
+    file_id: FileId,
+    span: crate::frontend::ast::Span,
+    local_name: &str,
+    first: &MacroScopeBinding,
+    second: &MacroScopeBinding,
+) -> Diagnostic {
+    Diagnostic::error(format!("ambiguous macro import `{local_name}`"))
+        .with_label(DiagnosticLabel::primary(
+            FileSpan::new(file_id, span),
+            format!(
+                "`{local_name}` could refer to `{}` or `{}`",
+                first.macro_name, second.macro_name
+            ),
+        ))
+        .with_note(format!(
+            "first candidate defined in file {} at scope `{}`",
+            first.defining_file_id.raw(),
+            if first.target_scope_path.is_empty() {
+                "root".to_string()
+            } else {
+                first.target_scope_path.join("::")
+            }
+        ))
+        .with_note(format!(
+            "second candidate defined in file {} at scope `{}`",
+            second.defining_file_id.raw(),
+            if second.target_scope_path.is_empty() {
+                "root".to_string()
+            } else {
+                second.target_scope_path.join("::")
+            }
+        ))
+}
+
 /// Name-indexed macro declaration table used during expansion/dispatch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MacroTable {
@@ -285,24 +995,27 @@ impl MacroTable {
         Self::default()
     }
 
+    /// Builds a macro table from a definition index.
+    #[must_use]
+    pub fn from_definition_index(index: &MacroDefinitionIndex) -> Self {
+        let declarations = index
+            .declarations
+            .iter()
+            .map(|(name, definition)| {
+                (name.clone(), definition.definition.clone())
+            })
+            .collect();
+        Self { declarations }
+    }
+
     /// Builds a macro table from parsed files.
     ///
     /// First declaration wins for duplicate names to keep behavior
-    /// deterministic until duplicate-macro diagnostics are added.
+    /// deterministic.
     #[must_use]
     pub fn from_parsed_files(parsed_files: &[ParsedFile]) -> Self {
-        let mut table = Self::new();
-        for parsed in parsed_files {
-            for item in &parsed.ast.items {
-                if let Item::Macro(macro_decl) = &item.node {
-                    table.insert(MacroDefinition::from_ast(
-                        &macro_decl.node,
-                        parsed.file_id,
-                    ));
-                }
-            }
-        }
-        table
+        let index = MacroDefinitionIndex::from_parsed_files(parsed_files);
+        Self::from_definition_index(&index)
     }
 
     /// Inserts one macro definition keyed by its name.
@@ -331,6 +1044,58 @@ impl MacroTable {
     pub fn is_empty(&self) -> bool {
         self.declarations.is_empty()
     }
+}
+
+fn scope_path_from_file_path(path: &Path) -> Vec<String> {
+    let mut scope_path = Vec::new();
+    let parent_components = path
+        .parent()
+        .into_iter()
+        .flat_map(|parent| parent.components())
+        .filter_map(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .map(std::string::ToString::to_string)
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(src_index) = parent_components
+        .iter()
+        .position(|component| component == "src")
+    {
+        scope_path.extend(parent_components.into_iter().skip(src_index + 1));
+    }
+
+    if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+        && stem != "root"
+        && stem != "main"
+    {
+        scope_path.push(stem.to_string());
+    }
+
+    scope_path
+}
+
+fn duplicate_macro_diagnostic(
+    macro_name: &str,
+    duplicate_file_id: FileId,
+    duplicate_span: crate::frontend::ast::Span,
+    first_file_id: FileId,
+    first_span: crate::frontend::ast::Span,
+) -> Diagnostic {
+    Diagnostic::error(format!("duplicate macro definition `{macro_name}`"))
+        .with_label(DiagnosticLabel::primary(
+            FileSpan::new(duplicate_file_id, duplicate_span),
+            format!("duplicate definition of `{macro_name}`"),
+        ))
+        .with_label(DiagnosticLabel::secondary(
+            FileSpan::new(first_file_id, first_span),
+            format!("first definition of `{macro_name}`"),
+        ))
+        .with_note(
+            "macro definitions are indexed deterministically: first declaration wins",
+        )
 }
 
 impl MacroDefinition {
@@ -453,6 +1218,54 @@ pub fn dispatch_macro<'a>(
         return Err(unknown_macro_diagnostic(file_id, invocation));
     };
 
+    select_macro_clause(definition, invocation, file_id)
+}
+
+/// Selects a macro clause using per-file scope bindings and global index data.
+///
+/// Resolution behavior:
+/// 1. Resolve local macro name from `MacroScopeTable` for `file_id`
+/// 2. Resolve binding target from `MacroDefinitionIndex`
+/// 3. Select a compatible clause using the same priority as `dispatch_macro`
+///
+/// # Errors
+///
+/// Returns a diagnostic when the macro is not in scope or no clause matches.
+pub fn dispatch_macro_with_scope<'a>(
+    index: &'a MacroDefinitionIndex,
+    scope_table: &MacroScopeTable,
+    invocation: &MacroInvocation,
+    file_id: FileId,
+) -> Result<SelectedMacroClause<'a>, Diagnostic> {
+    let Some(definition) = resolve_macro_definition_in_scope(
+        index,
+        scope_table,
+        file_id,
+        invocation,
+    ) else {
+        return Err(unknown_macro_diagnostic(file_id, invocation));
+    };
+
+    select_macro_clause(definition, invocation, file_id)
+}
+
+fn resolve_macro_definition_in_scope<'a>(
+    index: &'a MacroDefinitionIndex,
+    scope_table: &MacroScopeTable,
+    file_id: FileId,
+    invocation: &MacroInvocation,
+) -> Option<&'a MacroDefinition> {
+    let binding = scope_table.binding_for_file(file_id, &invocation.name)?;
+    index
+        .get(&binding.macro_name)
+        .map(|entry| &entry.definition)
+}
+
+fn select_macro_clause<'a>(
+    definition: &'a MacroDefinition,
+    invocation: &MacroInvocation,
+    file_id: FileId,
+) -> Result<SelectedMacroClause<'a>, Diagnostic> {
     let expected_input = invocation.shape.expected_input();
     let mut selected_reflect: Option<&MacroClause> = None;
     let mut selected_rule: Option<&MacroClause> = None;
@@ -680,18 +1493,21 @@ fn no_matching_clause_diagnostic(
 pub fn expand_file(
     db: &crate::frontend::source::SourceDb,
     parsed: &ParsedFile,
-    macros: &MacroTable,
+    index: &MacroDefinitionIndex,
+    scope_table: &MacroScopeTable,
     options: ExpansionOptions,
 ) -> ExpandedFile {
     expand_file_with_hook(
         db,
         parsed,
-        macros,
+        index,
+        scope_table,
         options,
-        |invocation, macros, db, file_id, provenance_map| {
+        |invocation, index, scope_table, db, file_id, provenance_map| {
             placeholder_expand_macro(
                 invocation,
-                macros,
+                index,
+                scope_table,
                 db,
                 file_id,
                 provenance_map,
@@ -710,16 +1526,80 @@ pub fn expand_parsed_files(
     parsed_files: &[ParsedFile],
     options: ExpansionOptions,
 ) -> Vec<ExpandedFile> {
-    let macros = MacroTable::from_parsed_files(parsed_files);
+    let index = MacroDefinitionIndex::from_parsed_files(parsed_files);
+    let scope_table = MacroScopeTable::from_parsed_files_with_index(
+        parsed_files,
+        &index,
+        &BTreeMap::new(),
+    );
+    expand_parsed_files_with_index_and_scope(
+        db,
+        parsed_files,
+        &index,
+        &scope_table,
+        options,
+    )
+}
+
+/// Expands parsed files using a pre-built macro-definition index.
+#[must_use]
+pub fn expand_parsed_files_with_index(
+    db: &crate::frontend::source::SourceDb,
+    parsed_files: &[ParsedFile],
+    index: &MacroDefinitionIndex,
+    options: ExpansionOptions,
+) -> Vec<ExpandedFile> {
+    let scope_table = MacroScopeTable::from_parsed_files_with_index(
+        parsed_files,
+        index,
+        &BTreeMap::new(),
+    );
+    expand_parsed_files_with_index_and_scope(
+        db,
+        parsed_files,
+        index,
+        &scope_table,
+        options,
+    )
+}
+
+/// Expands parsed files using pre-built macro-definition and scope tables.
+#[must_use]
+pub fn expand_parsed_files_with_index_and_scope(
+    db: &crate::frontend::source::SourceDb,
+    parsed_files: &[ParsedFile],
+    index: &MacroDefinitionIndex,
+    scope_table: &MacroScopeTable,
+    options: ExpansionOptions,
+) -> Vec<ExpandedFile> {
     parsed_files
         .iter()
-        .map(|parsed| expand_file(db, parsed, &macros, options))
+        .map(|parsed| {
+            let mut expanded =
+                expand_file(db, parsed, index, scope_table, options);
+            expanded.diagnostics.extend(
+                index
+                    .diagnostics_for_file(parsed.file_id)
+                    .as_slice()
+                    .iter()
+                    .cloned(),
+            );
+            expanded.diagnostics.extend(
+                scope_table
+                    .diagnostics_for_file(parsed.file_id)
+                    .as_slice()
+                    .iter()
+                    .cloned(),
+            );
+            expanded
+        })
         .collect()
 }
 
 type ExpandHook<'h> = dyn FnMut(
         &Spanned<Expr>,
-        &MacroTable,
+        &MacroDefinitionIndex,
+        &MacroScopeTable,
         &crate::frontend::source::SourceDb,
         FileId,
         &mut ProvenanceMap,
@@ -786,11 +1666,13 @@ struct HygieneContext {
 fn expand_file_with_hook(
     db: &crate::frontend::source::SourceDb,
     parsed: &ParsedFile,
-    macros: &MacroTable,
+    index: &MacroDefinitionIndex,
+    scope_table: &MacroScopeTable,
     options: ExpansionOptions,
     mut hook: impl FnMut(
         &Spanned<Expr>,
-        &MacroTable,
+        &MacroDefinitionIndex,
+        &MacroScopeTable,
         &crate::frontend::source::SourceDb,
         FileId,
         &mut ProvenanceMap,
@@ -818,7 +1700,8 @@ fn expand_file_with_hook(
         let mut pass = ExpansionPass {
             file_id: parsed.file_id,
             db,
-            macros,
+            macro_index: index,
+            macro_scope_table: scope_table,
             changed: false,
             last_expansion_span: None,
             diagnostics: Vec::new(),
@@ -858,7 +1741,8 @@ fn expand_file_with_hook(
 struct ExpansionPass<'a, 'h> {
     file_id: FileId,
     db: &'a crate::frontend::source::SourceDb,
-    macros: &'a MacroTable,
+    macro_index: &'a MacroDefinitionIndex,
+    macro_scope_table: &'a MacroScopeTable,
     changed: bool,
     last_expansion_span: Option<crate::frontend::ast::Span>,
     diagnostics: Vec<Diagnostic>,
@@ -881,15 +1765,21 @@ fn expand_attached_item_if_present(
     index: usize,
     pass: &mut ExpansionPass<'_, '_>,
 ) {
-    let Some((macro_name, invocation_span)) =
-        item_macro_attribute(&ast.items[index], pass.macros)
-    else {
+    let Some((macro_name, invocation_span)) = item_macro_attribute(
+        &ast.items[index],
+        pass.file_id,
+        pass.macro_scope_table,
+    ) else {
         return;
     };
 
     let invocation = MacroInvocation::attached(macro_name, invocation_span);
-    let selection = match dispatch_macro(pass.macros, &invocation, pass.file_id)
-    {
+    let selection = match dispatch_macro_with_scope(
+        pass.macro_index,
+        pass.macro_scope_table,
+        &invocation,
+        pass.file_id,
+    ) {
         Ok(selection) => selection,
         Err(diagnostic) => {
             pass.diagnostics.push(diagnostic);
@@ -921,7 +1811,6 @@ fn expand_attached_item_if_present(
                 &invocation,
                 selection.definition,
                 selection.clause,
-                pass.macros,
                 pass.db,
                 pass.file_id,
                 pass.provenance_map,
@@ -952,7 +1841,8 @@ fn expand_attached_item_if_present(
 
 fn item_macro_attribute(
     item: &Spanned<Item>,
-    macros: &MacroTable,
+    file_id: FileId,
+    scope_table: &MacroScopeTable,
 ) -> Option<(String, crate::frontend::ast::Span)> {
     let attributes = match &item.node {
         Item::Struct(decl) => Some(&decl.node.attributes),
@@ -966,7 +1856,10 @@ fn item_macro_attribute(
     }?;
 
     attributes.iter().find_map(|attribute| {
-        if macros.get(&attribute.node.name).is_some() {
+        if scope_table
+            .binding_for_file(file_id, &attribute.node.name)
+            .is_some()
+        {
             Some((attribute.node.name.clone(), attribute.span))
         } else {
             None
@@ -1161,7 +2054,8 @@ fn expand_expr(expr: &mut Spanned<Expr>, pass: &mut ExpansionPass<'_, '_>) {
     let replacement = if matches!(&expr.node, Expr::Macro { .. }) {
         let result = (pass.hook)(
             expr,
-            pass.macros,
+            pass.macro_index,
+            pass.macro_scope_table,
             pass.db,
             pass.file_id,
             pass.provenance_map,
@@ -1399,7 +2293,8 @@ fn first_file_span(ast: &File) -> Option<crate::frontend::ast::Span> {
 
 fn placeholder_expand_macro(
     invocation: &Spanned<Expr>,
-    macros: &MacroTable,
+    index: &MacroDefinitionIndex,
+    scope_table: &MacroScopeTable,
     db: &crate::frontend::source::SourceDb,
     file_id: FileId,
     provenance_map: &mut ProvenanceMap,
@@ -1408,8 +2303,12 @@ fn placeholder_expand_macro(
     else {
         return MacroExpansionResult::default();
     };
-    let selection = match dispatch_macro(macros, &dispatch_invocation, file_id)
-    {
+    let selection = match dispatch_macro_with_scope(
+        index,
+        scope_table,
+        &dispatch_invocation,
+        file_id,
+    ) {
         Ok(selection) => selection,
         Err(diagnostic) => {
             return MacroExpansionResult {
@@ -1425,7 +2324,6 @@ fn placeholder_expand_macro(
             &dispatch_invocation,
             selection.definition,
             selection.clause,
-            macros,
             db,
             file_id,
             provenance_map,
@@ -1444,7 +2342,6 @@ fn placeholder_expand_macro(
             &dispatch_invocation,
             selection.definition,
             selection.clause,
-            macros,
             db,
             file_id,
             provenance_map,
@@ -1476,19 +2373,12 @@ fn execute_rule_clause(
     invocation: &MacroInvocation,
     definition: &MacroDefinition,
     clause: &MacroClause,
-    macros: &MacroTable,
     db: &crate::frontend::source::SourceDb,
     file_id: FileId,
     provenance_map: &mut ProvenanceMap,
 ) -> Result<Spanned<Expr>, Diagnostic> {
-    let bindings = bind_rule_parameters(
-        invocation_expr,
-        invocation,
-        clause,
-        macros,
-        db,
-        file_id,
-    )?;
+    let bindings =
+        bind_rule_parameters(invocation_expr, invocation, clause, db, file_id)?;
     let template_source = source_slice_for_macro_body(
         db,
         definition.defining_file_id,
@@ -1710,7 +2600,6 @@ fn execute_reflect_clause(
     invocation: &MacroInvocation,
     definition: &MacroDefinition,
     clause: &MacroClause,
-    _macros: &MacroTable,
     db: &crate::frontend::source::SourceDb,
     file_id: FileId,
     provenance_map: &mut ProvenanceMap,
@@ -2037,7 +2926,6 @@ fn bind_rule_parameters(
     invocation_expr: &Spanned<Expr>,
     invocation: &MacroInvocation,
     clause: &MacroClause,
-    _macros: &MacroTable,
     db: &crate::frontend::source::SourceDb,
     file_id: FileId,
 ) -> Result<Vec<MacroBinding>, Diagnostic> {
@@ -3154,12 +4042,18 @@ fn render_assign_op(op: crate::frontend::ast::AssignOp) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExpansionOptions, MacroTable, Provenance, SynthesisPurpose};
+    use super::{
+        ExpansionOptions, MacroDefinitionIndex, MacroScopeTable, Provenance,
+        SynthesisPurpose,
+    };
     use crate::frontend::ast::{Expr, Item, Stmt};
     use crate::frontend::parser::{
         parse_source_file, parse_source_file_from_source_file,
     };
+    use crate::frontend::source::FileId;
     use crate::frontend::source::SourceDb;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
 
     fn parse(
         source: &str,
@@ -3180,14 +4074,38 @@ mod tests {
         recursion_limit: usize,
     ) -> super::ExpandedFile {
         let (db, parsed) = parse(source);
-        let macros =
-            MacroTable::from_parsed_files(std::slice::from_ref(&parsed));
+        let index = MacroDefinitionIndex::from_parsed_files(
+            std::slice::from_ref(&parsed),
+        );
+        let scope_table = MacroScopeTable::from_parsed_files_with_index(
+            std::slice::from_ref(&parsed),
+            &index,
+            &BTreeMap::new(),
+        );
         super::expand_file(
             &db,
             &parsed,
-            &macros,
+            &index,
+            &scope_table,
             ExpansionOptions { recursion_limit },
         )
+    }
+
+    fn parse_many_with_paths(
+        files: &[(&str, &str)],
+    ) -> (Vec<crate::frontend::ParsedFile>, BTreeMap<FileId, PathBuf>) {
+        let mut db = SourceDb::new();
+        let mut parsed_files = Vec::with_capacity(files.len());
+        let mut path_by_file_id = BTreeMap::new();
+        for (path, source) in files {
+            let file_id = db.add_file(*path, source.to_string());
+            let file = db.file(file_id).expect("test source file should exist");
+            let parsed = parse_source_file_from_source_file(file)
+                .expect("source should parse in test");
+            parsed_files.push(parsed);
+            path_by_file_id.insert(file_id, PathBuf::from(path));
+        }
+        (parsed_files, path_by_file_id)
     }
 
     fn main_expr(expanded: &super::ExpandedFile) -> &Expr {
@@ -3274,6 +4192,155 @@ fn main() { @a(7); }
     }
 
     #[test]
+    fn macro_definition_index_collects_scope_path_and_definition_data() {
+        let (parsed_files, path_by_file_id) = parse_many_with_paths(&[
+            (
+                "src/root.cx",
+                "macro root_macro { rule(input: Expr) => { input }; }",
+            ),
+            (
+                "src/util.cx",
+                "macro util_macro { rule(input: Expr) => { input }; }",
+            ),
+        ]);
+        let root_id = parsed_files[0].file_id;
+        let util_id = parsed_files[1].file_id;
+
+        let index = MacroDefinitionIndex::from_parsed_files_with_paths(
+            &parsed_files,
+            &path_by_file_id,
+        );
+
+        let root = index
+            .get("root_macro")
+            .expect("root macro should be indexed");
+        assert_eq!(root.defining_file_id, root_id);
+        assert_eq!(root.importable_name, "root_macro");
+        assert!(root.scope_path.is_empty());
+
+        let util = index
+            .get("util_macro")
+            .expect("util macro should be indexed");
+        assert_eq!(util.defining_file_id, util_id);
+        assert_eq!(util.importable_name, "util_macro");
+        assert_eq!(util.scope_path, vec!["util"]);
+        assert!(index.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn macro_definition_index_reports_duplicate_names_deterministically() {
+        let (parsed_files, path_by_file_id) = parse_many_with_paths(&[
+            (
+                "src/root.cx",
+                "macro dup { rule(input: Expr) => { input }; }",
+            ),
+            (
+                "src/other.cx",
+                "macro dup { rule(input: Expr) => { input }; }",
+            ),
+        ]);
+        let first_id = parsed_files[0].file_id;
+
+        let index = MacroDefinitionIndex::from_parsed_files_with_paths(
+            &parsed_files,
+            &path_by_file_id,
+        );
+
+        assert_eq!(index.len(), 1);
+        let dup = index.get("dup").expect("duplicate macro should be indexed");
+        assert_eq!(dup.defining_file_id, first_id);
+        assert_eq!(index.diagnostics().len(), 1);
+    }
+
+    #[test]
+    fn macro_scope_table_resolves_local_explicit_and_glob_imports() {
+        let (parsed_files, path_by_file_id) = parse_many_with_paths(&[
+            (
+                "src/root.cx",
+                "macro root_m { rule(input: Expr) => { input }; }",
+            ),
+            (
+                "src/util.cx",
+                "macro util_a { rule(input: Expr) => { input }; }\n\
+                 macro util_b { rule(input: Expr) => { input }; }",
+            ),
+            (
+                "src/consumer.cx",
+                "use root::util::util_a;\n\
+                 use root::util::*;\n\
+                 macro local_m { rule(input: Expr) => { input }; }",
+            ),
+        ]);
+        let index = MacroDefinitionIndex::from_parsed_files_with_paths(
+            &parsed_files,
+            &path_by_file_id,
+        );
+        let table = MacroScopeTable::from_parsed_files_with_index(
+            &parsed_files,
+            &index,
+            &path_by_file_id,
+        );
+
+        let consumer_id = parsed_files[2].file_id;
+        let bindings = table
+            .bindings_for_file(consumer_id)
+            .expect("consumer scope should exist");
+
+        assert!(bindings.contains_key("local_m"));
+        assert!(bindings.contains_key("util_a"));
+        assert!(bindings.contains_key("util_b"));
+        assert!(table.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn macro_scope_table_reports_unresolved_and_ambiguous_imports() {
+        let (parsed_files, path_by_file_id) = parse_many_with_paths(&[
+            (
+                "src/root.cx",
+                "macro root_m { rule(input: Expr) => { input }; }",
+            ),
+            ("src/a.cx", "macro ma { rule(input: Expr) => { input }; }"),
+            ("src/b.cx", "macro mb { rule(input: Expr) => { input }; }"),
+            (
+                "src/consumer.cx",
+                "use root::a::ma as clash;\n\
+                 use root::b::mb as clash;\n\
+                 use root::missing::x;",
+            ),
+        ]);
+        let index = MacroDefinitionIndex::from_parsed_files_with_paths(
+            &parsed_files,
+            &path_by_file_id,
+        );
+        let table = MacroScopeTable::from_parsed_files_with_index(
+            &parsed_files,
+            &index,
+            &path_by_file_id,
+        );
+
+        let consumer_id = parsed_files[3].file_id;
+        let bindings = table
+            .bindings_for_file(consumer_id)
+            .expect("consumer scope should exist");
+        let clash = bindings.get("clash").expect("first clash binding kept");
+        assert_eq!(clash.macro_name, "ma");
+        assert!(
+            table
+                .diagnostics()
+                .as_slice()
+                .iter()
+                .any(|diag| diag.message.contains("ambiguous macro import"))
+        );
+        assert!(
+            table
+                .diagnostics()
+                .as_slice()
+                .iter()
+                .any(|diag| diag.message.contains("unresolved macro import"))
+        );
+    }
+
+    #[test]
     fn nested_expansion_expands_inner_invocation_inside_outer_output() {
         let source = r#"
 macro inner { rule(input: Expr) => { input * 2 }; }
@@ -3347,12 +4414,19 @@ fn main() { @block_id { 1 + 2 }; }
 "#;
         let parsed = parse_source_file(source).expect("source parses");
         let db = SourceDb::new();
-        let macros =
-            MacroTable::from_parsed_files(std::slice::from_ref(&parsed));
+        let index = MacroDefinitionIndex::from_parsed_files(
+            std::slice::from_ref(&parsed),
+        );
+        let scope_table = MacroScopeTable::from_parsed_files_with_index(
+            std::slice::from_ref(&parsed),
+            &index,
+            &BTreeMap::new(),
+        );
         let expanded = super::expand_file(
             &db,
             &parsed,
-            &macros,
+            &index,
+            &scope_table,
             ExpansionOptions { recursion_limit: 4 },
         );
 

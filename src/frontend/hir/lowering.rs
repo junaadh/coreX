@@ -978,7 +978,9 @@ impl<'a> LoweringCtx<'a> {
             Expr::ConstructorCall { .. } => {
                 // ConstructorCall should be desugared to NamespaceAccess + Call
                 // before reaching HIR lowering. This is a bug if we reach here.
-                panic!("ConstructorCall should not reach HIR lowering - it should be desugared to explicit NamespaceAccess + Call")
+                panic!(
+                    "ConstructorCall should not reach HIR lowering - it should be desugared to explicit NamespaceAccess + Call"
+                )
             }
         };
 
@@ -1186,7 +1188,9 @@ impl<'a> LoweringCtx<'a> {
 fn lower_param_label(label: &ParamLabel) -> super::HirParamLabel {
     match label {
         ParamLabel::None => super::HirParamLabel::None,
-        ParamLabel::Explicit(label) => super::HirParamLabel::Explicit(label.clone()),
+        ParamLabel::Explicit(label) => {
+            super::HirParamLabel::Explicit(label.clone())
+        }
         ParamLabel::FromName => super::HirParamLabel::FromName,
     }
 }

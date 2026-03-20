@@ -3831,10 +3831,7 @@ impl<'a> Parser<'a> {
         // Create a ConstructorCall AST node
         // Desugaring and validation happen in later phases
         Ok(Spanned::new(
-            Expr::ConstructorCall {
-                type_name,
-                args,
-            },
+            Expr::ConstructorCall { type_name, args },
             Span::new(start, end),
         ))
     }
@@ -4582,7 +4579,9 @@ mod tests {
         init
     }
 
-    fn parse_init_decl_from_source_result(source: &str) -> Result<Spanned<InitDecl>, ParseError> {
+    fn parse_init_decl_from_source_result(
+        source: &str,
+    ) -> Result<Spanned<InitDecl>, ParseError> {
         let mut parser = Parser::new(source).expect("parser");
         let init = parser.parse_init_decl()?;
         if !parser.is_eof() {
