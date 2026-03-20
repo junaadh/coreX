@@ -208,6 +208,20 @@ pub enum Expr {
         base: Box<Spanned<Expr>>,
         member: String,
     },
+    /// Method call like `obj.method(args)` - will be desugared to
+    /// `Type::method(&obj, args)` based on receiver type
+    MethodCall {
+        receiver: Box<Spanned<Expr>>,
+        method_name: String,
+        args: Vec<CallArg>,
+        trailing_closure: Option<Box<Spanned<Expr>>>,
+    },
+    /// Constructor call like `Point(x, y)` or `Point(1, 2)` - will be desugared
+    /// to `TypeName::init(x, y)` or `TypeName::init(1, 2)`
+    ConstructorCall {
+        type_name: String,
+        args: Vec<CallArg>,
+    },
     OptionalMemberAccess {
         base: Box<Spanned<Expr>>,
         member: String,

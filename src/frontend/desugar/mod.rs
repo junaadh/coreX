@@ -540,7 +540,7 @@ mod tests {
                 docs: vec![],
                 attributes: vec![],
                 modifiers: vec![],
-                kind: InitKind::Optional,
+                kind: InitKind::Optional, // Will be inferred from return_type
                 receiver: None,
                 params: vec![Spanned::new(
                     ParamDecl {
@@ -555,6 +555,10 @@ mod tests {
                     },
                     Span::new(9, 15),
                 )],
+                return_type: Some(Spanned::new(
+                    Type::Optional(Box::new(Spanned::new(Type::SelfType, Span::new(0, 4)))),
+                    Span::new(0, 4),
+                )), // Explicit return type to make it optional
                 body: crate::frontend::ast::Block {
                     statements: vec![Spanned::new(
                         crate::frontend::ast::Stmt::Let(Spanned::new(
@@ -647,6 +651,7 @@ mod tests {
                     },
                     Span::new(5, 11),
                 )],
+                return_type: None,
                 default_body: Some(crate::frontend::ast::Block {
                     statements: vec![],
                     tail_expr: None,

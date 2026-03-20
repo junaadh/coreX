@@ -8,6 +8,7 @@ pub mod ast;
 pub mod desugar;
 pub mod diagnostics;
 pub mod expansion;
+pub mod hir;
 pub mod lexer;
 pub mod parse_session;
 pub mod parsed_file;
@@ -31,6 +32,12 @@ pub use expansion::{
     MacroInvocationShape, MacroParam, MacroTable, SelectedMacroClause,
     dispatch_macro, expand_file, expand_parsed_files,
 };
+pub use hir::{
+    HirAssignOp, HirBody, HirBodyId, HirExpr, HirExprId, HirExprKind, HirFile,
+    HirFunction, HirInitOrigin, HirItem, HirItemId, HirItemKind, HirModule,
+    HirOrigin, HirPat, HirPatId, HirPatKind, HirStmt, HirStmtId, HirStmtKind,
+    HirType, HirTypeId, HirTypeKind, lower_to_hir,
+};
 pub use parse_session::ParseSession;
 pub use parsed_file::{FileParseError, ParseSessionError, ParsedFile};
 pub use project::{
@@ -41,21 +48,32 @@ pub use project::{
     load_project_from_dir,
 };
 pub use resolver::{
-    BodyKind, DeclarationOwner, GlobalItem, GlobalItemTable, ImportBindingKind,
-    ImportResolveError, ImportResolver, ItemId, ItemKind, LocalId, LocalKind,
-    LocalMutability, NamedImportRoot, ResolveError, ResolvedBody,
-    ResolvedBodyRef, ResolvedBodyReference, ResolvedBodyTable,
-    ResolvedDeclaration, ResolvedDeclarationTable, ResolvedEnumCaseType,
-    ResolvedEnumDeclaration, ResolvedEnumPayloadType,
-    ResolvedFunctionSignature, ResolvedImplDeclaration, ResolvedImportBinding,
-    ResolvedImports, ResolvedItemRef, ResolvedLocalBinding,
-    ResolvedNamedFunctionSignature, ResolvedParamType,
-    ResolvedProtocolDeclaration, ResolvedScope, ResolvedScopeKind,
-    ResolvedStructDeclaration, ResolvedStructFieldType, ResolvedTypeRef,
-    ScopeGraph, ScopeResolver, ScopeSymbols, Symbol, SymbolKind,
-    UnresolvedBodyReference, UnresolvedDeclarationPath,
-    build_global_item_table, resolve_bodies, resolve_declaration_types,
-    resolve_project_imports, resolve_project_imports_with_named_roots,
+    BodyKind, DeclarationOwner, GlobalItem, GlobalItemTable, HirCollectedItem,
+    HirCollectedItemKind, HirExprRef, HirItemRef, HirItemTable,
+    HirImportBinding, HirImportBindingKind, HirImportError, HirImportTable,
+    HirImportTables, HirItemTableError, HirLocalBinding,
+    HirLocalBindingTable, HirPatRef, HirPathRef, HirPathResolution,
+    HirPathResolutionError, HirPathResolutionTable, HirScopeResolutionError,
+    HirScopeSymbol, HirScopeSymbols, HirUnresolvedPathDiagnostic,
+    ImportBindingKind, ImportResolveError,
+    ImportResolver, ItemId, ItemKind, LocalId, LocalKind, LocalMutability,
+    NamedImportRoot, ResolveError, ResolvedBody, ResolvedBodyRef,
+    ResolvedBodyReference, ResolvedBodyTable, ResolvedDeclaration,
+    ResolvedDeclarationTable, ResolvedEnumCaseType, ResolvedEnumDeclaration,
+    ResolvedEnumPayloadType, ResolvedFunctionSignature,
+    ResolvedImplDeclaration, ResolvedImportBinding, ResolvedImports,
+    ResolvedItemRef, ResolvedLocalBinding, ResolvedNamedFunctionSignature,
+    ResolvedParamType, ResolvedProtocolDeclaration, ResolvedScope,
+    ResolvedScopeKind, ResolvedStructDeclaration, ResolvedStructFieldType,
+    ResolvedTypeRef, ScopeGraph, ScopeResolver, ScopeSymbols, Symbol,
+    SymbolKind, UnresolvedBodyReference, UnresolvedDeclarationPath,
+    build_global_item_table, build_hir_item_table, build_hir_local_binding_table,
+    build_hir_path_resolution_table,
+    build_hir_path_resolution_table_with_graph,
+    build_hir_path_resolution_table_with_graph_and_imports,
+    hir_scope_symbols_from_hir_item_table,
+    resolve_bodies, resolve_declaration_types, resolve_project_imports,
+    resolve_project_imports_with_named_roots,
     resolve_project_imports_with_named_roots_and_diagnostics,
     resolve_project_scopes, scope_symbols_from_global_item_table,
 };

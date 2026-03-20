@@ -150,7 +150,7 @@ fn desugar_lowers_init_to_canonical_function_like_form() {
     let (_, parsed_files) = parse_single_file(
         &mut db,
         "src/root.cx",
-        "struct S { unsafe init?(_ x: i32) { x; } }",
+        "struct S { unsafe init(_ x: i32) -> Option<Self> { x; } }",
     );
     let (_, desugared) = expand_and_desugar(&db, &parsed_files);
 
@@ -172,10 +172,15 @@ fn desugar_lowers_init_to_canonical_function_like_form() {
     assert!(function_decl.node.attributes.iter().all(|attribute| {
         !attribute.node.name.starts_with("__corex_desugared_init_")
     }));
+    // With new syntax, return type can be either Type::Optional (from Self?)
+    // or GenericApplication Option<Self> (from explicit Option<Self>)
     assert!(matches!(
         function_decl.node.return_type,
         Some(core_x::frontend::ast::Spanned {
             node: Type::Optional(_),
+            ..
+        }) | Some(core_x::frontend::ast::Spanned {
+            node: Type::GenericApplication { .. },
             ..
         })
     ));

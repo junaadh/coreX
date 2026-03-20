@@ -4,6 +4,7 @@ mod control_flow;
 mod definition;
 mod expr_check;
 mod external_lookup;
+mod hir_input;
 mod item_table;
 mod signatures;
 mod stmt_check;
@@ -37,6 +38,7 @@ pub use external_lookup::{
     ExternalDefinitionLocation, ExternalSemanticLookup,
     build_external_semantic_lookup,
 };
+pub use hir_input::SemanticHirInput;
 pub use item_table::{
     TypedImplAttachment, TypedItemData, TypedItemKind, TypedItemTable,
     TypedItemTableIssue, TypedItemTableIssueKind, build_typed_item_table,

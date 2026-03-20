@@ -10,11 +10,11 @@ struct Point {
     // TODO
   }
 
-  init?(x: i32, y: i32?) {
+  init(x: i32, y: i32?) -> Option<Self> {
     // TODO
   }
 
-  init!(x: i32, y: i32!PointError) {
+  init(x: i32, y: i32!PointError) -> Result<Self, PointError> {
     
   }
 }

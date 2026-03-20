@@ -1295,6 +1295,25 @@ fn expand_expr(expr: &mut Spanned<Expr>, pass: &mut ExpansionPass<'_, '_>) {
                 expand_expr(trailing, pass);
             }
         }
+        Expr::MethodCall {
+            receiver,
+            args,
+            trailing_closure,
+            ..
+        } => {
+            expand_expr(receiver, pass);
+            for arg in args {
+                expand_expr(&mut arg.value, pass);
+            }
+            if let Some(trailing) = trailing_closure.as_mut() {
+                expand_expr(trailing, pass);
+            }
+        }
+        Expr::ConstructorCall { args, .. } => {
+            for arg in args {
+                expand_expr(&mut arg.value, pass);
+            }
+        }
         Expr::Index { base, index } | Expr::OptionalIndex { base, index } => {
             expand_expr(base, pass);
             expand_expr(index, pass);
@@ -2841,6 +2860,25 @@ fn hygienize_expr(expr: &mut Spanned<Expr>, hygiene: &mut HygieneContext) {
                 hygienize_expr(trailing, hygiene);
             }
         }
+        Expr::MethodCall {
+            receiver,
+            args,
+            trailing_closure,
+            ..
+        } => {
+            hygienize_expr(receiver, hygiene);
+            for arg in args {
+                hygienize_expr(&mut arg.value, hygiene);
+            }
+            if let Some(trailing) = trailing_closure.as_mut() {
+                hygienize_expr(trailing, hygiene);
+            }
+        }
+        Expr::ConstructorCall { args, .. } => {
+            for arg in args {
+                hygienize_expr(&mut arg.value, hygiene);
+            }
+        }
         Expr::Index { base, index } | Expr::OptionalIndex { base, index } => {
             hygienize_expr(base, hygiene);
             hygienize_expr(index, hygiene);
@@ -3117,7 +3155,7 @@ fn render_assign_op(op: crate::frontend::ast::AssignOp) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{ExpansionOptions, MacroTable, Provenance, SynthesisPurpose};
-    use crate::frontend::ast::{BinaryOp, Expr, Item, Stmt};
+    use crate::frontend::ast::{Expr, Item, Stmt};
     use crate::frontend::parser::{
         parse_source_file, parse_source_file_from_source_file,
     };

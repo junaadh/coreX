@@ -6,9 +6,10 @@ use super::control_flow::{
 };
 use super::expr_check::{
     ExprCheckIssue, ExpressionTypeTable,
-    check_expression_types_with_external_lookup,
+    check_expression_types_with_external_lookup_and_hir,
 };
 use super::external_lookup::ExternalSemanticLookup;
+use super::hir_input::SemanticHirInput;
 use super::item_table::{
     TypedItemTable, TypedItemTableIssue, build_typed_item_table,
 };
@@ -38,6 +39,7 @@ pub struct SemanticAnalysis {
     pub declarations: ResolvedDeclarationTable,
     pub signatures: TypedSignatureTable,
     pub typed_items: TypedItemTable,
+    pub hir: SemanticHirInput,
     pub resolved_bodies: ResolvedBodyTable,
     pub body_envs: BodyTypeEnvironmentTable,
     pub expr_types: ExpressionTypeTable,
@@ -120,6 +122,7 @@ pub fn analyze_semantics_with_external_lookup(
         resolve_declaration_types(graph, parsed_files, imports, &global_items);
     let signatures = type_declaration_signatures(&declarations, &global_items);
     let typed_items = build_typed_item_table(&global_items, &signatures);
+    let hir = SemanticHirInput::build(graph, parsed_files, &global_items);
     let resolved_bodies = resolve_bodies(
         graph,
         parsed_files,
@@ -129,7 +132,7 @@ pub fn analyze_semantics_with_external_lookup(
     );
     let body_envs =
         build_body_type_environments(&resolved_bodies, &typed_items);
-    let expr_types = check_expression_types_with_external_lookup(
+    let expr_types = check_expression_types_with_external_lookup_and_hir(
         graph,
         parsed_files,
         &global_items,
@@ -138,6 +141,7 @@ pub fn analyze_semantics_with_external_lookup(
         &body_envs,
         imports,
         external_lookup,
+        Some(&hir),
     );
     let stmt_types = check_statements_with_expression_types(
         graph,
@@ -180,6 +184,7 @@ pub fn analyze_semantics_with_external_lookup(
         declarations,
         signatures,
         typed_items,
+        hir,
         resolved_bodies,
         body_envs,
         expr_types,

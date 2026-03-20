@@ -69,14 +69,14 @@ pub enum ReceiverKind {
 /// External label form for parameter declarations.
 ///
 /// This preserves source shape for:
-/// - `x: T`
-/// - `_ x: T`
-/// - `label x: T`
+/// - `_ x: T` -> None (wildcard prefix, no external label)
+/// - `label x: T` -> Explicit(String) (explicit external label)
+/// - `x: T` -> FromName (external label derived from parameter name)
 #[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ParamLabel {
     None,
-    Underscore,
-    Named(String),
+    Explicit(String),
+    FromName,
 }
 
 /// Function/initializer parameter declaration.
@@ -136,7 +136,7 @@ pub enum InitOriginKind {
     Fallible,
 }
 
-/// Source initializer declaration (`init`, `init?`, `init!`).
+/// Source initializer declaration (`init`).
 #[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InitDecl {
     pub docs: Vec<Spanned<DocComment>>,
@@ -145,6 +145,9 @@ pub struct InitDecl {
     pub kind: InitKind,
     pub receiver: Option<Spanned<ReceiverKind>>,
     pub params: Vec<Spanned<ParamDecl>>,
+    /// Return type annotation (e.g., `-> Option<Self>`, `-> Result<Self, E>`).
+    /// If None, defaults to `Self` during desugaring.
+    pub return_type: Option<Spanned<Type>>,
     pub body: Block,
 }
 
@@ -335,6 +338,9 @@ pub struct ProtocolInitMember {
     pub kind: InitKind,
     pub receiver: Option<Spanned<ReceiverKind>>,
     pub params: Vec<Spanned<ParamDecl>>,
+    /// Return type annotation (e.g., `-> Option<Self>`, `-> Result<Self, E>`).
+    /// If None, defaults to `Self` during desugaring.
+    pub return_type: Option<Spanned<Type>>,
     /// `None` means requirement-only (`;` form).
     pub default_body: Option<Block>,
 }

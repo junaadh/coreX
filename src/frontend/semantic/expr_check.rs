@@ -1,5 +1,6 @@
 use super::body_env::BodyTypeEnvironmentTable;
 use super::external_lookup::ExternalSemanticLookup;
+use super::hir_input::SemanticHirInput;
 use super::signatures::TypedFunctionSignature;
 use super::{BuiltinType, Type, TypedItemData, TypedItemTable};
 use crate::frontend::DesugaredFile;
@@ -173,6 +174,31 @@ pub fn check_expression_types_with_external_lookup(
     imports: &BTreeMap<FileId, ResolvedImports>,
     external_lookup: &ExternalSemanticLookup,
 ) -> ExpressionTypeTable {
+    check_expression_types_with_external_lookup_and_hir(
+        graph,
+        parsed_files,
+        global_items,
+        typed_items,
+        resolved_bodies,
+        body_envs,
+        imports,
+        external_lookup,
+        None,
+    )
+}
+
+#[must_use]
+pub fn check_expression_types_with_external_lookup_and_hir(
+    graph: &ScopeGraph,
+    parsed_files: &[DesugaredFile],
+    global_items: &GlobalItemTable,
+    typed_items: &TypedItemTable,
+    resolved_bodies: &ResolvedBodyTable,
+    body_envs: &BodyTypeEnvironmentTable,
+    imports: &BTreeMap<FileId, ResolvedImports>,
+    external_lookup: &ExternalSemanticLookup,
+    hir_input: Option<&SemanticHirInput>,
+) -> ExpressionTypeTable {
     let parsed_by_id: BTreeMap<FileId, &DesugaredFile> = parsed_files
         .iter()
         .map(|parsed| (parsed.file_id, parsed))
@@ -221,6 +247,7 @@ pub fn check_expression_types_with_external_lookup(
             env.local_types.clone(),
             imports,
             external_lookup,
+            hir_input,
         );
         let root_type = checker.check_block(
             block_entry.block,
@@ -441,9 +468,16 @@ struct BodyExprChecker<'a> {
     local_types: BTreeMap<LocalId, Type>,
     imports: &'a BTreeMap<FileId, ResolvedImports>,
     external_lookup: &'a ExternalSemanticLookup,
+    hir_view: Option<HirResolutionView<'a>>,
     expr_ids_by_span:
         BTreeMap<(DeclarationOwner, usize, usize, usize), Vec<BodyExprId>>,
     next_expr_index: u32,
+}
+
+#[derive(Clone, Copy)]
+struct HirResolutionView<'a> {
+    hir_imports: &'a crate::frontend::resolver::HirImportTables,
+    item_id_by_hir_item_ref: &'a BTreeMap<crate::frontend::resolver::HirItemRef, ItemId>,
 }
 
 impl<'a> BodyExprChecker<'a> {
@@ -452,12 +486,17 @@ impl<'a> BodyExprChecker<'a> {
         local_types: BTreeMap<LocalId, Type>,
         imports: &'a BTreeMap<FileId, ResolvedImports>,
         external_lookup: &'a ExternalSemanticLookup,
+        hir_input: Option<&'a SemanticHirInput>,
     ) -> Self {
         Self {
             body,
             local_types,
             imports,
             external_lookup,
+            hir_view: hir_input.map(|input| HirResolutionView {
+                hir_imports: &input.hir_imports,
+                item_id_by_hir_item_ref: &input.item_id_by_hir_item_ref,
+            }),
             expr_ids_by_span: BTreeMap::new(),
             next_expr_index: 0,
         }
@@ -900,6 +939,7 @@ impl<'a> BodyExprChecker<'a> {
                     local_types: self.local_types.clone(),
                     imports: self.imports,
                     external_lookup: self.external_lookup,
+                    hir_view: self.hir_view,
                     expr_ids_by_span: BTreeMap::new(),
                     next_expr_index: self.next_expr_index,
                 };
@@ -934,6 +974,7 @@ impl<'a> BodyExprChecker<'a> {
                     local_types: self.local_types.clone(),
                     imports: self.imports,
                     external_lookup: self.external_lookup,
+                    hir_view: self.hir_view,
                     expr_ids_by_span: BTreeMap::new(),
                     next_expr_index: self.next_expr_index,
                 };
@@ -1089,6 +1130,8 @@ impl<'a> BodyExprChecker<'a> {
             | Expr::Range { .. }
             | Expr::ShorthandMember { .. }
             | Expr::QualifiedMember { .. }
+            | Expr::MethodCall { .. }
+            | Expr::ConstructorCall { .. }
             | Expr::SelfType => Type::error(),
         };
 
@@ -1213,6 +1256,10 @@ impl<'a> BodyExprChecker<'a> {
         typed_items: &TypedItemTable,
         issues: &mut Vec<ExprCheckIssue>,
     ) -> Type {
+        if let Some(item_id) = self.resolve_item_id_from_hir_path(&segments) {
+            return self.type_for_item_reference(span, item_id, typed_items, issues);
+        }
+
         let Some(resolved) = self
             .body
             .references
@@ -1324,6 +1371,12 @@ impl<'a> BodyExprChecker<'a> {
         path: &[String],
         typed_items: &TypedItemTable,
     ) -> Option<TypedFunctionSignature> {
+        if let Some(item_id) = self.resolve_item_id_from_hir_path(path)
+            && let Some(signature) = typed_items.function(item_id)
+        {
+            return Some(signature.clone());
+        }
+
         let resolved = self
             .body
             .references
@@ -1340,6 +1393,40 @@ impl<'a> BodyExprChecker<'a> {
             }
         };
         typed_items.function(item_id).cloned()
+    }
+
+    fn resolve_item_id_from_hir_path(&self, path: &[String]) -> Option<ItemId> {
+        let view = self.hir_view?;
+        let first = path.first()?;
+        let file_id = self.body.containing_scope_file_id;
+        let imports = view.hir_imports;
+
+        if let Some(binding) = imports.get(file_id).and_then(|table| table.get(first)) {
+            if path.len() == 1 {
+                if binding.kind == crate::frontend::resolver::HirImportBindingKind::Item {
+                    let item_ref = binding.target_item?;
+                    return view.item_id_by_hir_item_ref.get(&item_ref).copied();
+                }
+            } else if binding.kind == crate::frontend::resolver::HirImportBindingKind::Scope {
+                let mut full_path = binding.target_path.clone();
+                full_path.extend(path.iter().skip(1).cloned());
+                let root_name = binding.source_root.as_deref();
+                if let Some(item_ref) = imports
+                    .item_paths_for_root(root_name)
+                    .and_then(|paths| paths.get(&full_path))
+                {
+                    return view.item_id_by_hir_item_ref.get(item_ref).copied();
+                }
+            }
+        }
+
+        let mut local_full_path = imports.scope_path_for_file(file_id)?.to_vec();
+        local_full_path.extend(path.iter().cloned());
+        let item_ref = imports
+            .item_paths_for_root(None)?
+            .get(&local_full_path)
+            .copied()?;
+        view.item_id_by_hir_item_ref.get(&item_ref).copied()
     }
 
     fn external_import_signature_for_path(

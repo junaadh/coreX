@@ -1356,8 +1356,34 @@ impl<'a> Parser<'a> {
         modifiers: Vec<Modifier>,
     ) -> Result<Spanned<ProtocolInitMember>, ParseError> {
         self.expect(TokenKind::KwInit)?;
-        let kind = self.parse_init_kind();
+
+        // Check for deprecated syntax - init? and init! are now syntax errors
+        if self.at(TokenKind::Question) {
+            return Err(ParseError::UnexpectedToken {
+                expected: "init with return type annotation (-> Option<Self>)",
+                found: TokenKind::Question,
+                span: self.peek().span,
+            });
+        }
+        if self.at(TokenKind::Bang) {
+            return Err(ParseError::UnexpectedToken {
+                expected: "init with return type annotation (-> Result<Self, E>)",
+                found: TokenKind::Bang,
+                span: self.peek().span,
+            });
+        }
+
+        // Default to Plain; will be inferred from return type during desugaring
+        let kind = InitKind::Plain;
         let (receiver, params) = self.parse_receiver_or_param_list(true)?;
+
+        // Parse optional return type annotation (e.g., `-> Option<Self>`)
+        let return_type = if self.eat(TokenKind::Arrow).is_some() {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
         let (default_body, end) = if let Some(semi) = self.eat(TokenKind::Semi)
         {
             (None, semi.span.end)
@@ -1380,6 +1406,7 @@ impl<'a> Parser<'a> {
                 kind,
                 receiver,
                 params,
+                return_type,
                 default_body,
             },
             Span::new(start, end),
@@ -1566,8 +1593,34 @@ impl<'a> Parser<'a> {
         modifiers: Vec<Modifier>,
     ) -> Result<Spanned<InitDecl>, ParseError> {
         let _init_kw = self.expect(TokenKind::KwInit)?;
-        let kind = self.parse_init_kind();
+
+        // Check for deprecated syntax - init? and init! are now syntax errors
+        if self.at(TokenKind::Question) {
+            return Err(ParseError::UnexpectedToken {
+                expected: "init with return type annotation (-> Option<Self>)",
+                found: TokenKind::Question,
+                span: self.peek().span,
+            });
+        }
+        if self.at(TokenKind::Bang) {
+            return Err(ParseError::UnexpectedToken {
+                expected: "init with return type annotation (-> Result<Self, E>)",
+                found: TokenKind::Bang,
+                span: self.peek().span,
+            });
+        }
+
+        // Default to Plain; will be inferred from return type during desugaring
+        let kind = InitKind::Plain;
         let (receiver, params) = self.parse_receiver_or_param_list(true)?;
+
+        // Parse optional return type annotation (e.g., `-> Option<Self>`)
+        let return_type = if self.eat(TokenKind::Arrow).is_some() {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
         let (body, body_end) = self.parse_block_with_end()?;
         let span = Span::new(start, body_end);
 
@@ -1579,20 +1632,11 @@ impl<'a> Parser<'a> {
                 kind,
                 receiver,
                 params,
+                return_type,
                 body,
             },
             span,
         ))
-    }
-
-    fn parse_init_kind(&mut self) -> InitKind {
-        if self.eat(TokenKind::Question).is_some() {
-            InitKind::Optional
-        } else if self.eat(TokenKind::Bang).is_some() {
-            InitKind::Fallible
-        } else {
-            InitKind::Plain
-        }
     }
 
     fn parse_receiver_or_param_list(
@@ -2686,20 +2730,23 @@ impl<'a> Parser<'a> {
         let (first, _) = self.expect_identifier_text()?;
 
         let (label, name) = if first == "_" {
+            // `_ x: T` -> external label = None, name = x
             let (name, _) = self.expect_identifier_text()?;
-            (ParamLabel::Underscore, name)
+            (ParamLabel::None, name)
         } else if self.eat(TokenKind::Colon).is_some() {
+            // `x: T` -> external label = FromName, name = x
             let ty = self.parse_type()?;
             let span = Span::new(start, ty.span.end);
             let node = ParamDecl {
-                label: ParamLabel::None,
+                label: ParamLabel::FromName,
                 name: first,
                 ty,
             };
             return Ok(Spanned::new(node, span));
         } else {
+            // `foo x: T` -> external label = Explicit("foo"), name = x
             let (name, _) = self.expect_identifier_text()?;
-            (ParamLabel::Named(first), name)
+            (ParamLabel::Explicit(first), name)
         };
 
         let _colon = self.expect(TokenKind::Colon)?;
@@ -3240,10 +3287,18 @@ impl<'a> Parser<'a> {
                 if self.peek_nth(1).kind == TokenKind::LBrace
                     && self.can_start_struct_literal_fields(2)
                 {
+                    // Self { ... } struct literal
                     let self_tok = self.bump();
                     self.parse_struct_literal_expr(
                         self_tok.span.start,
                         TypeExpr::SelfType,
+                    )
+                } else if self.peek_nth(1).kind == TokenKind::LParen {
+                    // Self(...) constructor call
+                    let self_tok = self.bump();
+                    self.parse_constructor_call_expr(
+                        self_tok.span.start,
+                        "Self".to_string(),
                     )
                 } else {
                     let _ = self.bump();
@@ -3685,6 +3740,7 @@ impl<'a> Parser<'a> {
     fn parse_struct_literal_or_identifier_expr(
         &mut self,
     ) -> Result<Spanned<Expr>, ParseError> {
+        // Check for struct literal: TypeName { ... }
         if self.peek_nth(1).kind == TokenKind::LBrace
             && self.ident_token_looks_type_head(*self.peek())
             && self.can_start_struct_literal_fields(2)
@@ -3694,6 +3750,15 @@ impl<'a> Parser<'a> {
                 name_span.start,
                 TypeExpr::Path(vec![name]),
             );
+        }
+
+        // Check for constructor call: TypeName(...)
+        // Creates a ConstructorCall AST node - desugaring and validation happen later
+        if self.peek_nth(1).kind == TokenKind::LParen
+            && self.ident_token_looks_type_head(*self.peek())
+        {
+            let (name, name_span) = self.expect_identifier_text()?;
+            return self.parse_constructor_call_expr(name_span.start, name);
         }
 
         let (name, span) = self.expect_identifier_text()?;
@@ -3753,6 +3818,25 @@ impl<'a> Parser<'a> {
         let rbrace = self.expect(TokenKind::RBrace)?;
         let literal = Expr::StructLiteral { ty, fields };
         Ok(Spanned::new(literal, Span::new(start, rbrace.span.end)))
+    }
+
+    fn parse_constructor_call_expr(
+        &mut self,
+        start: usize,
+        type_name: String,
+    ) -> Result<Spanned<Expr>, ParseError> {
+        // Parse the argument list: TypeName(...)
+        let (args, end) = self.parse_call_arg_list()?;
+
+        // Create a ConstructorCall AST node
+        // Desugaring and validation happen in later phases
+        Ok(Spanned::new(
+            Expr::ConstructorCall {
+                type_name,
+                args,
+            },
+            Span::new(start, end),
+        ))
     }
 
     fn parse_string_literal_expr(
@@ -4498,6 +4582,19 @@ mod tests {
         init
     }
 
+    fn parse_init_decl_from_source_result(source: &str) -> Result<Spanned<InitDecl>, ParseError> {
+        let mut parser = Parser::new(source).expect("parser");
+        let init = parser.parse_init_decl()?;
+        if !parser.is_eof() {
+            return Err(ParseError::UnexpectedToken {
+                expected: "end of input",
+                found: parser.peek().kind,
+                span: parser.peek().span,
+            });
+        }
+        Ok(init)
+    }
+
     fn parse_extern_block_from_source(source: &str) -> Spanned<ExternBlock> {
         let mut parser = Parser::new(source).expect("parser");
         let block = parser.parse_extern_block().expect("extern parse");
@@ -4595,15 +4692,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_optional_init_decl() {
-        let init = parse_init_decl_from_source("init?() {}");
-        assert!(matches!(init.node.kind, InitKind::Optional));
+    fn parse_init_with_optional_syntax_errors() {
+        // init? is now a syntax error
+        let result = parse_init_decl_from_source_result("init?() {}");
+        assert!(result.is_err());
     }
 
     #[test]
-    fn parse_fallible_init_decl() {
-        let init = parse_init_decl_from_source("init!() {}");
-        assert!(matches!(init.node.kind, InitKind::Fallible));
+    fn parse_init_with_fallible_syntax_errors() {
+        // init! is now a syntax error
+        let result = parse_init_decl_from_source_result("init!() {}");
+        assert!(result.is_err());
     }
 
     #[test]
@@ -7396,7 +7495,7 @@ mod tests {
     fn parse_unlabeled_param() {
         let params = parse_param_list_from_source("(x: i32)");
         assert_eq!(params.len(), 1);
-        assert!(matches!(params[0].node.label, ParamLabel::None));
+        assert!(matches!(params[0].node.label, ParamLabel::FromName));
         assert_eq!(params[0].node.name, "x");
     }
 
@@ -7404,7 +7503,7 @@ mod tests {
     fn parse_underscore_labeled_param() {
         let params = parse_param_list_from_source("(_ x: i32)");
         assert_eq!(params.len(), 1);
-        assert!(matches!(params[0].node.label, ParamLabel::Underscore));
+        assert!(matches!(params[0].node.label, ParamLabel::None));
         assert_eq!(params[0].node.name, "x");
     }
 
@@ -7413,8 +7512,8 @@ mod tests {
         let params = parse_param_list_from_source("(label x: i32)");
         assert_eq!(params.len(), 1);
         match &params[0].node.label {
-            ParamLabel::Named(label) => assert_eq!(label, "label"),
-            _ => panic!("expected named label"),
+            ParamLabel::Explicit(label) => assert_eq!(label, "label"),
+            _ => panic!("expected explicit label"),
         }
         assert_eq!(params[0].node.name, "x");
     }
@@ -7430,9 +7529,9 @@ mod tests {
         let params =
             parse_param_list_from_source("(_ x: i32, y: string, label z: Foo)");
         assert_eq!(params.len(), 3);
-        assert!(matches!(params[0].node.label, ParamLabel::Underscore));
-        assert!(matches!(params[1].node.label, ParamLabel::None));
-        assert!(matches!(params[2].node.label, ParamLabel::Named(_)));
+        assert!(matches!(params[0].node.label, ParamLabel::None));
+        assert!(matches!(params[1].node.label, ParamLabel::FromName));
+        assert!(matches!(params[2].node.label, ParamLabel::Explicit(_)));
     }
 
     #[test]

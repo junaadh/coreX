@@ -1332,7 +1332,9 @@ impl<'a> BodyResolver<'a> {
             | Expr::BooleanLiteral(_)
             | Expr::StringLiteral(_)
             | Expr::SelfType
-            | Expr::ShorthandMember { .. } => {}
+            | Expr::ShorthandMember { .. }
+            | Expr::MethodCall { .. }
+            | Expr::ConstructorCall { .. } => {}
         }
     }
 

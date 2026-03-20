@@ -304,9 +304,62 @@ pub(super) fn desugar_expr(expr: &Spanned<Expr>) -> Spanned<Expr> {
             callee,
             args,
             trailing_closure,
+        } => {
+            // Check if this is a method call (callee is MemberAccess)
+            // and transform to MethodCall node for later processing
+            if matches!(&callee.node, Expr::MemberAccess { .. }) {
+                // Transform to MethodCall node
+                let (receiver, method_name) = match &callee.node {
+                    Expr::MemberAccess { base, member } => (base, member.clone()),
+                    _ => unreachable!(),
+                };
+
+                Spanned::new(
+                    Expr::MethodCall {
+                        receiver: Box::new(desugar_expr(receiver)),
+                        method_name,
+                        args: args
+                            .iter()
+                            .map(|arg| CallArg {
+                                label: arg.label.clone(),
+                                value: Box::new(desugar_expr(&arg.value)),
+                            })
+                            .collect(),
+                        trailing_closure: trailing_closure
+                            .as_ref()
+                            .map(|c| Box::new(desugar_expr(c))),
+                    },
+                    expr.span,
+                )
+            } else {
+                // Regular function call
+                Spanned::new(
+                    Expr::Call {
+                        callee: Box::new(desugar_expr(callee)),
+                        args: args
+                            .iter()
+                            .map(|arg| CallArg {
+                                label: arg.label.clone(),
+                                value: Box::new(desugar_expr(&arg.value)),
+                            })
+                            .collect(),
+                        trailing_closure: trailing_closure
+                            .as_ref()
+                            .map(|c| Box::new(desugar_expr(c))),
+                    },
+                    expr.span,
+                )
+            }
+        }
+        Expr::MethodCall {
+            receiver,
+            method_name,
+            args,
+            trailing_closure,
         } => Spanned::new(
-            Expr::Call {
-                callee: Box::new(desugar_expr(callee)),
+            Expr::MethodCall {
+                receiver: Box::new(desugar_expr(receiver)),
+                method_name: method_name.clone(),
                 args: args
                     .iter()
                     .map(|arg| CallArg {
@@ -316,10 +369,39 @@ pub(super) fn desugar_expr(expr: &Spanned<Expr>) -> Spanned<Expr> {
                     .collect(),
                 trailing_closure: trailing_closure
                     .as_ref()
-                    .map(|inner| Box::new(desugar_expr(inner))),
+                    .map(|c| Box::new(desugar_expr(c))),
             },
             expr.span,
         ),
+        Expr::ConstructorCall { type_name, args } => {
+            // Desugar ConstructorCall to explicit NamespaceAccess + Call
+            // Point(x, y) -> Point::init(x, y)
+            let type_expr = Spanned::new(Expr::Identifier(type_name.clone()), expr.span);
+
+            let init_access = Spanned::new(
+                Expr::NamespaceAccess {
+                    base: Box::new(type_expr),
+                    member: "init".to_string(),
+                    turbofish: vec![],
+                },
+                expr.span,
+            );
+
+            Spanned::new(
+                Expr::Call {
+                    callee: Box::new(init_access),
+                    args: args
+                        .iter()
+                        .map(|arg| CallArg {
+                            label: arg.label.clone(),
+                            value: Box::new(desugar_expr(&arg.value)),
+                        })
+                        .collect(),
+                    trailing_closure: None,
+                },
+                expr.span,
+            )
+        }
         Expr::Index { base, index } => Spanned::new(
             Expr::Index {
                 base: Box::new(desugar_expr(base)),
@@ -629,6 +711,7 @@ fn desugar_struct_decl(struct_decl: &StructDecl) -> StructDecl {
                                 init_decl.node.kind,
                                 init_decl.node.receiver.as_ref(),
                                 &init_decl.node.params,
+                                &init_decl.node.return_type,
                                 &init_decl.node.body,
                                 init_decl.span,
                             ),
@@ -685,6 +768,7 @@ fn desugar_enum_decl(enum_decl: &EnumDecl) -> EnumDecl {
                                 init_decl.node.kind,
                                 init_decl.node.receiver.as_ref(),
                                 &init_decl.node.params,
+                                &init_decl.node.return_type,
                                 &init_decl.node.body,
                                 init_decl.span,
                             ),
@@ -751,6 +835,7 @@ fn desugar_impl_decl(impl_decl: &ImplDecl) -> ImplDecl {
                                 init_decl.node.kind,
                                 init_decl.node.receiver.as_ref(),
                                 &init_decl.node.params,
+                                &init_decl.node.return_type,
                                 &init_decl.node.body,
                                 init_decl.span,
                             ),
@@ -801,6 +886,7 @@ fn desugar_protocol_decl(protocol_decl: &ProtocolDecl) -> ProtocolDecl {
                                 init_member.node.kind,
                                 init_member.node.receiver.as_ref(),
                                 &init_member.node.params,
+                                &init_member.node.return_type,
                                 init_member.node.default_body.as_ref(),
                                 init_member.span,
                             ),
@@ -877,13 +963,57 @@ fn desugar_protocol_property_requirement(
     }
 }
 
+fn infer_init_kind_from_return_type(
+    return_type: &Option<Spanned<Type>>,
+) -> InitKind {
+    match return_type {
+        None => InitKind::Plain, // Default to Self
+        Some(ty) => match &ty.node {
+            Type::SelfType => InitKind::Plain,
+            Type::Optional(inner) if matches!(inner.node, Type::SelfType) => {
+                InitKind::Optional
+            }
+            Type::Result { ok, .. } if matches!(ok.node, Type::SelfType) => {
+                InitKind::Fallible
+            }
+            // Handle Option<Self> as GenericApplication
+            Type::GenericApplication { base, args } if args.len() == 1 => {
+                match &base.node {
+                    Type::Named { segments } if segments.len() == 1 && segments[0] == "Option" => {
+                        if matches!(args[0].node, Type::SelfType) {
+                            InitKind::Optional
+                        } else {
+                            InitKind::Plain
+                        }
+                    }
+                    Type::Named { segments } if segments.len() == 1 && segments[0] == "Result" => {
+                        // Result<Self, E> - we only care about the OK type
+                        if matches!(args[0].node, Type::SelfType) {
+                            InitKind::Fallible
+                        } else {
+                            InitKind::Plain
+                        }
+                    }
+                    _ => InitKind::Plain,
+                }
+            }
+            _ => InitKind::Plain, // User specified custom return type, default to Plain
+        }
+    }
+}
+
 fn init_return_type(kind: InitKind, span: Span) -> Spanned<Type> {
     let self_ty = Spanned::new(Type::SelfType, span);
     match kind {
         InitKind::Optional => {
             Spanned::new(Type::Optional(Box::new(self_ty)), span)
         }
-        InitKind::Plain | InitKind::Fallible => self_ty,
+        InitKind::Fallible => {
+            // For fallible inits, we require explicit return type annotation
+            // This will be overridden by the user's annotation if present
+            self_ty
+        }
+        InitKind::Plain => self_ty,
     }
 }
 
@@ -899,12 +1029,16 @@ fn desugar_init_as_function_decl(
     docs: &[Spanned<crate::frontend::ast::DocComment>],
     attributes: &[Spanned<crate::frontend::ast::Attribute>],
     modifiers: &[crate::frontend::ast::Modifier],
-    kind: InitKind,
+    _kind: InitKind,
     receiver: Option<&Spanned<crate::frontend::ast::ReceiverKind>>,
     params: &[Spanned<ParamDecl>],
+    return_type: &Option<Spanned<Type>>,
     body: &Block,
     span: Span,
 ) -> FunctionDecl {
+    // Infer the actual kind from return type annotation
+    let inferred_kind = infer_init_kind_from_return_type(return_type);
+
     FunctionDecl {
         docs: docs.to_vec(),
         attributes: attributes.to_vec(),
@@ -919,9 +1053,13 @@ fn desugar_init_as_function_decl(
                 Spanned::new(desugar_param_decl(&param.node), param.span)
             })
             .collect(),
-        return_type: Some(init_return_type(kind, span)),
+        // Use explicit return type if provided, otherwise generate default from inferred kind
+        return_type: return_type
+            .as_ref()
+            .map(|ty| desugar_ty(ty))
+            .or_else(|| Some(init_return_type(inferred_kind, span))),
         where_clause: None,
-        init_origin: Some(init_origin_kind(kind)),
+        init_origin: Some(init_origin_kind(inferred_kind)),
         body: desugar_block(body),
     }
 }
@@ -930,12 +1068,16 @@ fn desugar_init_protocol_member_as_function_member(
     docs: &[Spanned<crate::frontend::ast::DocComment>],
     attributes: &[Spanned<crate::frontend::ast::Attribute>],
     modifiers: &[crate::frontend::ast::Modifier],
-    kind: InitKind,
+    _kind: InitKind,
     receiver: Option<&Spanned<crate::frontend::ast::ReceiverKind>>,
     params: &[Spanned<ParamDecl>],
+    return_type: &Option<Spanned<Type>>,
     default_body: Option<&Block>,
     span: Span,
 ) -> ProtocolFunctionMember {
+    // Infer the actual kind from return type annotation
+    let inferred_kind = infer_init_kind_from_return_type(return_type);
+
     ProtocolFunctionMember {
         docs: docs.to_vec(),
         attributes: attributes.to_vec(),
@@ -949,9 +1091,13 @@ fn desugar_init_protocol_member_as_function_member(
                 Spanned::new(desugar_param_decl(&param.node), param.span)
             })
             .collect(),
-        return_type: Some(init_return_type(kind, span)),
+        // Use explicit return type if provided, otherwise generate default from inferred kind
+        return_type: return_type
+            .as_ref()
+            .map(|ty| desugar_ty(ty))
+            .or_else(|| Some(init_return_type(inferred_kind, span))),
         where_clause: None,
-        init_origin: Some(init_origin_kind(kind)),
+        init_origin: Some(init_origin_kind(inferred_kind)),
         default_body: default_body.map(desugar_block),
     }
 }
