@@ -14,8 +14,7 @@ use crate::frontend::ast::{
     UseTree, VarStmt, Visibility, WhileStmt,
 };
 use crate::frontend::lexer::{
-    collect_doc_comments, CommentKind, Lexer, LexerError, Span, Token,
-    TokenKind,
+    collect_doc_comments, CommentKind, Lexer, Span, Token, TokenKind,
 };
 
 use super::error::ParseError;
@@ -44,9 +43,19 @@ pub(crate) struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     /// Creates a parser by lexing the full source into a token buffer.
+    ///
+    /// Lexer errors are collected as diagnostics and tokenization continues
+    /// whenever recovery can make progress.
     fn new(source: &'a str) -> Result<Self, ParseError> {
+        Self::new_with_file_id(source, crate::frontend::source::FileId::new(0))
+    }
+
+    fn new_with_file_id(
+        source: &'a str,
+        file_id: crate::frontend::source::FileId,
+    ) -> Result<Self, ParseError> {
         let doc_comments = collect_doc_comments(source)
-            .map_err(LexerError::from)?
+            .unwrap_or_default()
             .into_iter()
             .map(|comment| {
                 let kind = match comment.kind {
@@ -67,10 +76,34 @@ impl<'a> Parser<'a> {
             })
             .collect();
 
+        let mut diagnostics = crate::frontend::DiagnosticsBag::new();
         let mut lexer = Lexer::new(source);
         let mut tokens = Vec::new();
+
         loop {
-            let token = lexer.next_token()?;
+            let token = match lexer.next_token() {
+                Ok(token) => token,
+                Err(lex_error) => {
+                    let parse_error = ParseError::Lex(lex_error.clone());
+                    let diagnostic =
+                        crate::frontend::diagnostic_from_parse_error(
+                            file_id,
+                            &parse_error,
+                        );
+                    diagnostics.push(diagnostic);
+
+                    if !lexer.recover_from_error(&lex_error) {
+                        let offset = lexer.offset();
+                        tokens.push(Token::new(
+                            TokenKind::Eof,
+                            Span::new(offset, offset),
+                        ));
+                        break;
+                    }
+                    continue;
+                }
+            };
+
             let kind = token.kind;
             tokens.push(token);
             if kind == TokenKind::Eof {
@@ -85,9 +118,9 @@ impl<'a> Parser<'a> {
             doc_comments,
             doc_cursor: 0,
             last_token_end: 0,
-            diagnostics: crate::frontend::DiagnosticsBag::new(),
+            diagnostics,
             recovery_enabled: false,
-            recovery_file_id: None,
+            recovery_file_id: Some(file_id),
         })
     }
 
@@ -143,7 +176,6 @@ impl<'a> Parser<'a> {
     ) {
         self.recovery_enabled = true;
         self.recovery_file_id = Some(file_id);
-        self.diagnostics = crate::frontend::DiagnosticsBag::new();
     }
 
     fn parse_item(&mut self) -> Result<Spanned<Item>, ParseError> {
@@ -168,16 +200,6 @@ impl<'a> Parser<'a> {
                 self.parse_use_item_with_visibility(start, visibility)
             }
             TokenKind::KwScope => {
-                if !docs.is_empty()
-                    || !attributes.is_empty()
-                    || !modifiers.is_empty()
-                {
-                    return Err(ParseError::UnexpectedToken {
-                        expected: "'scope' declaration prefix",
-                        found: token.kind,
-                        span: token.span,
-                    });
-                }
                 self.parse_scope_item_with_visibility(start, visibility)
             }
             TokenKind::KwFn => {
@@ -202,13 +224,6 @@ impl<'a> Parser<'a> {
                 Ok(Spanned::new(Item::Enum(decl), span))
             }
             TokenKind::KwImpl => {
-                if visibility.is_some() {
-                    return Err(ParseError::UnexpectedToken {
-                        expected: "'impl'",
-                        found: token.kind,
-                        span: token.span,
-                    });
-                }
                 if modifiers
                     .iter()
                     .any(|modifier| !matches!(modifier, Modifier::Unsafe))
@@ -220,7 +235,7 @@ impl<'a> Parser<'a> {
                     });
                 }
                 let decl = self.parse_impl_decl_with_prefix(
-                    start, docs, attributes, modifiers,
+                    start, docs, attributes, visibility, modifiers,
                 )?;
                 let span = decl.span;
                 Ok(Spanned::new(Item::Impl(decl), span))
@@ -826,20 +841,25 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::KwStruct)?;
         let (name, _) = self.expect_identifier_text()?;
         let generic_params = self.parse_optional_generic_params()?;
-        self.expect(TokenKind::LBrace)?;
-        let mut members = Vec::new();
 
-        while !self.at(TokenKind::RBrace) {
-            if self.is_eof() {
-                return Err(ParseError::UnexpectedEof {
-                    expected: "'}'",
-                    span: self.peek().span,
-                });
+        let (members, end_span) = if self.eat(TokenKind::Semi).is_some() {
+            (Vec::new(), self.last_token_end)
+        } else {
+            self.expect(TokenKind::LBrace)?;
+            let mut members = Vec::new();
+            while !self.at(TokenKind::RBrace) {
+                if self.is_eof() {
+                    return Err(ParseError::UnexpectedEof {
+                        expected: "'}'",
+                        span: self.peek().span,
+                    });
+                }
+                members.push(self.parse_struct_member()?);
             }
-            members.push(self.parse_struct_member()?);
-        }
+            let rbrace = self.expect(TokenKind::RBrace)?;
+            (members, rbrace.span.end)
+        };
 
-        let rbrace = self.expect(TokenKind::RBrace)?;
         Ok(Spanned::new(
             StructDecl {
                 docs,
@@ -850,7 +870,7 @@ impl<'a> Parser<'a> {
                 generic_params,
                 members,
             },
-            Span::new(start, rbrace.span.end),
+            Span::new(start, end_span),
         ))
     }
 
@@ -865,16 +885,8 @@ impl<'a> Parser<'a> {
 
         let member = match self.peek().kind {
             TokenKind::KwInit => {
-                if visibility.is_some() {
-                    return Err(ParseError::UnexpectedToken {
-                        expected:
-                            "struct initializer; visibility is not allowed",
-                        found: TokenKind::KwInit,
-                        span: self.peek().span,
-                    });
-                }
                 let init = self.parse_init_decl_with_prefix(
-                    start, docs, attributes, modifiers,
+                    start, docs, attributes, visibility, modifiers,
                 )?;
                 let span = init.span;
                 Spanned::new(StructMember::Init(init), span)
@@ -1016,15 +1028,8 @@ impl<'a> Parser<'a> {
 
         let member = match self.peek().kind {
             TokenKind::KwInit => {
-                if visibility.is_some() {
-                    return Err(ParseError::UnexpectedToken {
-                        expected: "enum initializer; visibility is not allowed",
-                        found: TokenKind::KwInit,
-                        span: self.peek().span,
-                    });
-                }
                 let init = self.parse_init_decl_with_prefix(
-                    start, docs, attributes, modifiers,
+                    start, docs, attributes, visibility, modifiers,
                 )?;
                 let span = init.span;
                 Spanned::new(EnumMember::Init(init), span)
@@ -1160,7 +1165,9 @@ impl<'a> Parser<'a> {
                 span: self.peek().span,
             });
         }
-        self.parse_impl_decl_with_prefix(start, docs, attributes, modifiers)
+        self.parse_impl_decl_with_prefix(
+            start, docs, attributes, None, modifiers,
+        )
     }
 
     fn parse_impl_decl_with_prefix(
@@ -1168,6 +1175,7 @@ impl<'a> Parser<'a> {
         start: usize,
         docs: Vec<Spanned<DocComment>>,
         attributes: Vec<Spanned<Attribute>>,
+        visibility: Option<Visibility>,
         modifiers: Vec<Modifier>,
     ) -> Result<Spanned<ImplDecl>, ParseError> {
         self.expect(TokenKind::KwImpl)?;
@@ -1216,15 +1224,8 @@ impl<'a> Parser<'a> {
 
         match self.peek().kind {
             TokenKind::KwInit => {
-                if visibility.is_some() {
-                    return Err(ParseError::UnexpectedToken {
-                        expected: "impl initializer; visibility is not allowed",
-                        found: TokenKind::KwInit,
-                        span: self.peek().span,
-                    });
-                }
                 let init = self.parse_init_decl_with_prefix(
-                    start, docs, attributes, modifiers,
+                    start, docs, attributes, visibility, modifiers,
                 )?;
                 let span = init.span;
                 Ok(Spanned::new(ImplMember::Init(init), span))
@@ -1654,8 +1655,11 @@ impl<'a> Parser<'a> {
         let start = self.peek().span.start;
         let docs = self.parse_outer_doc_comments();
         let attributes = self.parse_attributes()?;
+        let visibility = self.parse_optional_visibility()?;
         let modifiers = self.parse_modifiers();
-        self.parse_init_decl_with_prefix(start, docs, attributes, modifiers)
+        self.parse_init_decl_with_prefix(
+            start, docs, attributes, visibility, modifiers,
+        )
     }
 
     fn parse_init_decl_with_prefix(
@@ -1663,6 +1667,7 @@ impl<'a> Parser<'a> {
         start: usize,
         docs: Vec<Spanned<DocComment>>,
         attributes: Vec<Spanned<Attribute>>,
+        visibility: Option<Visibility>,
         modifiers: Vec<Modifier>,
     ) -> Result<Spanned<InitDecl>, ParseError> {
         let _init_kw = self.expect(TokenKind::KwInit)?;
@@ -1702,6 +1707,7 @@ impl<'a> Parser<'a> {
             InitDecl {
                 docs,
                 attributes,
+                visibility,
                 modifiers,
                 kind,
                 receiver,
@@ -4536,7 +4542,7 @@ impl<'a> Parser<'a> {
 ///
 /// # Errors
 ///
-/// Returns `ParseError` if lexing fails or parsing cannot continue.
+/// Returns `ParseError` if parsing cannot continue.
 pub fn parse_source_file(
     source: &str,
 ) -> Result<crate::frontend::ParsedFile, ParseError> {
@@ -4545,7 +4551,7 @@ pub fn parse_source_file(
     Ok(crate::frontend::ParsedFile {
         file_id: crate::frontend::source::FileId::new(0),
         ast,
-        diagnostics: crate::frontend::DiagnosticsBag::new(),
+        diagnostics: parser.diagnostics,
     })
 }
 
@@ -4553,7 +4559,7 @@ pub fn parse_source_file(
 ///
 /// # Errors
 ///
-/// Returns `ParseError` if lexing fails before parsing with recovery starts.
+/// Returns `ParseError` only for unrecoverable parser failures.
 pub fn parse_source_file_with_recovery(
     source: &str,
 ) -> Result<crate::frontend::ParsedFile, ParseError> {
@@ -4571,12 +4577,12 @@ pub(crate) fn parse_source_file_with_file_id(
     source: &str,
     file_id: crate::frontend::source::FileId,
 ) -> Result<crate::frontend::ParsedFile, ParseError> {
-    let mut parser = Parser::new(source)?;
+    let mut parser = Parser::new_with_file_id(source, file_id)?;
     let ast = parser.parse_file()?;
     Ok(crate::frontend::ParsedFile {
         file_id,
         ast,
-        diagnostics: crate::frontend::DiagnosticsBag::new(),
+        diagnostics: parser.diagnostics,
     })
 }
 
@@ -4586,7 +4592,7 @@ pub(crate) fn parse_source_file_with_recovery_and_file_id(
     source: &str,
     file_id: crate::frontend::source::FileId,
 ) -> Result<crate::frontend::ParsedFile, ParseError> {
-    let mut parser = Parser::new(source)?;
+    let mut parser = Parser::new_with_file_id(source, file_id)?;
     parser.enable_recovery_with_file_id(file_id);
     let ast = parser.parse_file_with_recovery();
     Ok(crate::frontend::ParsedFile {
@@ -4694,9 +4700,17 @@ mod tests {
     }
 
     #[test]
-    fn lexer_error_propagates_through_parser_new_or_parse() {
-        let err = Parser::new("\"abc").expect_err("expected lexer error");
-        assert!(matches!(err, ParseError::Lex(_)));
+    fn lexer_error_is_recorded_and_parser_new_recovers() {
+        let parser = Parser::new("\"abc").expect("parser creation");
+        assert_eq!(parser.tokens.last().map(|t| t.kind), Some(TokenKind::Eof));
+        assert!(!parser.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn unexpected_character_is_recovered_during_parser_construction() {
+        let parser = Parser::new("use #foo;").expect("parser creation");
+        assert_eq!(parser.tokens.last().map(|t| t.kind), Some(TokenKind::Eof));
+        assert!(!parser.diagnostics.is_empty());
     }
 
     #[test]

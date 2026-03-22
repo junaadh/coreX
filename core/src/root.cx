@@ -1,0 +1,7 @@
+/// Core library root - exports all public APIs
+pub scope primitives;
+pub scope fmt;
+pub scope io;
+pub scope panic;
+pub scope math;
+pub scope macros;

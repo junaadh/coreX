@@ -16,7 +16,7 @@ pub use parse_impl::{parse_source_file, parse_source_file_with_recovery};
 ///
 /// # Errors
 ///
-/// Returns `ParseError` when lexing or parsing the file source fails.
+/// Returns `ParseError` when parsing cannot continue.
 pub fn parse_source_file_from_source_file(
     file: &crate::frontend::source::SourceFile,
 ) -> Result<crate::frontend::ParsedFile, ParseError> {
@@ -28,7 +28,7 @@ pub fn parse_source_file_from_source_file(
 ///
 /// # Errors
 ///
-/// Returns `ParseError` when lexing fails before parser recovery can run.
+/// Returns `ParseError` only for unrecoverable parser failures.
 pub fn parse_source_file_from_source_file_with_recovery(
     file: &crate::frontend::source::SourceFile,
 ) -> Result<crate::frontend::ParsedFile, ParseError> {

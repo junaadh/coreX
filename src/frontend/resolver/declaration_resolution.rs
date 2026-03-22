@@ -2,12 +2,12 @@ use super::import_resolver::{ImportBindingKind, ResolvedImports};
 use super::item_ids::ItemId;
 use super::item_table::GlobalItemTable;
 use super::model::ScopeGraph;
+use crate::frontend::DesugaredFile;
 use crate::frontend::ast::{
     EnumCaseParam, EnumMember, FunctionDecl, ImplDecl, ImplMember, Item,
     ParamDecl, ProtocolMember, Spanned, StructMember, Type,
 };
 use crate::frontend::source::FileId;
-use crate::frontend::DesugaredFile;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

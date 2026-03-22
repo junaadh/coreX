@@ -1,0 +1,125 @@
+/// String type demonstrating initializer overloading by labels
+/// Demonstrates: labeled parameters, method overloading, protocol conformance
+
+pub struct String {
+  data: *mut u8,
+  len: usize,
+  cap: usize,
+}
+
+impl String {
+  /// Empty string - no parameters
+  pub init() -> Self {
+    Self {
+      data: unsafe { null_mut() },
+      len: 0,
+      cap: 0,
+    }
+  }
+
+  /// From &str - parameter labeled "from"
+  pub init(from s: &str) -> Self {
+    Self {
+      data: unsafe { null_mut() },
+      len: s.len(),
+      cap: s.len(),
+    }
+  }
+
+  /// From char - parameter labeled "char"
+  pub init(char c: char) -> Self {
+    let mut s = String();
+    s.push(c);
+    s
+  }
+
+  /// From bytes - parameter labeled "bytes"
+  pub init(bytes: &[u8]) -> Self {
+    Self {
+      data: unsafe { null_mut() },
+      len: bytes.len(),
+      cap: bytes.len(),
+    }
+  }
+
+  /// From bytes with validation - two labeled parameters
+  pub init(bytes: &[u8], validate: bool) -> Self {
+    Self {
+      data: unsafe { null_mut() },
+      len: bytes.len(),
+      cap: bytes.len(),
+    }
+  }
+
+  /// With capacity - parameter labeled "capacity"
+  pub init(capacity: usize) -> Self {
+    Self {
+      data: unsafe { null_mut() },
+      len: 0,
+      cap: capacity,
+    }
+  }
+
+  /// Get length
+  pub fn len(&self) -> usize {
+    self.len
+  }
+
+  /// Check if empty
+  pub fn is_empty(&self) -> bool {
+    self.len == 0
+  }
+
+  /// Push character
+  pub fn push(&mut self, c: char) {
+    // Implementation
+  }
+
+  /// Push string slice
+  pub fn push_str(&mut self, s: &str) {
+    // Implementation
+  }
+
+  /// Convert to &str
+  pub fn as_str(&self) -> &str {
+    unsafe {
+      core::str::from_raw_parts(self.data, self.len)
+    }
+  }
+
+  /// Overloaded: clone string
+  pub fn clone(&self) -> String {
+    String(from: self.as_str())
+  }
+
+  /// Clear contents
+  pub fn clear(&mut self) {
+    self.len = 0
+  }
+}
+
+pub impl Clone for String {
+  pub fn clone(&self) -> Self {
+    self.clone()
+  }
+}
+
+pub impl Display for String {
+  pub fn display(&self) -> string {
+    self.as_str()
+  }
+}
+
+pub impl Debug for String {
+  pub fn debug(&self) -> string {
+    self.as_str()
+  }
+}
+
+pub impl Drop for String {
+  pub fn drop(&mut self) {
+    unsafe {
+      libc.free(self.data as *mut void);
+    }
+  }
+}

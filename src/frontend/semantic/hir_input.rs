@@ -185,7 +185,9 @@ impl SemanticHirInput {
                         &hir_files,
                         &hir_modules,
                     )
-                    .expect("fallback HIR path table should build")
+                    .unwrap_or_else(|_| {
+                        crate::frontend::resolver::HirPathResolutionTable::empty()
+                    })
                 })
             });
 

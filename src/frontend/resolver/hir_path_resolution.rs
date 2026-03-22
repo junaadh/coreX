@@ -71,6 +71,15 @@ pub struct HirPathResolutionTable {
 }
 
 impl HirPathResolutionTable {
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            by_expr: BTreeMap::new(),
+            by_path: BTreeMap::new(),
+            unresolved_diagnostics: Vec::new(),
+        }
+    }
+
     /// Resolves HIR path expressions against local bindings and file-local
     /// top-level items.
     ///

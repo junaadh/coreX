@@ -1,0 +1,139 @@
+/// Result type demonstrating generics and error handling
+/// Demonstrates: generic enums with two params, labeled initializers, error propagation
+
+pub enum Result {
+  Ok(T),
+  Err(E),
+}
+
+impl Result {
+  /// Ok variant - parameter labeled "ok"
+  pub init(ok value: T) -> Self {
+    Result.Ok(value)
+  }
+
+  /// Err variant - parameter labeled "err"
+  pub init(err error: E) -> Self {
+    Result.Err(error)
+  }
+
+  /// Conditional result - three labeled parameters
+  pub init(ok value: T, if valid: bool, err error: E) -> Result {
+    if valid {
+      Result.Ok(value)
+    } else {
+      Result.Err(error)
+    }
+  }
+
+  /// Check if ok
+  pub fn is_ok(&self) -> bool {
+    match self {
+      Ok(_) => true,
+      Err(_) => false,
+    }
+  }
+
+  pub fn is_err(&self) -> bool {
+    !self.is_ok()
+  }
+
+  /// Extract ok value
+  pub fn unwrap(&self) -> T {
+    match self {
+      Ok(value) => value,
+      Err(_) => panic!("called unwrap on Err"),
+    }
+  }
+
+  /// Extract with default
+  pub fn unwrap_or(&self, default: T) -> T {
+    match self {
+      Ok(value) => value,
+      Err(_) => default,
+    }
+  }
+
+  /// Extract with function
+  pub fn unwrap_or_else(&self, f: fn(&E) -> T) -> T {
+    match self {
+      Ok(value) => value,
+      Err(error) => f(error),
+    }
+  }
+
+  /// Extract error
+  pub fn unwrap_err(&self) -> E {
+    match self {
+      Ok(_) => panic!("called unwrap_err on Ok"),
+      Err(error) => error,
+    }
+  }
+
+  /// Transform ok value
+  pub fn map<U>(&self, f: fn(&T) -> U) -> Result {
+    match self {
+      Ok(value) => Result.Ok(f(value)),
+      Err(error) => Result.Err(error),
+    }
+  }
+
+  /// Transform error
+  pub fn map_err<F>(&self, f: fn(&E) -> F) -> Result {
+    match self {
+      Ok(value) => Result.Ok(value),
+      Err(error) => Result.Err(f(error)),
+    }
+  }
+
+  /// Chain with fallible function
+  pub fn and_then<U>(&self, f: fn(&T) -> Result) -> Result {
+    match self {
+      Ok(value) => f(value),
+      Err(error) => Result.Err(error),
+    }
+  }
+
+  /// Chain error with fallible function
+  pub fn or_else<F>(&self, f: fn(&E) -> Result) -> Result {
+    match self {
+      Ok(value) => Result.Ok(value),
+      Err(error) => f(error),
+    }
+  }
+}
+
+pub impl Clone for Result where T: Clone, E: Clone {
+  pub fn clone(&self) -> Self {
+    match self {
+      Ok(value) => Result.Ok(value.clone()),
+      Err(error) => Result.Err(error.clone()),
+    }
+  }
+}
+
+pub impl Debug for Result where T: Debug, E: Debug {
+  pub fn debug(&self) -> string {
+    match self {
+      Ok(value) => "Ok(" + value.debug() + ")",
+      Err(error) => "Err(" + error.debug() + ")",
+    }
+  }
+}
+
+pub impl Display for Result where T: Display, E: Debug {
+  pub fn display(&self) -> string {
+    match self {
+      Ok(value) => value.display(),
+      Err(error) => "Error: " + error.debug(),
+    }
+  }
+}
+
+/// Error propagation operator
+pub fn try<T, E>(result: Result) -> T {
+  match result {
+    Ok(value) => value,
+    Err(error) => panic!(error),
+  }
+}

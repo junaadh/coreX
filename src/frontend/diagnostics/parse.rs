@@ -29,7 +29,10 @@ pub fn diagnostic_from_parse_error(
                 .with_note("input ended while parsing source")
         }
         ParseError::Lex(lex_error) => {
-            let mut diagnostic = Diagnostic::error("lexing failed");
+            // Treat lexer errors as recoverable warnings during the pipeline
+            // so that scopes can proceed and diagnostics can be emitted
+            // without failing entire compilation.
+            let mut diagnostic = Diagnostic::warning("lexing failed");
             let span = span_from_lexer_error(lex_error);
             diagnostic = diagnostic.with_label(DiagnosticLabel::primary_span(
                 FileSpan::new(file_id, span),

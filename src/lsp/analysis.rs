@@ -383,8 +383,11 @@ pub fn completion_for_position(
 
         // Compute completion candidates from midend
         let hir_completion_items = if let Some(completion_data) =
-            completion_candidates(&completion_input, analysis.primary_file_id, offset)
-        {
+            completion_candidates(
+                &completion_input,
+                analysis.primary_file_id,
+                offset,
+            ) {
             convert_completion_data_to_lsp(completion_data, &prefix)
         } else {
             Vec::new()
@@ -400,9 +403,9 @@ pub fn completion_for_position(
 
         // Add keywords
         for keyword in [
-            "fn", "struct", "enum", "protocol", "scope", "use", "let", "var", "if",
-            "else", "while", "for", "return", "async", "unsafe", "await", "root",
-            "super",
+            "fn", "struct", "enum", "protocol", "scope", "use", "let", "var",
+            "if", "else", "while", "for", "return", "async", "unsafe", "await",
+            "root", "super",
         ] {
             insert_completion_item(
                 &mut items,

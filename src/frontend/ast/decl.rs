@@ -143,6 +143,7 @@ pub enum InitOriginKind {
 pub struct InitDecl {
     pub docs: Vec<Spanned<DocComment>>,
     pub attributes: Vec<Spanned<Attribute>>,
+    pub visibility: Option<Visibility>,
     pub modifiers: Vec<Modifier>,
     pub kind: InitKind,
     pub receiver: Option<Spanned<ReceiverKind>>,

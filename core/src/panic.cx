@@ -1,0 +1,56 @@
+/// Panic and error handling utilities
+/// Demonstrates: Never type, control flow, labeled parameters
+
+/// Never type - indicates function never returns
+pub enum Never {}
+
+/// Panic function - terminates execution
+pub fn panic(message: string) -> Never {
+  unsafe {
+    libc.printf(message.as_ptr());
+    libc.printf("\n");
+    libc.abort();
+  }
+}
+
+/// Unreachable macro helper
+pub fn unreachable() -> Never {
+  panic("unreachable code reached");
+}
+
+/// Unreachable with message
+pub fn unreachable_msg(message: string) -> Never {
+  panic("unreachable: " + message);
+}
+
+/// Assert function
+pub fn assert(cond: bool, message: string) {
+  if !cond {
+    panic("assertion failed: " + message);
+  }
+}
+
+/// TODO marker
+pub fn todo() -> Never {
+  panic("not yet implemented");
+}
+
+pub fn todo_msg(message: string) -> Never {
+  panic("TODO: " + message);
+}
+
+/// Unimplemented marker
+pub fn unimplemented() -> Never {
+  panic("not yet implemented");
+}
+
+pub fn unimplemented_msg(message: string) -> Never {
+  panic("unimplemented: " + message);
+}
+
+/// Abort immediately
+pub fn abort() -> Never {
+  unsafe {
+    libc.abort();
+  }
+}

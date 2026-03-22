@@ -1,0 +1,122 @@
+/// Formatting utilities
+/// Demonstrates: protocol inheritance, formatting, variadic functions
+
+pub struct Arguments {
+  pieces: Vec<string>,
+}
+
+impl Arguments {
+  pub init new() -> Self {
+    Self {
+      pieces: Vec(),
+    }
+  }
+
+  pub fn as_str(&self) -> string {
+    var result = String();
+    for piece in self.pieces.iter() {
+      result.push_str(piece);
+    }
+    result.as_str()
+  }
+}
+
+/// Format variadic function
+pub fn format(fmt: &str, args: ...) -> string {
+  var f = Formatter();
+  f.format(fmt, args)
+}
+
+/// Print variadic function
+pub fn print(fmt: &str, args: ...) {
+  var s = format(fmt, args);
+  unsafe {
+    libc.printf(s.as_ptr());
+  }
+}
+
+/// Println with newline
+pub fn println(fmt: &str, args: ...) {
+  print(fmt, args);
+  print("\n");
+}
+
+pub struct Formatter {
+  indent: usize,
+}
+
+impl Formatter {
+  pub init new() -> Self {
+    Self { indent: 0 }
+  }
+
+  pub fn format(&self, fmt: &str, args: ...) -> string {
+    fmt.to_string()
+  }
+}
+
+/// Format implementations for primitives
+
+impl Debug for i32 {
+  pub fn debug(&self) -> string {
+    self.to_string()
+  }
+}
+
+impl Display for i32 {
+  pub fn display(&self) -> string {
+    self.to_string()
+  }
+}
+
+impl Debug for f64 {
+  pub fn debug(&self) -> string {
+    self.to_string()
+  }
+}
+
+impl Display for f64 {
+  pub fn display(&self) -> string {
+    self.to_string()
+  }
+}
+
+impl Debug for bool {
+  pub fn debug(&self) -> string {
+    self.display()
+  }
+}
+
+impl Display for bool {
+  pub fn display(&self) -> string {
+    if unsafe { *self } {
+      "true"
+    } else {
+      "false"
+    }
+  }
+}
+
+impl Debug for string {
+  pub fn debug(&self) -> string {
+    self
+  }
+}
+
+impl Display for string {
+  pub fn display(&self) -> string {
+    self
+  }
+}
+
+impl Debug for &str {
+  pub fn debug(&self) -> string {
+    String(from: *self)
+  }
+}
+
+impl Display for &str {
+  pub fn display(&self) -> string {
+    String(from: *self)
+  }
+}

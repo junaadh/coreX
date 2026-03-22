@@ -1,0 +1,172 @@
+/// Standard macro demonstrations
+/// Demonstrates: rule macros, reflect macros, macro hygiene, @macro invocation syntax
+
+/// Assert macro - runtime assertion
+macro assert {
+  rule(cond: Expr) => {
+    if !cond {
+      panic("assertion failed")
+    }
+  };
+
+  rule(cond: Expr, msg: Expr) => {
+    if !cond {
+      panic(msg)
+    }
+  };
+}
+
+/// Debug assert - only in debug builds
+macro debug_assert {
+  rule(cond: Expr) => {
+    if @cfg(debug: true) {
+      @assert(cond)
+    }
+  };
+}
+
+/// Unreachable macro
+macro unreachable {
+  rule() => {
+    panic("unreachable code reached")
+  };
+
+  rule(msg: Expr) => {
+    panic("unreachable: " + msg)
+  };
+}
+
+/// TODO macro
+macro todo {
+  rule() => {
+    panic("not yet implemented")
+  };
+
+  rule(msg: Expr) => {
+    panic("TODO: " + msg)
+  };
+}
+
+/// Unimplemented macro
+macro unimplemented {
+  rule() => {
+    panic("not yet implemented")
+  };
+
+  rule(msg: Expr) => {
+    panic("unimplemented: " + msg)
+  };
+}
+
+/// Vec macro - creates vector from elements
+macro vec {
+  rule(expr: Expr) => {
+    {
+      let mut v = Vec();
+      v.push(expr);
+      v
+    }
+  };
+
+  rule(exprs: ...) => {
+    {
+      let mut v = Vec();
+      for expr in exprs {
+        v.push(expr);
+      }
+      v
+    }
+  };
+}
+
+/// Conditional compilation macro
+macro cfg {
+  rule(debug: bool) -> bool {
+    debug
+  };
+
+  rule(test: bool) -> bool {
+    test
+  };
+}
+
+/// Stringify macro
+macro stringify {
+  rule(expr: Expr) => {
+    #stringify(expr)
+  };
+}
+
+/// Include file as string
+macro include_str {
+  rule(path: Expr) -> string {
+    #include_str(path)
+  };
+}
+
+/// Include bytes
+macro include_bytes {
+  rule(path: Expr) -> &[u8] {
+    #include_bytes(path)
+  };
+}
+
+/// Line number
+macro line {
+  rule() -> usize {
+    __LINE__
+  };
+}
+
+/// File path
+macro file {
+  rule() -> string {
+    __FILE__
+  };
+}
+
+/// Module path
+macro module_path {
+  rule() -> string {
+    __MODULE_PATH__
+  };
+}
+
+/// Concatenate identifiers
+macro concat {
+  rule(idents: ...) => {
+    ##idents
+  };
+}
+
+/// Compile error
+macro compile_error {
+  rule(msg: Expr) => {
+    #compile_error(msg)
+  };
+}
+
+/// Static assertion
+macro static_assert {
+  rule(cond: Expr) => {
+    #static_assert(cond)
+  };
+
+  rule(cond: Expr, msg: Expr) => {
+    #static_assert(cond, msg)
+  };
+}
+
+/// Unless macro - inverted if
+macro unless {
+  rule(cond: Expr, body: Block) => {
+    if !cond body
+  };
+}
+
+/// Select macro - ternary expression
+macro select {
+  rule(cond: Expr, then: Expr, else: Expr) => {
+    if cond { then } else { else }
+  };
+}

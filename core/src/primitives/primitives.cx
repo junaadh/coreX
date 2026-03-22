@@ -1,0 +1,157 @@
+/// Core protocol definitions for the CoreX standard library
+/// Demonstrates: protocol declarations, inheritance, associated types, default impls
+
+/// Equality comparison protocol
+pub protocol Eq {
+  fn eq(&self, other: &Self) -> bool;
+  fn ne(&self, other: &Self) -> bool {
+    !self.eq(other)
+  }
+}
+
+/// Ordering protocol
+pub protocol Ord {
+  fn cmp(&self, other: &Self) -> Ordering;
+
+  fn lt(&self, other: &Self) -> bool {
+    match self.cmp(other) {
+      Ordering.Less => true,
+      _ => false,
+    }
+  }
+
+  fn gt(&self, other: &Self) -> bool {
+    match self.cmp(other) {
+      Ordering.Greater => true,
+      _ => false,
+    }
+  }
+}
+
+/// Ordering result
+pub enum Ordering {
+  Less,
+  Equal,
+  Greater,
+}
+
+/// Clone protocol
+pub protocol Clone {
+  fn clone(&self) -> Self;
+}
+
+/// Copy protocol (implicit clone via bitcopy)
+pub protocol Copy {}
+
+/// Default values protocol
+pub protocol Default {
+  fn default() -> Self;
+}
+
+/// Debug formatting protocol
+pub protocol Debug {
+  fn debug(&self) -> string;
+}
+
+/// Display formatting protocol (inherits Debug)
+pub protocol Display: Debug {
+  fn display(&self) -> string;
+  fn as_debug(&self) -> string {
+    self.debug()
+  }
+}
+
+/// Drop protocol for destructors
+pub protocol Drop {
+  fn drop(&mut self);
+}
+
+/// Iterator protocol with associated types
+pub protocol Iterator {
+  type Item;
+
+  fn next(&mut self) -> Option;
+}
+
+/// Collection protocol (inherits from Iterator)
+pub protocol Collection: Iterator {
+  fn len(&self) -> usize;
+  fn is_empty(&self) -> bool {
+    self.len() == 0
+  }
+}
+
+/// Indexable protocol
+pub protocol Indexable {
+  type Output;
+  type Index;
+
+  fn get(&self, index: Self::Index) -> Option;
+}
+
+/// Hash protocol
+pub protocol Hash {
+  fn hash(&self) -> usize;
+}
+
+/// Numeric protocol
+pub protocol Numeric {
+  fn add(&self, other: &Self) -> Self;
+  fn sub(&self, other: &Self) -> Self;
+  fn mul(&self, other: &Self) -> Self;
+  fn div(&self, other: &Self) -> Self;
+}
+
+/// Signed numeric protocol
+pub protocol Signed: Numeric {
+  fn abs(&self) -> Self;
+  fn neg(&self) -> Self;
+}
+
+/// Into protocol (conversions)
+pub protocol Into {
+  fn into(self) -> U;
+}
+
+/// From protocol (conversions)
+pub protocol From {
+  fn from(value: T) -> Self;
+}
+
+/// Sized protocol
+pub protocol Sized {}
+
+/// Add trait
+pub protocol Add {
+  type Output;
+
+  fn add(&self, rhs: Rhs) -> Self::Output;
+}
+
+/// Neg protocol
+pub protocol Neg {
+  type Output;
+
+  fn neg(&self) -> Self::Output;
+}
+
+/// Not protocol
+pub protocol Not {
+  type Output;
+
+  fn not(&self) -> Self::Output;
+}
+
+/// BitAnd protocol
+pub protocol BitAnd {
+  type Output;
+
+  fn bitand(&self, rhs: Rhs) -> Self::Output;
+}
+
+/// BitOr protocol
+pub protocol BitOr {
+  type Output;
+
+  fn bitor(&self, rhs: Rhs) -> Self::Output;
+}

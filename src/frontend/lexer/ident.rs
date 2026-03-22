@@ -9,7 +9,7 @@
 //! Builtin primitive type names remain ordinary identifiers lexically.
 //! They are recognized as builtins in later semantic analysis.
 
-use super::{classify_keyword_token, SourceCursor, Span, Token, TokenKind};
+use super::{SourceCursor, Span, Token, TokenKind, classify_keyword_token};
 
 /// Lexes one identifier-like token at the current cursor position.
 ///

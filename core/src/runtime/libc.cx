@@ -1,0 +1,64 @@
+/// C FFI bindings demonstrating @call directive and unsafe operations
+/// Demonstrates: extern blocks, unsafe functions, raw pointers
+
+@call(.C)
+extern libc {
+  /// Memory allocation
+  fn malloc(size: usize) -> *mut void;
+
+  /// Memory deallocation
+  fn free(ptr: *mut void);
+
+  /// Copy memory
+  fn memcpy(dest: *mut void, src: *const void, n: usize) -> *mut void;
+
+  /// Move memory
+  fn memmove(dest: *mut void, src: *const void, n: usize) -> *mut void;
+
+  /// Set memory
+  fn memset(s: *mut void, c: i32, n: usize) -> *mut void;
+
+  /// Compare memory
+  fn memcmp(s1: *const void, s2: *const void, n: usize) -> i32;
+
+  /// String length
+  fn strlen(s: *const u8) -> usize;
+
+  /// Print string
+  fn printf(s: *const u8) -> i32;
+
+  /// Print character
+  fn putchar(c: i32) -> i32;
+
+  /// Exit process
+  fn exit(status: i32) -> Never;
+
+  /// Abort process
+  fn abort() -> Never;
+}
+
+/// Safe wrappers around C functions
+
+pub unsafe fn malloc(size: usize) -> *mut void {
+  libc.malloc(size)
+}
+
+pub unsafe fn free(ptr: *mut void) {
+  libc.free(ptr)
+}
+
+pub unsafe fn memcpy(dest: *mut void, src: *const void, n: usize) -> *mut void {
+  libc.memcpy(dest, src, n)
+}
+
+pub unsafe fn strlen(s: *const u8) -> usize {
+  libc.strlen(s)
+}
+
+pub unsafe fn printf(s: *const u8) -> i32 {
+  libc.printf(s)
+}
+
+pub unsafe fn putchar(c: i32) -> i32 {
+  libc.putchar(c)
+}

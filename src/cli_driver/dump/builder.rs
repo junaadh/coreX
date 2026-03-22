@@ -1,22 +1,22 @@
 use super::{DumpInput, DumpKind};
+use crate::cli_driver::DynError;
 use crate::cli_driver::dump::formatter::diagnostics_to_json;
 use crate::cli_driver::dump::model::{
     FileDesugaredDump, FileExpandedDump, FileHirDump, FileParsedDump,
     FilePipelineDump, FileResolvedDump, FileTypedDump, PipelineDump,
 };
 use crate::cli_driver::project::load_project_context;
-use crate::cli_driver::DynError;
 use core_x::frontend::expansion::{Provenance, ProvenanceMap};
 use core_x::frontend::hir::{HirArrayElement, HirStructExprField};
 use core_x::frontend::resolver::{AssociatedMemberKind, DeclarationOwner};
 use core_x::frontend::source::{FileId, SourceDb};
 use core_x::frontend::{
-    analyze_project, BodyInferIssue, BodyInferIssueKind, FrontendAnalysis,
-    FrontendContext, HirExprKind, HirItemKind, HirPatKind, HirPathResolution,
-    HirStmtKind, HirTypeKind, InferredCallTarget, ItemKind, ParseSessionError,
-    Type, TypedItemData, TypedParamLabel,
+    BodyInferIssue, BodyInferIssueKind, FrontendAnalysis, FrontendContext,
+    HirExprKind, HirItemKind, HirPatKind, HirPathResolution, HirStmtKind,
+    HirTypeKind, InferredCallTarget, ItemKind, ParseSessionError, Type,
+    TypedItemData, TypedParamLabel, analyze_project,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};

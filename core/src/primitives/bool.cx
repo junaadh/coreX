@@ -1,0 +1,98 @@
+/// Boolean operations demonstrating logic protocols and control flow
+/// Demonstrates: Not protocol, logical operations, pattern matching
+
+pub impl Clone for bool {
+  pub fn clone(&self) -> Self {
+    unsafe { *self }
+  }
+}
+
+pub impl Copy for bool {}
+
+pub impl Default for bool {
+  pub fn default() -> Self {
+    false
+  }
+}
+
+pub impl Display for bool {
+  pub fn display(&self) -> string {
+    if unsafe { *self } {
+      "true"
+    } else {
+      "false"
+    }
+  }
+}
+
+pub impl Debug for bool {
+  pub fn debug(&self) -> string {
+    self.display()
+  }
+}
+
+pub impl Not for bool {
+  pub type Output = bool;
+
+  pub fn not(&self) -> bool {
+    unsafe { !*self }
+  }
+}
+
+pub impl BitAnd for bool {
+  pub type Output = bool;
+
+  pub fn bitand(&self, rhs: &bool) -> bool {
+    unsafe { *self && *rhs }
+  }
+}
+
+pub impl BitOr for bool {
+  pub type Output = bool;
+
+  pub fn bitor(&self, rhs: &bool) -> bool {
+    unsafe { *self || *rhs }
+  }
+}
+
+/// Logical operations
+pub fn and(a: bool, b: bool) -> bool {
+  unsafe { a && b }
+}
+
+pub fn or(a: bool, b: bool) -> bool {
+  unsafe { a || b }
+}
+
+pub fn xor(a: bool, b: bool) -> bool {
+  unsafe { (a && !b) || (!a && b) }
+}
+
+pub fn not(b: bool) -> bool {
+  unsafe { !b }
+}
+
+/// Conditional operations
+pub fn if_then_else(cond: bool, then: i32, else: i32) -> i32 {
+  if cond {
+    then
+  } else {
+    else
+  }
+}
+
+pub fn when(cond: bool, value: i32) -> Option {
+  if cond {
+    Option.Some(value)
+  } else {
+    Option.None
+  }
+}
+
+pub fn unless(cond: bool, value: i32) -> Option {
+  if !cond {
+    Option.Some(value)
+  } else {
+    Option.None
+  }
+}

@@ -1,0 +1,251 @@
+/// Generic vector demonstrating collections and iterators
+/// Demonstrates: generic types, initializer overloading, iterator protocol, where clauses
+
+pub struct Vec {
+  data: *mut T,
+  len: usize,
+  cap: usize,
+}
+
+impl Vec {
+  /// Empty vector
+  pub init() -> Self {
+    Self {
+      data: unsafe { null_mut() },
+      len: 0,
+      cap: 0,
+    }
+  }
+
+  /// With capacity - parameter labeled "capacity"
+  pub init(capacity: usize) -> Self {
+    Self {
+      data: unsafe { libc.malloc(capacity * size_of::<T>()) as *mut T },
+      len: 0,
+      cap: capacity,
+    }
+  }
+
+  /// From slice - parameter labeled "from"
+  pub init(from values: &[T]) -> Vec {
+    let v = Vec(capacity: values.len());
+    // Would copy elements
+    v
+  }
+
+  /// From iterator - parameter labeled "iter"
+  pub init(iter: Iter) -> Vec
+    where
+      T: Clone,
+      Iter: Iterator<Item = T>,
+  {
+    let mut v = Vec();
+    // Would collect from iterator
+    v
+  }
+
+  /// Get length
+  pub fn len(&self) -> usize {
+    self.len
+  }
+
+  /// Check if empty
+  pub fn is_empty(&self) -> bool {
+    self.len == 0
+  }
+
+  /// Get capacity
+  pub fn capacity(&self) -> usize {
+    self.cap
+  }
+
+  /// Push element
+  pub fn push(&mut self, value: T) {
+    if self.len == self.cap {
+      self.reserve(1);
+    }
+    unsafe {
+      *self.data.offset(self.len as isize) = value;
+    }
+    self.len = self.len + 1;
+  }
+
+  /// Pop element
+  pub fn pop(&mut self) -> Option {
+    if self.len == 0 {
+      Option.None
+    } else {
+      self.len = self.len - 1;
+      unsafe {
+        Option.Some(*self.data.offset(self.len as isize))
+      }
+    }
+  }
+
+  /// Get element at index
+  pub fn get(&self, index: usize) -> Option<&T> {
+    if index < self.len {
+      unsafe {
+        Option.Some(&*self.data.offset(index as isize))
+      }
+    } else {
+      Option.None
+    }
+  }
+
+  /// Get mutable element
+  pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+    if index < self.len {
+      unsafe {
+        Option.Some(&mut *self.data.offset(index as isize))
+      }
+    } else {
+      Option.None
+    }
+  }
+
+  /// Insert at index
+  pub fn insert(&mut self, index: usize, value: T) {
+    if index > self.len {
+      panic!("index out of bounds");
+    }
+    if self.len == self.cap {
+      self.reserve(1);
+    }
+    unsafe {
+      let mut i = self.len;
+      while i > index {
+        *self.data.offset(i as isize) =
+          *self.data.offset((i - 1) as isize);
+        i = i - 1;
+      }
+      *self.data.offset(index as isize) = value;
+    }
+    self.len = self.len + 1;
+  }
+
+  /// Remove at index
+  pub fn remove(&mut self, index: usize) -> T {
+    if index >= self.len {
+      panic!("index out of bounds");
+    }
+    unsafe {
+      let value = *self.data.offset(index as isize);
+      let mut i = index;
+      while i < self.len - 1 {
+        *self.data.offset(i as isize) =
+          *self.data.offset((i + 1) as isize);
+        i = i + 1;
+      }
+      self.len = self.len - 1;
+      value
+    }
+  }
+
+  /// Reserve capacity
+  pub fn reserve(&mut self, additional: usize) {
+    let new_cap = self.len + additional;
+    if new_cap > self.cap {
+      unsafe {
+        let new_data =
+          libc.malloc(new_cap * size_of::<T>()) as *mut T;
+        libc.memcopy(
+          new_data as *mut void,
+          self.data as *const void,
+          self.len * size_of::<T>(),
+        );
+        libc.free(self.data as *mut void);
+        self.data = new_data;
+        self.cap = new_cap;
+      }
+    }
+  }
+
+  /// Clear all elements
+  pub fn clear(&mut self) {
+    self.len = 0
+  }
+
+  /// Resize vector
+  pub fn resize(&mut self, new_len: usize, value: T)
+    where
+      T: Clone,
+  {
+    if new_len > self.len {
+      self.reserve(new_len - self.len);
+      let mut i = self.len;
+      while i < new_len {
+        unsafe {
+          *self.data.offset(i as isize) = value.clone();
+        }
+        i = i + 1;
+      }
+    }
+    self.len = new_len;
+  }
+
+  /// Get iterator
+  pub fn iter(&self) -> VecIter {
+    VecIter {
+      vec: self,
+      index: 0,
+    }
+  }
+}
+
+pub impl Clone for Vec where T: Clone {
+  pub fn clone(&self) -> Self {
+    let mut v = Vec(capacity: self.cap);
+    unsafe {
+      let mut i = 0;
+      while i < self.len {
+        *v.data.offset(i as isize) =
+          (*self.data.offset(i as isize)).clone();
+        i = i + 1;
+      }
+    }
+    v.len = self.len;
+    v
+  }
+}
+
+pub impl Drop for Vec {
+  pub fn drop(&mut self) {
+    unsafe {
+      libc.free(self.data as *mut void);
+    }
+  }
+}
+
+pub impl Collection for Vec {
+  pub type Item = T;
+
+  pub fn len(&self) -> usize {
+    self.len
+  }
+
+  pub fn is_empty(&self) -> bool {
+    self.len == 0
+  }
+}
+
+pub impl Iterator for Vec {
+  pub type Item = &T;
+
+  pub fn next(&mut self) -> Option {
+    if self.index < self.vec.len() {
+      unsafe {
+        let item = &*self.vec.data.offset(self.index as isize);
+        self.index = self.index + 1;
+        Option.Some(item)
+      }
+    } else {
+      Option.None
+    }
+  }
+}
+
+pub struct VecIter<'a, T> {
+  vec: &'a Vec,
+  index: usize,
+}

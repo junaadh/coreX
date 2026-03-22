@@ -536,6 +536,7 @@ mod tests {
             InitDecl {
                 docs: vec![],
                 attributes: vec![],
+                visibility: None,
                 modifiers: vec![],
                 kind: InitKind::Optional, // Will be inferred from return_type
                 receiver: None,

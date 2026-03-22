@@ -1,0 +1,26 @@
+/// Prelude - auto-imported in all CoreX programs
+/// Demonstrates: common imports that are always available
+
+// Core protocols
+pub use root::primitives::primitives::{
+  Clone,
+  Copy,
+  Default,
+  Debug,
+  Display,
+  Eq,
+  Ord,
+  Into,
+  From,
+  Iterator,
+};
+
+// Core types
+pub use root::primitives::string::String;
+pub use root::mem::option::{Option, Some, None};
+pub use root::mem::result::{Result, Ok, Err};
+pub use root::collections::vec::Vec;
+
+// Common functions
+pub use root::panic::{panic, unreachable, todo, assert};
+pub use root::io::{print, println};

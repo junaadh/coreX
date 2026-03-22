@@ -12,10 +12,10 @@
 //! across normal, string, and interpolation modes.
 
 use super::{
-    classify_keyword_token, lex_char_literal, lex_ident_like,
-    lex_interpolation_end, lex_lifetime, lex_number, lex_punct_or_operator,
-    lex_string_segment, lex_string_start, skip_trivia, CommentError,
-    SourceCursor, Span, StringLexError, StringLexMode, Token, TokenKind,
+    CommentError, SourceCursor, Span, StringLexError, StringLexMode, Token,
+    TokenKind, lex_char_literal, lex_ident_like, lex_interpolation_end,
+    lex_lifetime, lex_number, lex_punct_or_operator, lex_string_segment,
+    lex_string_start, skip_trivia,
 };
 
 /// Errors produced by integrated tokenization.
@@ -107,6 +107,12 @@ impl<'a> Lexer<'a> {
                 self.next_token_in_interpolation(paren_depth)
             }
         }
+    }
+
+    /// Returns the current byte offset in source.
+    #[must_use]
+    pub const fn offset(&self) -> usize {
+        self.cursor.offset()
     }
 
     /// Lexes all tokens through the first emitted `Eof`.
@@ -245,6 +251,26 @@ impl<'a> Lexer<'a> {
         LexerError::UnexpectedCharacter {
             span: Span::new(start, end),
             ch,
+        }
+    }
+
+    /// Attempts to recover from a lexer error and continue tokenization.
+    ///
+    /// Returns `true` when lexer state progressed enough to try lexing again.
+    /// Returns `false` when no forward progress is possible.
+    pub fn recover_from_error(&mut self, error: &LexerError) -> bool {
+        let previous_mode = self.mode;
+
+        match error {
+            LexerError::UnexpectedCharacter { .. } => {
+                self.cursor.bump().is_some()
+            }
+            LexerError::Comment(_) | LexerError::String(_) => {
+                self.mode = StringLexMode::Normal;
+                self.mode_stack.clear();
+
+                self.cursor.bump().is_some() || self.mode != previous_mode
+            }
         }
     }
 }

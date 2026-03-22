@@ -1,0 +1,213 @@
+/// Raw pointer operations demonstrating unsafe code
+/// Demonstrates: unsafe blocks, raw pointers, FFI, memory manipulation
+
+pub struct Ptr {
+  ptr: *mut T,
+}
+
+impl Ptr {
+  /// Create from raw pointer - parameter labeled "ptr"
+  pub unsafe init(ptr: *mut T) -> Self {
+    Self { ptr }
+  }
+
+  /// Dereference to get value
+  pub unsafe fn read(&self) -> T {
+    *self.ptr
+  }
+
+  /// Write value
+  pub unsafe fn write(&self, value: T) {
+    *self.ptr = value
+  }
+
+  /// Read volatile
+  pub unsafe fn read_volatile(&self) -> T {
+    *self.ptr
+  }
+
+  /// Write volatile
+  pub unsafe fn write_volatile(&self, value: T) {
+    *self.ptr = value
+  }
+
+  /// Offset pointer
+  pub unsafe fn offset(&self, count: isize) -> *mut T {
+    self.ptr.offset(count)
+  }
+
+  /// Add to pointer
+  pub unsafe fn add(&self, count: usize) -> *mut T {
+    self.ptr.offset(count as isize)
+  }
+
+  /// Subtract from pointer
+  pub unsafe fn sub(&self, count: usize) -> *mut T {
+    self.ptr.offset(-(count as isize))
+  }
+
+  /// Check if null
+  pub fn is_null(&self) -> bool {
+    unsafe {
+      self.ptr == null_mut()
+    }
+  }
+
+  /// Cast to different type
+  pub fn cast(self) -> Ptr {
+    unsafe {
+      Ptr {
+        ptr: self.ptr as *mut U,
+      }
+    }
+  }
+
+  /// As const pointer
+  pub fn as_const(&self) -> *const T {
+    self.ptr
+  }
+
+  /// As mutable pointer
+  pub fn as_mut(&self) -> *mut T {
+    self.ptr
+  }
+}
+
+/// Unique pointer (owning, non-copyable)
+pub struct Unique {
+  ptr: *mut T,
+}
+
+impl Unique {
+  pub unsafe init(ptr: *mut T) -> Self {
+    Self { ptr }
+  }
+
+  pub fn as_ptr(&self) -> *mut T {
+    self.ptr
+  }
+
+  pub unsafe fn as_ref(&self) -> &T {
+    &*self.ptr
+  }
+
+  pub unsafe fn as_mut(&mut self) -> &mut T {
+    &mut *self.ptr
+  }
+}
+
+pub impl Drop for Unique {
+  pub fn drop(&mut self) {
+    unsafe {
+      libc.free(self.ptr as *mut void);
+    }
+  }
+}
+
+/// Shared pointer (reference counted)
+pub struct Shared {
+  ptr: *mut T,
+  count: *mut usize,
+}
+
+impl Shared {
+  pub fn new(value: T) -> Self {
+    unsafe {
+      let ptr = libc.malloc(size_of::<T>()) as *mut T;
+      *ptr = value;
+      let count = libc.malloc(size_of::<usize>()) as *mut usize;
+      *count = 1;
+      Self { ptr, count }
+    }
+  }
+
+  pub fn clone(&self) -> Self {
+    unsafe {
+      *self.count = *self.count + 1;
+    }
+    Self {
+      ptr: self.ptr,
+      count: self.count,
+    }
+  }
+
+  pub unsafe fn as_ref(&self) -> &T {
+    &*self.ptr
+  }
+
+  pub fn count(&self) -> usize {
+    unsafe {
+      *self.count
+    }
+  }
+}
+
+pub impl Drop for Shared {
+  pub fn drop(&mut self) {
+    unsafe {
+      *self.count = *self.count - 1;
+      if *self.count == 0 {
+        libc.free(self.ptr as *mut void);
+        libc.free(self.count as *mut void);
+      }
+    }
+  }
+}
+
+pub impl Clone for Shared {
+  pub fn clone(&self) -> Self {
+    self.clone()
+  }
+}
+
+/// Null pointer constant
+pub fn null<T>() -> *const T {
+  unsafe { 0 as *const T }
+}
+
+pub fn null_mut<T>() -> *mut T {
+  unsafe { 0 as *mut T }
+}
+
+/// Swap two values
+pub fn swap<T>(a: &mut T, b: &mut T) {
+  unsafe {
+    let temp = *a;
+    *a = *b;
+    *b = temp;
+  }
+}
+
+/// Replace value
+pub fn replace<T>(dest: &mut T, src: T) -> T {
+  unsafe {
+    let old = *dest;
+    *dest = src;
+    old
+  }
+}
+
+/// Copy memory
+pub fn copy(src: *const u8, dest: *mut u8, count: usize) {
+  unsafe {
+    libc.memcopy(dest as *mut void, src as *const void, count);
+  }
+}
+
+/// Copy non-overlapping
+pub fn copy_nonoverlapping(src: *const u8, dest: *mut u8, count: usize) {
+  unsafe {
+    libc.memcpy(dest as *mut void, src as *const void, count);
+  }
+}
+
+/// Write bytes
+pub fn write_bytes(dest: *mut u8, value: u8, count: usize) {
+  unsafe {
+    let mut i = 0;
+    while i < count {
+      *dest.offset(i as isize) = value;
+      i = i + 1;
+    }
+  }
+}

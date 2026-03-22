@@ -1,0 +1,171 @@
+/// Integer operations demonstrating protocol conformance and function overloading
+/// Demonstrates: multiple protocol impls, overloaded functions, labeled parameters
+
+pub impl Eq for i32 {
+  pub fn eq(&self, other: &Self) -> bool {
+    unsafe {
+      *self == *other
+    }
+  }
+}
+
+pub impl Ord for i32 {
+  pub fn cmp(&self, other: &Self) -> Ordering {
+    unsafe {
+      if *self < *other {
+        Ordering.Less
+      } else if *self > *other {
+        Ordering.Greater
+      } else {
+        Ordering.Equal
+      }
+    }
+  }
+}
+
+pub impl Clone for i32 {
+  pub fn clone(&self) -> Self {
+    unsafe { *self }
+  }
+}
+
+pub impl Copy for i32 {}
+
+pub impl Default for i32 {
+  pub fn default() -> Self {
+    0
+  }
+}
+
+pub impl Display for i32 {
+  pub fn display(&self) -> string {
+    self.to_string()
+  }
+}
+
+pub impl Debug for i32 {
+  pub fn debug(&self) -> string {
+    self.to_string()
+  }
+}
+
+pub impl Numeric for i32 {
+  pub fn add(&self, other: &Self) -> Self {
+    unsafe { *self + *other }
+  }
+
+  pub fn sub(&self, other: &Self) -> Self {
+    unsafe { *self - *other }
+  }
+
+  pub fn mul(&self, other: &Self) -> Self {
+    unsafe { *self * *other }
+  }
+
+  pub fn div(&self, other: &Self) -> Self {
+    unsafe { *self / *other }
+  }
+}
+
+pub impl Signed for i32 {
+  pub fn abs(&self) -> Self {
+    unsafe {
+      if *self < 0 {
+        -*self
+      } else {
+        *self
+      }
+    }
+  }
+
+  pub fn neg(&self) -> Self {
+    unsafe { -*self }
+  }
+}
+
+pub impl Add for i32 {
+  pub type Output = i32;
+
+  pub fn add(&self, rhs: &i32) -> i32 {
+    unsafe { *self + *rhs }
+  }
+}
+
+pub impl Neg for i32 {
+  pub type Output = i32;
+
+  pub fn neg(&self) -> i32 {
+    unsafe { -*self }
+  }
+}
+
+/// Function overloading by type
+pub fn abs(x: i32) -> i32 {
+  x.abs()
+}
+
+pub fn abs(x: f64) -> f64 {
+  unsafe {
+    if x < 0.0 {
+      -x
+    } else {
+      x
+    }
+  }
+}
+
+/// Function overloading by parameter labels
+pub fn min(a: i32, b: i32) -> i32 {
+  unsafe {
+    if a < b { a } else { b }
+  }
+}
+
+pub fn min(of a: i32, and b: i32, and c: i32) -> i32 {
+  min(min(a, b), c)
+}
+
+pub fn max(a: i32, b: i32) -> i32 {
+  unsafe {
+    if a > b { a } else { b }
+  }
+}
+
+pub fn clamp(value: i32, min: i32, max: i32) -> i32 {
+  if value < min {
+    min
+  } else if value > max {
+    max
+  } else {
+    value
+  }
+}
+
+/// Power function with overloaded labels
+pub fn pow(base: i32, exp: u32) -> i32 {
+  let mut result = 1;
+  let mut i = 0;
+  while i < exp {
+    result = result * base;
+    i = i + 1;
+  }
+  result
+}
+
+pub fn pow(base: f64, exp: f64) -> f64 {
+  // Would use math lib
+  base
+}
+
+/// Division with different return types
+pub fn div(a: i32, b: i32) -> i32 {
+  unsafe { a / b }
+}
+
+pub fn div(a: i32, b: i32, as_float: bool) -> f64 {
+  if as_float {
+    (a as f64) / (b as f64)
+  } else {
+    (a / b) as f64
+  }
+}

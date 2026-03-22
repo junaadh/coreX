@@ -1,0 +1,143 @@
+/// Option type demonstrating generics, pattern matching, and initializer overloading
+/// Demonstrates: generic enums, labeled initializers, protocol conformance with where clauses
+
+pub enum Option {
+  Some(T),
+  None,
+}
+
+impl Option {
+  /// None variant - no parameters
+  pub init() -> Self {
+    Option.None
+  }
+
+  /// Some variant - parameter labeled "value"
+  pub init(value: T) -> Self {
+    Option.Some(value)
+  }
+
+  /// Conditional Some - two labeled parameters
+  pub init(value: T, if condition: bool) -> Option {
+    if condition {
+      Option.Some(value)
+    } else {
+      Option.None
+    }
+  }
+
+  /// Check if contains value
+  pub fn is_some(&self) -> bool {
+    match self {
+      Some(_) => true,
+      None => false,
+    }
+  }
+
+  pub fn is_none(&self) -> bool {
+    !self.is_some()
+  }
+
+  /// Extract value
+  pub fn unwrap(&self) -> T {
+    match self {
+      Some(value) => value,
+      None => panic!("called unwrap on None"),
+    }
+  }
+
+  /// Extract with default
+  pub fn unwrap_or(&self, default: T) -> T {
+    match self {
+      Some(value) => value,
+      None => default,
+    }
+  }
+
+  /// Extract with function
+  pub fn unwrap_or_else(&self, f: fn() -> T) -> T {
+    match self {
+      Some(value) => value,
+      None => f(),
+    }
+  }
+
+  /// Transform value
+  pub fn map<U>(&self, f: fn(&T) -> U) -> Option {
+    match self {
+      Some(value) => Option.Some(f(value)),
+      None => Option.None,
+    }
+  }
+
+  /// Transform with fallible function
+  pub fn and_then<U>(&self, f: fn(&T) -> Option) -> Option {
+    match self {
+      Some(value) => f(value),
+      None => Option.None,
+    }
+  }
+
+  /// Get reference
+  pub fn as_ref(&self) -> Option<&T> {
+    match self {
+      Some(value) => Option.Some(value),
+      None => Option.None,
+    }
+  }
+
+  /// Get mutable reference
+  pub fn as_mut(&mut self) -> Option<&mut T> {
+    match self {
+      Some(value) => Option.Some(value),
+      None => Option.None,
+    }
+  }
+
+  /// Replace value
+  pub fn replace(&mut self, value: T) -> Option {
+    let old = *self;
+    *self = Option.Some(value);
+    old
+  }
+
+  /// Take value
+  pub fn take(&mut self) -> Option {
+    let old = *self;
+    *self = Option.None;
+    old
+  }
+}
+
+pub impl Clone for Option where T: Clone {
+  pub fn clone(&self) -> Self {
+    match self {
+      Some(value) => Option.Some(value.clone()),
+      None => Option.None,
+    }
+  }
+}
+
+pub impl Default for Option {
+  pub fn default() -> Self {
+    Option()
+  }
+}
+
+pub impl Debug for Option where T: Debug {
+  pub fn debug(&self) -> string {
+    match self {
+      Some(value) => "Some(" + value.debug() + ")",
+      None => "None".to_string(),
+    }
+  }
+}
+
+pub impl Display for Option where T: Display {
+  pub fn display(&self) -> string {
+    match self {
+      Some(value) => value.display(),
+      None => "None".to_string(),
+    }
+  }
+}

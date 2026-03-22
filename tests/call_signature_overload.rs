@@ -7,8 +7,8 @@ use core_x::frontend::parser::parse_source_file_from_source_file;
 use core_x::frontend::resolver::CallSignature;
 use core_x::frontend::source::SourceDb;
 use core_x::frontend::{
-    ExpansionOptions, build_hir_local_binding_table, desugar_files,
-    expand_parsed_files, lower_to_hir,
+    build_hir_local_binding_table, desugar_files, expand_parsed_files,
+    lower_to_hir, ExpansionOptions,
 };
 
 fn parse_and_lower(
@@ -244,6 +244,46 @@ fn test_multiple_params_with_different_labels() {
     assert!(!sig2.accepts_label_at(0)); // FromName
     assert!(!sig2.accepts_label_at(1)); // None
     assert!(!sig2.accepts_label_at(2)); // FromName
+}
+
+#[test]
+fn test_init_overload_by_label_signature() {
+    let source = r#"
+        struct Foo {
+          init(label x: I32) {}
+          init(x: I32) {}
+        }
+    "#;
+
+    let (hir_file, hir_module) = parse_and_lower(source);
+    // Get the top-level struct item
+    let struct_item = &hir_file.root_items[0];
+    let struct_item_ref = hir_module
+        .items
+        .get(struct_item)
+        .expect("struct item should exist");
+    let hir_struct = if let core_x::frontend::hir::HirItemKind::Struct(s) =
+        &struct_item_ref.kind
+    {
+        s
+    } else {
+        panic!("expected struct item");
+    };
+    let inits = &hir_struct.functions;
+    assert!(inits.len() >= 2, "expected at least two init overloads");
+
+    let sig1 =
+        core_x::frontend::resolver::CallSignature::from_hir_function(&inits[0]);
+    let sig2 =
+        core_x::frontend::resolver::CallSignature::from_hir_function(&inits[1]);
+    // Overloads should differ by their external labels
+    assert_ne!(
+        sig1, sig2,
+        "Init overloads should have different signatures due to labels"
+    );
+    assert_eq!(sig1.param_count(), 1);
+    assert_eq!(sig2.param_count(), 1);
+    assert_ne!(sig1.external_labels(), sig2.external_labels());
 }
 
 #[test]

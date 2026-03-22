@@ -1,0 +1,42 @@
+/// Derive macros using reflect clause
+/// Demonstrates: reflect macros, AST manipulation, code generation
+
+pub scope derive;
+
+/// Debug derive macro
+macro derive_debug {
+  reflect(item: Item) => {
+    impl Debug for item.type_name {
+      pub fn debug(&self) -> string {
+        // Would generate debug impl
+        item.type_name
+      }
+    }
+  };
+}
+
+/// Clone derive macro
+macro derive_clone {
+  reflect(item: Item) => {
+    impl Clone for item.type_name {
+      pub fn clone(&self) -> Self {
+        // Would generate clone impl
+        match self {
+          item => item.clone(),
+        }
+      }
+    }
+  };
+}
+
+/// Default derive macro
+macro derive_default {
+  reflect(item: Item) => {
+    impl Default for item.type_name {
+      pub fn default() -> Self {
+        // Would generate default impl
+        item.type_name()
+      }
+    }
+  };
+}

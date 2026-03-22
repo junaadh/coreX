@@ -1607,15 +1607,27 @@ impl<'a> BodyResolver<'a> {
                 }
             }
             AstType::SelfType => ResolvedTypeRef::SelfType,
-            AstType::Lifetime(lifetime) => ResolvedTypeRef::Lifetime(lifetime.name.clone()),
-            AstType::Reference { lifetime, inner } => ResolvedTypeRef::Reference {
-                lifetime: lifetime.as_ref().map(|l| l.name.clone()),
-                inner: Box::new(self.resolve_type_ref(owner, scope_file_id, &inner.node)),
-            },
+            AstType::Lifetime(lifetime) => {
+                ResolvedTypeRef::Lifetime(lifetime.name.clone())
+            }
+            AstType::Reference { lifetime, inner } => {
+                ResolvedTypeRef::Reference {
+                    lifetime: lifetime.as_ref().map(|l| l.name.clone()),
+                    inner: Box::new(self.resolve_type_ref(
+                        owner,
+                        scope_file_id,
+                        &inner.node,
+                    )),
+                }
+            }
             AstType::MutableReference { lifetime, inner } => {
                 ResolvedTypeRef::MutableReference {
                     lifetime: lifetime.as_ref().map(|l| l.name.clone()),
-                    inner: Box::new(self.resolve_type_ref(owner, scope_file_id, &inner.node)),
+                    inner: Box::new(self.resolve_type_ref(
+                        owner,
+                        scope_file_id,
+                        &inner.node,
+                    )),
                 }
             }
             AstType::ConstPointer(inner) => {
@@ -1649,7 +1661,12 @@ impl<'a> BodyResolver<'a> {
                 )),
             },
             AstType::Tuple(elems) => ResolvedTypeRef::Tuple(
-                elems.iter().map(|e| self.resolve_type_ref(owner, scope_file_id, &e.node)).collect()
+                elems
+                    .iter()
+                    .map(|e| {
+                        self.resolve_type_ref(owner, scope_file_id, &e.node)
+                    })
+                    .collect(),
             ),
         }
     }

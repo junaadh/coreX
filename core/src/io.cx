@@ -1,0 +1,118 @@
+/// I/O protocols demonstrating Reader/Writer patterns
+/// Demonstrates: protocol definitions, labeled parameters, error handling
+
+pub protocol Reader {
+  fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error>;
+  fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Error>;
+  fn read_to_string(&mut self, buf: &mut string) -> Result<usize, Error>;
+}
+
+pub protocol Writer {
+  fn write_str(&mut self, s: &str) -> Result<usize, Error>;
+  fn write_char(&mut self, c: char) -> Result<usize, Error>;
+  fn flush(&mut self) -> Result<(), Error>;
+}
+
+pub struct Error;
+
+impl Error {
+  pub init new() -> Self {
+    Self;
+  }
+}
+
+pub struct Stdin;
+
+impl Stdin {
+  pub init new() -> Self {
+    Self;
+  }
+}
+
+impl Reader for Stdin {
+  pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+    0
+  }
+
+  pub fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), Error> {
+  }
+
+  pub fn read_to_string(&mut self, buf: &mut string) -> Result<usize, Error> {
+    0
+  }
+}
+
+pub struct Stdout;
+
+impl Stdout {
+  pub init new() -> Self {
+    Self;
+  }
+}
+
+impl Writer for Stdout {
+  pub fn write_str(&mut self, s: &str) -> Result<usize, Error> {
+    unsafe {
+      libc.printf(s.as_ptr());
+    }
+    s.len()
+  }
+
+  pub fn write_char(&mut self, c: char) -> Result<usize, Error> {
+    unsafe {
+      libc.putchar(c as i32);
+    }
+    1
+  }
+
+  pub fn flush(&mut self) -> Result<(), Error> {
+  }
+}
+
+pub struct Stderr;
+
+impl Stderr {
+  pub init new() -> Self {
+    Self;
+  }
+}
+
+impl Writer for Stderr {
+  pub fn write_str(&mut self, s: &str) -> Result<usize, Error> {
+    unsafe {
+      libc.printf(s.as_ptr());
+    }
+    s.len()
+  }
+
+  pub fn write_char(&mut self, c: char) -> Result<usize, Error> {
+    unsafe {
+      libc.putchar(c as i32);
+    }
+    1
+  }
+
+  pub fn flush(&mut self) -> Result<(), Error> {
+  }
+}
+
+/// Print functions (delegates to Stdout)
+pub fn print(s: &str) {
+  var stdout = Stdout();
+  stdout.write_str(s);
+}
+
+pub fn println(s: &str) {
+  print(s);
+  print("\n");
+}
+
+pub fn eprint(s: &str) {
+  var stderr = Stderr();
+  stderr.write_str(s);
+}
+
+pub fn eprintln(s: &str) {
+  eprint(s);
+  eprint("\n");
+}
