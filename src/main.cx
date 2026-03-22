@@ -1,0 +1,46 @@
+/// Outer doc for helper
+fn helper() {
+}
+
+macro pass {
+  rule(input: Expr) => {
+    input
+  };
+}
+
+/** Block doc for Point */
+struct Point {
+  /// x coordinate
+  x: i32,
+  // normal comment on field
+  y: i32,
+
+  init(x: i32, y y_inner: i32) {
+    Self { x, y: y_inner }
+  }
+
+  fn x(&self) -> i32 {
+    self.x
+  } 
+
+  fn set_x(&mut self, x new_x: i32) {
+    self.x = new_x;
+  }
+}
+
+enum Status {
+  /// ready variant
+  Ready,
+  // normal variant comment
+  Busy,
+}
+
+fn a() {
+  var point = Point::init(x: 1, y: 2);
+  let x = point.x();
+  point.set_x(x: 10);
+  let a = @pass(1);
+
+  let some_c = { a: i32, b: i32 in a + b };
+  let c = some_c(1, 2);
+}

@@ -1,4 +1,4 @@
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -143,6 +143,20 @@ fn create_macro_expansion_extern_call_fixture(name: &str) -> PathBuf {
     write_file(
         &root.join("src/main.cx"),
         "macro call_malloc {\n  rule(size: Expr) => { malloc(size) };\n}\n@call(.C)\nextern libc {\n  fn malloc(size: usize) -> *mut void;\n}\nfn main() { @call_malloc(1); }\n",
+    );
+    root
+}
+
+fn create_pipeline_regression_fixture(name: &str) -> PathBuf {
+    let root = unique_temp_dir(name);
+    write_file(&root.join("corex.toml"), "[project]\nname = \"app\"\n");
+    write_file(
+        &root.join("src/root.cx"),
+        "macro call_malloc {\n  rule(name: Expr) => { libc::name(0) };\n}\n@call(.C)\nextern libc {\n  fn malloc(size: usize) -> *mut void;\n}\nstruct Vec2 {\n  fn make(_ value: i32) -> i32 { value }\n}\nfn compute() -> i32 {\n  let v = ((Vec2::make(1)));\n  @call_malloc(malloc);\n  v\n}\n",
+    );
+    write_file(
+        &root.join("src/main.cx"),
+        "fn main() {\n  let marker = 1;\n}\n",
     );
     root
 }
@@ -505,6 +519,31 @@ fn dump_semantic_project_renders_semantic_diagnostics() {
 }
 
 #[test]
+fn dump_semantic_shows_inferred_types() {
+    let project = create_project_fixture("semantic_inferred_types");
+    write_file(
+        &project.root.join("src/main.cx"),
+        "fn main() {\n  let value = 1;\n}\n",
+    );
+
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "semantic".to_string(),
+        "--project".to_string(),
+        arg(&project.root),
+    ]);
+
+    assert!(output.status.success(), "expected semantic dump to succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("inference_summary:"));
+    assert!(stdout.contains("inferred_locals:"));
+    assert!(
+        stdout.contains("value: i32"),
+        "expected inferred local type in dump output, got:\n{stdout}"
+    );
+}
+
+#[test]
 fn dump_imports_project_does_not_render_semantic_diagnostics() {
     let project =
         create_project_fixture_with_semantic_error("imports_no_semantic_diag");
@@ -714,4 +753,286 @@ fn dump_semantic_single_file_expands_macros_before_semantic() {
         !stderr.contains("unknown macro"),
         "single-file semantic entrypoint should run expansion"
     );
+}
+
+#[test]
+fn dump_expanded_single_stage_project_succeeds() {
+    let project = create_pipeline_regression_fixture("dump_expanded_single");
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "expanded".to_string(),
+        "--project".to_string(),
+        arg(&project),
+    ]);
+
+    assert!(output.status.success(), "expected expanded dump to succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("provenance_summary:"));
+}
+
+#[test]
+fn dump_desugared_single_stage_project_succeeds() {
+    let project = create_pipeline_regression_fixture("dump_desugared_single");
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "desugared".to_string(),
+        "--project".to_string(),
+        arg(&project),
+    ]);
+
+    assert!(
+        output.status.success(),
+        "expected desugared dump to succeed"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("normalized_forms:"));
+}
+
+#[test]
+fn dump_hir_single_stage_project_succeeds() {
+    let project = create_pipeline_regression_fixture("dump_hir_single");
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "hir".to_string(),
+        "--project".to_string(),
+        arg(&project),
+    ]);
+
+    assert!(output.status.success(), "expected hir dump to succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("root_items:"));
+    assert!(stdout.contains("exprs:"));
+}
+
+#[test]
+fn dump_resolved_single_stage_project_includes_associated_resolution() {
+    let project = create_pipeline_regression_fixture("dump_resolved_single");
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "resolved".to_string(),
+        "--project".to_string(),
+        arg(&project),
+        "--format".to_string(),
+        "json".to_string(),
+    ]);
+
+    assert!(output.status.success(), "expected resolved dump to succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout).expect("valid json");
+    let files = value["files"].as_array().expect("files array");
+
+    let has_associated_member = files.iter().any(|file| {
+        file["resolved"]["associated_member_resolutions"]
+            .as_array()
+            .is_some_and(|entries| !entries.is_empty())
+    });
+    assert!(
+        has_associated_member,
+        "expected at least one associated/member resolution entry"
+    );
+}
+
+#[test]
+fn dump_typed_single_stage_includes_inferred_locals_and_expr_types() {
+    let project = create_project_fixture("dump_typed_single");
+    write_file(
+        &project.root.join("src/main.cx"),
+        "fn main() {\n  let value = 1;\n}\n",
+    );
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "typed".to_string(),
+        "--project".to_string(),
+        arg(&project.root),
+        "--format".to_string(),
+        "json".to_string(),
+    ]);
+
+    assert!(output.status.success(), "expected typed dump to succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout).expect("valid json");
+    let files = value["files"].as_array().expect("files array");
+
+    let has_inferred_local = files.iter().any(|file| {
+        file["typed"]["inferred_local_types"]
+            .as_array()
+            .is_some_and(|locals| !locals.is_empty())
+    });
+    let has_inferred_expr = files.iter().any(|file| {
+        file["typed"]["inferred_expr_types"]
+            .as_array()
+            .is_some_and(|exprs| !exprs.is_empty())
+    });
+
+    assert!(
+        has_inferred_local,
+        "expected inferred local types in typed dump"
+    );
+    assert!(
+        has_inferred_expr,
+        "expected inferred expression types in typed dump"
+    );
+}
+
+#[test]
+fn dump_multi_stage_selected_stages_text_groups_by_file() {
+    let project = create_pipeline_regression_fixture("dump_multi_stage_text");
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "--stages".to_string(),
+        "expanded,desugared,hir".to_string(),
+        "--project".to_string(),
+        arg(&project),
+    ]);
+
+    assert!(
+        output.status.success(),
+        "expected multi-stage dump to succeed"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("[expanded]"));
+    assert!(stdout.contains("[desugared]"));
+    assert!(stdout.contains("[hir]"));
+}
+
+#[test]
+fn dump_pipeline_text_includes_all_stage_sections_in_order() {
+    let project = create_pipeline_regression_fixture("dump_pipeline_text");
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "pipeline".to_string(),
+        "--project".to_string(),
+        arg(&project),
+    ]);
+
+    assert!(output.status.success(), "expected pipeline dump to succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let parsed = stdout.find("[parsed]").expect("parsed section");
+    let expanded = stdout.find("[expanded]").expect("expanded section");
+    let desugared = stdout.find("[desugared]").expect("desugared section");
+    let hir = stdout.find("[hir]").expect("hir section");
+    let resolved = stdout.find("[resolved]").expect("resolved section");
+    let typed = stdout.find("[typed]").expect("typed section");
+
+    assert!(parsed < expanded);
+    assert!(expanded < desugared);
+    assert!(desugared < hir);
+    assert!(hir < resolved);
+    assert!(resolved < typed);
+}
+
+#[test]
+fn dump_pipeline_json_contains_nested_stage_objects() {
+    let project = create_pipeline_regression_fixture("dump_pipeline_json");
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "pipeline".to_string(),
+        "--project".to_string(),
+        arg(&project),
+        "--format".to_string(),
+        "json".to_string(),
+    ]);
+
+    assert!(
+        output.status.success(),
+        "expected pipeline json dump to succeed"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout).expect("valid json");
+
+    assert_eq!(value["kind"].as_str(), Some("pipeline"));
+    let files = value["files"].as_array().expect("files array");
+    assert!(!files.is_empty());
+    let first = &files[0];
+    assert!(first.get("parsed").is_some());
+    assert!(first.get("expanded").is_some());
+    assert!(first.get("desugared").is_some());
+    assert!(first.get("hir").is_some());
+    assert!(first.get("resolved").is_some());
+    assert!(first.get("typed").is_some());
+}
+
+#[test]
+fn dump_multi_stage_json_uses_shared_pipeline_shape() {
+    let project = create_pipeline_regression_fixture("dump_multi_stage_json");
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "--stages".to_string(),
+        "parsed,typed".to_string(),
+        "--project".to_string(),
+        arg(&project),
+        "--format".to_string(),
+        "json".to_string(),
+    ]);
+
+    assert!(
+        output.status.success(),
+        "expected multi-stage json dump to succeed"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout).expect("valid json");
+    assert_eq!(value["kind"].as_str(), Some("stages"));
+    let stages = value["stages"].as_array().expect("stages array");
+    assert_eq!(stages, &vec![json!("parsed"), json!("typed")]);
+
+    let files = value["files"].as_array().expect("files array");
+    assert!(!files.is_empty());
+    let first = &files[0];
+    assert!(first.get("parsed").is_some());
+    assert!(first.get("typed").is_some());
+}
+
+#[test]
+fn pipeline_regression_fixture_shows_cross_stage_differences() {
+    let project =
+        create_pipeline_regression_fixture("dump_pipeline_regression");
+    let output = run_cxc(&[
+        "dump".to_string(),
+        "pipeline".to_string(),
+        "--project".to_string(),
+        arg(&project),
+        "--format".to_string(),
+        "json".to_string(),
+    ]);
+
+    assert!(output.status.success(), "expected pipeline dump to succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout).expect("valid json");
+
+    let files = value["files"].as_array().expect("files array");
+    let root_file = files
+        .iter()
+        .find(|file| file["path"].as_str() == Some("src/root.cx"))
+        .expect("root file in pipeline dump");
+
+    let provenance_entries = root_file["expanded"]["provenance"]["entries"]
+        .as_u64()
+        .unwrap_or(0);
+    let grouped_after_desugar =
+        root_file["desugared"]["normalized_forms"]["grouped_wrapper_nodes"]
+            .as_u64()
+            .unwrap_or(u64::MAX);
+    let associated_member_count =
+        root_file["resolved"]["associated_member_resolutions_count"]
+            .as_u64()
+            .unwrap_or(0);
+    let typed_local_count = files
+        .iter()
+        .map(|file| file["typed"]["local_types_count"].as_u64().unwrap_or(0))
+        .sum::<u64>();
+
+    assert!(
+        provenance_entries > 0,
+        "expected expansion provenance to be present"
+    );
+    assert_eq!(
+        grouped_after_desugar, 0,
+        "expected grouped wrappers to be normalized by desugaring"
+    );
+    assert!(
+        associated_member_count > 0,
+        "expected resolved associated member entries"
+    );
+    assert!(typed_local_count > 0, "expected inferred local types");
 }

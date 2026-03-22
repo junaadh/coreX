@@ -14,12 +14,12 @@ use crate::frontend::ast::{
     AccessorRequirement, ArrayElement, AssignOp, AssociatedTypeDecl, BinaryOp,
     BindingKind, Block, CallArg, Clause, ClauseList, EnumCaseParam, EnumDecl,
     EnumMember, Expr, ExternBlock, ExternFunctionDecl, ExternMember, ForStmt,
-    FunctionDecl, GuardStmt, IfStmt, IfStmtElse, ImplDecl, ImplMember,
-    InitDecl, InitKind, InitOriginKind, Item, LetStmt, ParamDecl, ParamLabel,
-    Pattern, ProtocolDecl, ProtocolFunctionMember, ProtocolInitMember,
-    ProtocolMember, ProtocolPropertyRequirement, Spanned, Stmt, StructDecl,
-    StructMember, StructPatternField, Type, TypeExpr, UnaryOp, UseItem,
-    UsePath, UseTree, VarStmt, WhileStmt,
+    FunctionDecl, GenericParam, GuardStmt, IfStmt, IfStmtElse, ImplDecl,
+    ImplMember, InitDecl, InitKind, InitOriginKind, Item, LetStmt, Lifetime,
+    ParamDecl, ParamLabel, Pattern, ProtocolDecl, ProtocolFunctionMember,
+    ProtocolInitMember, ProtocolMember, ProtocolPropertyRequirement, Spanned,
+    Stmt, StructDecl, StructMember, StructPatternField, Type, TypeExpr,
+    UnaryOp, UseItem, UsePath, UseTree, VarStmt, WhileStmt,
 };
 use crate::frontend::desugar::DesugaredFile;
 use crate::frontend::expansion::Provenance;
@@ -27,6 +27,14 @@ use crate::frontend::expansion::Provenance;
 struct LoweringCtx<'a> {
     desugared: &'a DesugaredFile,
     module: HirModule,
+}
+
+fn generic_param_name(param: &GenericParam) -> String {
+    match param {
+        GenericParam::Type { name } | GenericParam::Lifetime { name } => {
+            name.clone()
+        }
+    }
 }
 
 /// Lowers one desugared frontend file into HIR containers.
@@ -126,7 +134,7 @@ impl<'a> LoweringCtx<'a> {
             generic_params: struct_decl
                 .generic_params
                 .iter()
-                .map(|param| param.node.name.clone())
+                .map(|param| generic_param_name(&param.node))
                 .collect(),
             fields,
             functions,
@@ -177,7 +185,7 @@ impl<'a> LoweringCtx<'a> {
             generic_params: enum_decl
                 .generic_params
                 .iter()
-                .map(|param| param.node.name.clone())
+                .map(|param| generic_param_name(&param.node))
                 .collect(),
             variants,
             functions,
@@ -223,7 +231,7 @@ impl<'a> LoweringCtx<'a> {
             generic_params: protocol_decl
                 .generic_params
                 .iter()
-                .map(|param| param.node.name.clone())
+                .map(|param| generic_param_name(&param.node))
                 .collect(),
             inherited_types: protocol_decl
                 .inheritance
@@ -255,6 +263,10 @@ impl<'a> LoweringCtx<'a> {
                         &function_decl.node,
                         function_decl.span,
                     ))
+                }
+                ImplMember::AssociatedType(_assoc) => {
+                    // Associated type definitions in impl Protocol for Type
+                    // Skip for now - will be used during protocol conformance checking
                 }
             }
         }
@@ -464,7 +476,7 @@ impl<'a> LoweringCtx<'a> {
         HirFunctionSignature {
             generic_params: generic_params
                 .iter()
-                .map(|param| param.node.name.clone())
+                .map(|param| generic_param_name(&param.node))
                 .collect(),
             params: params
                 .iter()
@@ -753,6 +765,9 @@ impl<'a> LoweringCtx<'a> {
                 name: member.clone(),
             },
             Expr::Grouped(inner) => return self.lower_expr(inner),
+            Expr::Tuple(elems) => HirExprKind::Tuple {
+                elements: elems.iter().map(|e| self.lower_expr(e)).collect(),
+            },
             Expr::ArrayLiteral(elements) => HirExprKind::Array {
                 elements: elements
                     .iter()
@@ -1062,6 +1077,9 @@ impl<'a> LoweringCtx<'a> {
             Type::Named { segments } => HirTypeKind::Path(HirPath {
                 segments: segments.clone(),
             }),
+            Type::Lifetime(lifetime) => {
+                HirTypeKind::Lifetime(lifetime.name.clone())
+            }
             Type::GenericApplication { base, args } => {
                 HirTypeKind::GenericApplication {
                     base: self.lower_type(base),
@@ -1069,14 +1087,18 @@ impl<'a> LoweringCtx<'a> {
                 }
             }
             Type::SelfType => HirTypeKind::SelfType,
-            Type::Reference(inner) => HirTypeKind::Reference {
+            Type::Reference { lifetime, inner } => HirTypeKind::Reference {
                 mutable: false,
+                lifetime: lifetime.as_ref().map(|l| l.name.clone()),
                 inner: self.lower_type(inner),
             },
-            Type::MutableReference(inner) => HirTypeKind::Reference {
-                mutable: true,
-                inner: self.lower_type(inner),
-            },
+            Type::MutableReference { lifetime, inner } => {
+                HirTypeKind::Reference {
+                    mutable: true,
+                    lifetime: lifetime.as_ref().map(|l| l.name.clone()),
+                    inner: self.lower_type(inner),
+                }
+            }
             Type::ConstPointer(inner) => HirTypeKind::Pointer {
                 mutable: false,
                 inner: self.lower_type(inner),
@@ -1104,7 +1126,9 @@ impl<'a> LoweringCtx<'a> {
                 ok: self.lower_type(ok),
                 err: self.lower_type(err),
             },
-            Type::Grouped(inner) => return self.lower_type(inner),
+            Type::Tuple(elems) => HirTypeKind::Tuple(
+                elems.iter().map(|e| self.lower_type(e)).collect(),
+            ),
         };
 
         self.module

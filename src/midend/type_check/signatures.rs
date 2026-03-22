@@ -1,12 +1,12 @@
-use crate::frontend::semantic::hir_input::SemanticHirInput;
 use super::{BuiltinType, Mutability, NamedTypeKind, Type};
 use crate::frontend::hir::{
-    HirFunction, HirFunctionSignature, HirItemKind, HirModule,
+    HirFunction, HirFunctionSignature, HirItemKind, HirModule, HirParamLabel,
     HirProtocolFunction, HirTypeId, HirTypeKind,
 };
 use crate::frontend::resolver::{
     DeclarationOwner, GlobalItemTable, ItemId, ItemKind,
 };
+use crate::frontend::semantic::hir_input::SemanticHirInput;
 use crate::frontend::source::FileId;
 use std::collections::BTreeMap;
 
@@ -40,7 +40,26 @@ pub struct SignatureTypingIssue {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypedParamLabel {
+    None,
+    Explicit(String),
+    FromName,
+}
+
+impl TypedParamLabel {
+    #[must_use]
+    fn from_hir_param_label(label: &HirParamLabel) -> Self {
+        match label {
+            HirParamLabel::None => Self::None,
+            HirParamLabel::Explicit(label) => Self::Explicit(label.clone()),
+            HirParamLabel::FromName => Self::FromName,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedFunctionSignature {
+    pub param_labels: Vec<TypedParamLabel>,
     pub param_types: Vec<Type>,
     pub return_type: Option<Type>,
 }
@@ -189,6 +208,7 @@ struct TypeContext {
     owner: DeclarationOwner,
     containing_scope_file_id: Option<FileId>,
     file_id: FileId,
+    impl_self_type: Option<Type>,
 }
 
 impl<'a> SignatureTyper<'a> {
@@ -222,6 +242,7 @@ impl<'a> SignatureTyper<'a> {
                 owner: DeclarationOwner::Item(global_item.id),
                 containing_scope_file_id,
                 file_id: global_item.containing_scope_file_id,
+                impl_self_type: None,
             };
 
             let Some(item_ref) =
@@ -354,6 +375,7 @@ impl<'a> SignatureTyper<'a> {
                     owner: owner.clone(),
                     containing_scope_file_id: Some(hir_file.file_id),
                     file_id: hir_file.file_id,
+                    impl_self_type: None,
                 };
 
                 let typed_impl =
@@ -475,15 +497,20 @@ impl<'a> SignatureTyper<'a> {
         module: &HirModule,
         declaration: &crate::frontend::hir::HirImpl,
     ) -> TypedImplSignature {
-        let (method_signatures, initializer_signatures) =
-            self.type_hir_functions(context, module, &declaration.functions);
+        let target = self.type_ref(context, module, declaration.target);
+        let impl_context = TypeContext {
+            impl_self_type: Some(target.clone()),
+            ..context.clone()
+        };
+        let (method_signatures, initializer_signatures) = self
+            .type_hir_functions(&impl_context, module, &declaration.functions);
 
         TypedImplSignature {
             owner: context.owner.clone(),
             containing_scope_file_id: context
                 .containing_scope_file_id
                 .unwrap_or(context.file_id),
-            target: self.type_ref(context, module, declaration.target),
+            target,
             conformance: declaration
                 .conformance
                 .map(|ty| self.type_ref(context, module, ty)),
@@ -561,6 +588,13 @@ impl<'a> SignatureTyper<'a> {
         signature: &HirFunctionSignature,
     ) -> TypedFunctionSignature {
         TypedFunctionSignature {
+            param_labels: signature
+                .params
+                .iter()
+                .map(|param| {
+                    TypedParamLabel::from_hir_param_label(&param.external_label)
+                })
+                .collect(),
             param_types: signature
                 .params
                 .iter()
@@ -584,6 +618,16 @@ impl<'a> SignatureTyper<'a> {
         };
 
         match &ty.kind {
+            HirTypeKind::Lifetime(_name) => {
+                self.issues.push(SignatureTypingIssue {
+                    owner: context.owner.clone(),
+                    containing_scope_file_id: context.containing_scope_file_id,
+                    kind: SignatureTypingIssueKind::UnsupportedTypeSurface {
+                        description: "explicit lifetime",
+                    },
+                });
+                Type::error()
+            }
             HirTypeKind::Path(path) => {
                 if let Some(builtin) =
                     Self::builtin_from_segments(&path.segments)
@@ -613,7 +657,11 @@ impl<'a> SignatureTyper<'a> {
                     }
                 }
             }
-            HirTypeKind::Reference { mutable, inner }
+            HirTypeKind::Reference {
+                mutable,
+                lifetime: _,
+                inner,
+            }
             | HirTypeKind::Pointer { mutable, inner } => Type::pointer(
                 self.type_ref(context, module, *inner),
                 if *mutable {
@@ -642,6 +690,13 @@ impl<'a> SignatureTyper<'a> {
                 self.push_unsupported_issue(context, "result type");
                 Type::error()
             }
+            HirTypeKind::Tuple(elems) => {
+                for elem in elems {
+                    self.type_ref(context, module, *elem);
+                }
+                self.push_unsupported_issue(context, "tuple type");
+                Type::error()
+            }
         }
     }
 
@@ -650,17 +705,12 @@ impl<'a> SignatureTyper<'a> {
     /// For struct/enum/protocol declarations, `Self` resolves to the type itself.
     /// For impl blocks, `Self` resolves to the impl's target type.
     /// For free functions, `Self` is invalid and an error is reported.
-    fn resolve_self_type(
-        &mut self,
-        context: &TypeContext,
-    ) -> Type {
+    fn resolve_self_type(&mut self, context: &TypeContext) -> Type {
         match &context.owner {
             crate::frontend::resolver::DeclarationOwner::Item(item_id) => {
                 // Look up the item to determine its kind
-                let item_kind = self
-                    .item_table
-                    .get(*item_id)
-                    .map(|item| item.kind);
+                let item_kind =
+                    self.item_table.get(*item_id).map(|item| item.kind);
 
                 match item_kind {
                     Some(crate::frontend::resolver::ItemKind::Struct) => {
@@ -699,18 +749,18 @@ impl<'a> SignatureTyper<'a> {
                 }
             }
             crate::frontend::resolver::DeclarationOwner::Impl { .. } => {
-                // For impl blocks, we need to resolve the target type
-                // This requires looking up the impl declaration to find its target
-                // For now, we'll report this as unsupported and return error
-                // TODO: Implement impl block target type resolution
-                self.issues.push(SignatureTypingIssue {
-                    owner: context.owner.clone(),
-                    containing_scope_file_id: context.containing_scope_file_id,
-                    kind: SignatureTypingIssueKind::UnsupportedTypeSurface {
-                        description: "Self type in impl block (not yet implemented)",
-                    },
-                });
-                Type::error()
+                if let Some(self_type) = &context.impl_self_type {
+                    self_type.clone()
+                } else {
+                    self.issues.push(SignatureTypingIssue {
+                        owner: context.owner.clone(),
+                        containing_scope_file_id: context.containing_scope_file_id,
+                        kind: SignatureTypingIssueKind::UnsupportedTypeSurface {
+                            description: "Self type in impl block without resolved target",
+                        },
+                    });
+                    Type::error()
+                }
             }
         }
     }

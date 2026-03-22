@@ -40,4 +40,8 @@ fn a() {
   let x = point.x();
   point.set_x(x: 10);
   let a = @pass(1);
+
+  // FIXME: declaration supported calling not yet support. type cehck resolve to error
+  // let some_c = { a: i32, b: i32 in a + b };
+  // let c = some_c(1, 2);
 }

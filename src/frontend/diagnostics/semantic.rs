@@ -10,8 +10,11 @@ use crate::frontend::semantic::{
     StatementTypeTable, StmtCheckIssue, StmtCheckIssueKind, TypedItemTable,
     TypedItemTableIssue, TypedItemTableIssueKind,
 };
-use crate::midend::type_check::SignatureTypingIssue;
 use crate::frontend::source::{FileId, SourceDb};
+use crate::midend::type_check::SignatureTypingIssue;
+use crate::midend::type_infer::{
+    BodyInferIssue, BodyInferIssueKind, InferenceIssueKind,
+};
 
 /// Converts full semantic checker outputs into structured diagnostics.
 #[must_use]
@@ -68,6 +71,37 @@ pub fn diagnostics_from_semantic_checks(
     diagnostics
 }
 
+/// Converts inference checker outputs into structured diagnostics.
+#[must_use]
+pub fn diagnostics_from_inference_checks(
+    db: &SourceDb,
+    resolved_bodies: &ResolvedBodyTable,
+    infer_issues: &[BodyInferIssue],
+) -> DiagnosticsBag {
+    let mut unique = Vec::new();
+    for diagnostic in infer_issues
+        .iter()
+        .filter(|issue| {
+            matches!(
+                issue.kind,
+                BodyInferIssueKind::RequiresExplicitLocalTypeAnnotation { .. }
+                    | BodyInferIssueKind::NoMatchingCallCandidate { .. }
+                    | BodyInferIssueKind::AmbiguousCallCandidate { .. }
+                    | BodyInferIssueKind::CoreInferenceIssue { .. }
+            )
+        })
+        .map(|issue| {
+            diagnostic_from_body_infer_issue(db, resolved_bodies, issue)
+        })
+    {
+        push_unique_diagnostic(&mut unique, diagnostic);
+    }
+
+    let mut diagnostics = DiagnosticsBag::new();
+    diagnostics.extend(unique);
+    diagnostics
+}
+
 fn push_unique_diagnostic(
     diagnostics: &mut Vec<Diagnostic>,
     diagnostic: Diagnostic,
@@ -76,6 +110,171 @@ fn push_unique_diagnostic(
         return;
     }
     diagnostics.push(diagnostic);
+}
+
+/// Converts body inference failures into structured diagnostics.
+#[must_use]
+pub fn diagnostic_from_body_infer_issue(
+    db: &SourceDb,
+    resolved_bodies: &ResolvedBodyTable,
+    issue: &BodyInferIssue,
+) -> Diagnostic {
+    use BodyInferIssueKind as Kind;
+    match &issue.kind {
+        Kind::MissingBodyAst | Kind::MissingBodyEnvironment => {
+            with_owner_label(
+                db,
+                resolved_bodies,
+                &issue.owner,
+                issue.body_index,
+                issue.span,
+                Diagnostic::error("semantic analysis failed"),
+                "missing body inference prerequisites".to_string(),
+            )
+        }
+        Kind::MissingResolvedPath { expr_id } => with_owner_label(
+            db,
+            resolved_bodies,
+            &issue.owner,
+            issue.body_index,
+            issue.span,
+            Diagnostic::error("unresolved semantic body reference"),
+            format!(
+                "cannot resolve expression #{} in this body",
+                expr_id.raw()
+            ),
+        ),
+        Kind::MissingElseBranch => with_owner_label(
+            db,
+            resolved_bodies,
+            &issue.owner,
+            issue.body_index,
+            issue.span,
+            Diagnostic::error("if expression missing else branch"),
+            "if expression requires an else branch".to_string(),
+        ),
+        Kind::InvalidCallTarget => with_owner_label(
+            db,
+            resolved_bodies,
+            &issue.owner,
+            issue.body_index,
+            issue.span,
+            Diagnostic::error("invalid call target"),
+            "callee does not resolve to a callable function".to_string(),
+        ),
+        Kind::NoMatchingCallCandidate { candidate_count } => with_owner_label(
+            db,
+            resolved_bodies,
+            &issue.owner,
+            issue.body_index,
+            issue.span,
+            Diagnostic::error("no matching call candidate"),
+            format!(
+                "no callable candidate matches this call ({} candidate(s) considered)",
+                candidate_count
+            ),
+        ),
+        Kind::AmbiguousCallCandidate { candidate_count } => with_owner_label(
+            db,
+            resolved_bodies,
+            &issue.owner,
+            issue.body_index,
+            issue.span,
+            Diagnostic::error("ambiguous call candidate"),
+            format!(
+                "multiple callable candidates match this call ({} matches)",
+                candidate_count
+            ),
+        ),
+        Kind::MissingLocalBinding { pat_id } => with_owner_label(
+            db,
+            resolved_bodies,
+            &issue.owner,
+            issue.body_index,
+            issue.span,
+            Diagnostic::error("unresolved semantic body reference"),
+            format!(
+                "pattern #{} does not introduce a resolvable local binding",
+                pat_id.raw()
+            ),
+        ),
+        Kind::RequiresExplicitLocalTypeAnnotation { .. } => with_owner_label(
+            db,
+            resolved_bodies,
+            &issue.owner,
+            issue.body_index,
+            issue.span,
+            Diagnostic::error("type annotation required"),
+            "cannot infer local type; add an explicit annotation".to_string(),
+        ),
+        Kind::CoreInferenceIssue { kind } => {
+            let (title, detail) = match kind {
+                InferenceIssueKind::TypeMismatch { lhs, rhs } => (
+                    "type mismatch",
+                    format!("cannot unify `{:?}` with `{:?}`", lhs, rhs),
+                ),
+                InferenceIssueKind::OccursCheckFailed { var, ty } => (
+                    "type inference cycle",
+                    format!(
+                        "inference variable #{} occurs within `{ty:?}`",
+                        var.raw()
+                    ),
+                ),
+            };
+            with_owner_label(
+                db,
+                resolved_bodies,
+                &issue.owner,
+                issue.body_index,
+                issue.span,
+                Diagnostic::error(title),
+                detail,
+            )
+        }
+        Kind::AmbiguousEnumCase {
+            case_name,
+            candidates,
+        } => {
+            let candidate_notes = candidates
+                .iter()
+                .map(|(_, enum_name)| format!("{}::{}", enum_name, case_name));
+            with_owner_label(
+                db,
+                resolved_bodies,
+                &issue.owner,
+                issue.body_index,
+                issue.span,
+                Diagnostic::error("ambiguous enum case")
+                    .with_notes(candidate_notes),
+                format!(
+                    "multiple enums in scope have a case named `{}`",
+                    case_name
+                ),
+            )
+        }
+        Kind::MissingEnumCase {
+            case_name,
+            available_enums,
+        } => {
+            let diag = with_owner_label(
+                db,
+                resolved_bodies,
+                &issue.owner,
+                issue.body_index,
+                issue.span,
+                Diagnostic::error("missing enum case"),
+                format!("no enum in scope has a case named `{}`", case_name),
+            );
+            if !available_enums.is_empty() {
+                diag.with_note(format!(
+                    "available enums: {}",
+                    available_enums.join(", ")
+                ))
+            } else {
+                diag
+            }
+        }
+    }
 }
 
 /// Converts expression type-checking failures into structured diagnostics.
@@ -605,6 +804,14 @@ fn diagnostic_from_body_env_issue(
                 Some(issue.containing_scope_file_id),
                 Diagnostic::error("unsupported type surface"),
                 (*description).to_string(),
+            )
+        }
+        Kind::UnsupportedLocalType { description, .. } => {
+            with_optional_file_label(
+                db,
+                Some(issue.containing_scope_file_id),
+                Diagnostic::error("unsupported type"),
+                description.clone(),
             )
         }
     }

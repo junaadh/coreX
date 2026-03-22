@@ -4,8 +4,8 @@
 //! source text before semantic analysis, including lexing and later parser/AST
 //! layers.
 
-pub mod ast;
 pub mod analysis;
+pub mod ast;
 pub mod context;
 pub mod desugar;
 pub mod diagnostics;
@@ -30,7 +30,7 @@ pub use diagnostics::{
     DiagnosticSeverity, DiagnosticsBag, FileSpan,
     diagnostic_from_file_parse_error, diagnostic_from_import_resolve_error,
     diagnostic_from_parse_error, diagnostic_from_resolve_error,
-    diagnostics_from_semantic_checks,
+    diagnostics_from_inference_checks, diagnostics_from_semantic_checks,
 };
 pub use expansion::{
     ExpandedFile, ExpansionOptions, MacroBindingSource, MacroClause,
@@ -90,15 +90,14 @@ pub use semantic::{
     BodyControlFlowId, BodyControlFlowResult, BodyEnvIssue, BodyEnvIssueKind,
     BodyLocalBindingInfo, BodyTypeEnvironment, BodyTypeEnvironmentTable,
     BuiltinType, ControlFlowIssue, ControlFlowIssueKind, ControlFlowTable,
-    DefinitionLocation, DefinitionTarget, ExprCheckIssue,
-    ExprCheckIssueKind, ExpressionTypeTable, ExternalDefinitionLocation,
-    ExternalSemanticLookup, Mutability, NamedTypeKind,
-    ResolvedHirSemanticInput, SemanticAnalysis, SemanticAnalysisIssues,
-    SemanticCompletionCandidate, SemanticCompletionKind,
-    SemanticDefinitionLookup, SemanticHirInput, SignatureTypingIssue,
-    SignatureTypingIssueKind, StatementKind, StatementTypeEntry,
-    StatementTypeTable, StmtCheckIssue, StmtCheckIssueKind, Type,
-    TypedBody, TypedBodyId, TypedBodyIssueKind, TypedBodyIssueMarker,
+    DefinitionLocation, DefinitionTarget, ExprCheckIssue, ExprCheckIssueKind,
+    ExpressionTypeTable, ExternalDefinitionLocation, ExternalSemanticLookup,
+    Mutability, NamedTypeKind, ResolvedHirSemanticInput, SemanticAnalysis,
+    SemanticAnalysisIssues, SemanticCompletionCandidate,
+    SemanticCompletionKind, SemanticDefinitionLookup, SemanticHirInput,
+    SignatureTypingIssue, SignatureTypingIssueKind, StatementKind,
+    StatementTypeEntry, StatementTypeTable, StmtCheckIssue, StmtCheckIssueKind,
+    Type, TypedBody, TypedBodyId, TypedBodyIssueKind, TypedBodyIssueMarker,
     TypedBodyTable, TypedBodyTableIssue, TypedBodyTableIssueKind,
     TypedEnumCaseSignature, TypedEnumSignatureData, TypedFunctionSignature,
     TypedImplAttachment, TypedImplSignature, TypedItemData, TypedItemKind,
@@ -110,13 +109,17 @@ pub use semantic::{
     build_typed_body_table, build_typed_item_table, check_control_flow,
     check_control_flow_with_tables, check_expression_types,
     check_expression_types_with_external_lookup, check_statements,
-    check_statements_with_expression_types,
-    collect_item_definition_locations, completion_candidates_for_file,
-    local_binding_type, lookup_definition_target, resolve_hir_semantic_input,
+    check_statements_with_expression_types, collect_item_definition_locations,
+    completion_candidates_for_file, local_binding_type,
+    lookup_definition_target, resolve_hir_semantic_input,
     type_declaration_signatures,
 };
 
 // Re-export from midend
 pub use crate::midend::type_check::{
-    BodyExprId, BodyStmtId, TypedAssociatedTypeBounds, TypedStructField,
+    BodyExprId, BodyStmtId, TypedAssociatedTypeBounds, TypedParamLabel,
+    TypedStructField,
+};
+pub use crate::midend::type_infer::{
+    BodyInferIssue, BodyInferIssueKind, BodyInferenceTable, InferredCallTarget,
 };

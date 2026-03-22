@@ -35,6 +35,12 @@ Supported dump kinds:
 - `tokens`
 - `ast`
 - `parsed`
+- `expanded`
+- `desugared`
+- `hir`
+- `resolved`
+- `typed` / `inferred`
+- `pipeline`
 - `scopes`
 - `imports`
 - `semantic`
@@ -43,6 +49,7 @@ Options:
 
 - `--format text` (default)
 - `--format json`
+- `--stages <comma-separated-stages>` (for combined canonical stage dumps)
 
 Single-file examples:
 
@@ -50,12 +57,17 @@ Single-file examples:
 cargo run --bin cxc -- dump tokens examples/ffi.cx
 cargo run --bin cxc -- dump ast examples/ffi.cx --format json
 cargo run --bin cxc -- dump parsed examples/ffi.cx
+cargo run --bin cxc -- dump expanded examples/ffi.cx
 ```
 
 Project examples:
 
 ```bash
 cargo run --bin cxc -- dump ast --project .
+cargo run --bin cxc -- dump hir --project .
+cargo run --bin cxc -- dump typed --project .
+cargo run --bin cxc -- dump --stages expanded,desugared,hir --project .
+cargo run --bin cxc -- dump pipeline --project .
 cargo run --bin cxc -- dump scopes --project .
 cargo run --bin cxc -- dump imports --project .
 cargo run --bin cxc -- dump semantic --project .

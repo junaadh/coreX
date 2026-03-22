@@ -54,4 +54,4 @@ pub use stmt::{
     BindingClause, Block, Clause, ClauseList, ForStmt, GuardStmt, IfStmt,
     IfStmtElse, LetStmt, Stmt, VarStmt, WhileStmt,
 };
-pub use ty::Type;
+pub use ty::{Lifetime, Type};

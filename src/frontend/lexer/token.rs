@@ -206,6 +206,8 @@ pub enum TokenKind {
     Ident,
     /// `$0`, `$1`, ... shorthand closure parameter token.
     ClosureShorthandParam,
+    /// Lifetime name like `'a`, `'static`.
+    Lifetime,
 
     // Literals / interpolation segments
     /// Integer literal with source-preserving spelling (base/separators/suffix).

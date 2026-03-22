@@ -491,18 +491,36 @@ pub(super) fn desugar_expr(expr: &Spanned<Expr>) -> Spanned<Expr> {
             Expr::ShorthandMember { name: name.clone() },
             expr.span,
         ),
+        Expr::Tuple(elems) => {
+            let desugared: Vec<_> = elems.iter().map(desugar_expr).collect();
+            if desugared.len() == 1 {
+                Spanned::new(desugared[0].node.clone(), desugared[0].span)
+            } else {
+                Spanned::new(Expr::Tuple(desugared), expr.span)
+            }
+        }
     }
 }
 
 pub(super) fn desugar_ty(ty: &Spanned<Type>) -> Spanned<Type> {
     match &ty.node {
-        Type::Grouped(inner) => desugar_ty(inner),
+        Type::Tuple(elems) => {
+            let desugared: Vec<_> = elems.iter().map(desugar_ty).collect();
+            if desugared.len() == 1 {
+                Spanned::new(desugared[0].node.clone(), desugared[0].span)
+            } else {
+                Spanned::new(Type::Tuple(desugared), ty.span)
+            }
+        }
         Type::Named { segments } => Spanned::new(
             Type::Named {
                 segments: segments.clone(),
             },
             ty.span,
         ),
+        Type::Lifetime(lifetime) => {
+            Spanned::new(Type::Lifetime(lifetime.clone()), ty.span)
+        }
         Type::GenericApplication { base, args } => Spanned::new(
             Type::GenericApplication {
                 base: Box::new(desugar_ty(base)),
@@ -511,11 +529,18 @@ pub(super) fn desugar_ty(ty: &Spanned<Type>) -> Spanned<Type> {
             ty.span,
         ),
         Type::SelfType => Spanned::new(Type::SelfType, ty.span),
-        Type::Reference(inner) => {
-            Spanned::new(Type::Reference(Box::new(desugar_ty(inner))), ty.span)
-        }
-        Type::MutableReference(inner) => Spanned::new(
-            Type::MutableReference(Box::new(desugar_ty(inner))),
+        Type::Reference { lifetime, inner } => Spanned::new(
+            Type::Reference {
+                lifetime: lifetime.clone(),
+                inner: Box::new(desugar_ty(inner)),
+            },
+            ty.span,
+        ),
+        Type::MutableReference { lifetime, inner } => Spanned::new(
+            Type::MutableReference {
+                lifetime: lifetime.clone(),
+                inner: Box::new(desugar_ty(inner)),
+            },
             ty.span,
         ),
         Type::ConstPointer(inner) => Spanned::new(
@@ -822,6 +847,7 @@ fn desugar_impl_decl(impl_decl: &ImplDecl) -> ImplDecl {
         docs: impl_decl.docs.clone(),
         attributes: impl_decl.attributes.clone(),
         modifiers: impl_decl.modifiers.clone(),
+        lifetime_params: impl_decl.lifetime_params.clone(),
         target: desugar_ty(&impl_decl.target),
         conformance: impl_decl.conformance.as_ref().map(desugar_ty),
         members: impl_decl
@@ -849,6 +875,12 @@ fn desugar_impl_decl(impl_decl: &ImplDecl) -> ImplDecl {
                         ImplMember::Function(Spanned::new(
                             desugar_function_decl(&function_decl.node),
                             function_decl.span,
+                        ))
+                    }
+                    ImplMember::AssociatedType(assoc) => {
+                        ImplMember::AssociatedType(Spanned::new(
+                            assoc.node.clone(),
+                            assoc.span,
                         ))
                     }
                 };

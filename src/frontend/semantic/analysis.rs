@@ -9,13 +9,6 @@ use super::hir_input::SemanticHirInput;
 use super::item_table::{
     TypedItemTable, TypedItemTableIssue, build_typed_item_table,
 };
-use crate::midend::type_check::{
-    ExprCheckIssue, ExpressionTypeTable,
-    check_expression_types_with_external_lookup,
-    SignatureTypingIssue, TypedSignatureTable, type_declaration_signatures,
-    StatementTypeTable, StmtCheckIssue, check_statements_with_expression_types,
-    TypedBodyTable, TypedBodyTableIssue, build_typed_body_table,
-};
 use crate::frontend::DesugaredFile;
 use crate::frontend::diagnostics::{
     DiagnosticsBag, diagnostics_from_semantic_checks,
@@ -25,6 +18,13 @@ use crate::frontend::resolver::{
     ResolvedImports, ScopeGraph, resolve_bodies, resolve_declaration_types,
 };
 use crate::frontend::source::{FileId, SourceDb};
+use crate::midend::type_check::{
+    ExprCheckIssue, ExpressionTypeTable, SignatureTypingIssue,
+    StatementTypeTable, StmtCheckIssue, TypedBodyTable, TypedBodyTableIssue,
+    TypedSignatureTable, build_typed_body_table,
+    check_expression_types_with_external_lookup,
+    check_statements_with_expression_types, type_declaration_signatures,
+};
 use std::collections::BTreeMap;
 
 /// Resolved HIR semantic inputs produced by the resolver stage.

@@ -1,7 +1,9 @@
 use crate::frontend::context::FrontendContext;
+use crate::frontend::diagnostics::diagnostics_from_inference_checks;
 use crate::frontend::resolver::{
     ItemId, NamedImportRoot, ResolvedImports, ResolvedScopeKind, ScopeGraph,
-    ScopeResolver, ScopeSymbols, resolve_project_imports_with_named_roots_and_diagnostics,
+    ScopeResolver, ScopeSymbols,
+    resolve_project_imports_with_named_roots_and_diagnostics,
     resolve_project_scopes,
 };
 use crate::frontend::semantic::{
@@ -15,6 +17,7 @@ use crate::frontend::{
     DesugaredFile, DiagnosticsBag, ExpandedFile, ExpansionOptions,
     ParseSessionError, ParsedFile, diagnostic_from_resolve_error,
 };
+use crate::midend::{BodyInferenceTable, infer_body_types};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone)]
@@ -35,6 +38,11 @@ pub struct FrontendAnalysis {
     pub hir: BTreeMap<FileId, SemanticHirInput>,
     pub resolution_tables: BTreeMap<FileId, FrontendResolutionTables>,
     pub semantic_tables: BTreeMap<FileId, SemanticAnalysis>,
+    /// Midend inference tables produced from resolved HIR + typed signatures.
+    ///
+    /// Canonical stage order:
+    /// parse -> expand -> desugar -> HIR -> resolve -> type_check/type_infer
+    pub inference_tables: BTreeMap<FileId, BodyInferenceTable>,
     pub diagnostics: DiagnosticsBag,
 }
 
@@ -46,14 +54,10 @@ pub fn analyze_project(
     let parsed = context.parsed_files_with_recovery(&ordered_file_ids)?;
     context.ensure_macro_definition_index()?;
     context.ensure_macro_scope_table()?;
-    let expanded = context.expanded_files(
-        &ordered_file_ids,
-        ExpansionOptions::default(),
-    )?;
-    let desugared = context.desugared_files(
-        &ordered_file_ids,
-        ExpansionOptions::default(),
-    )?;
+    let expanded = context
+        .expanded_files(&ordered_file_ids, ExpansionOptions::default())?;
+    let desugared = context
+        .desugared_files(&ordered_file_ids, ExpansionOptions::default())?;
 
     let mut diagnostics = DiagnosticsBag::new();
     for file in &desugared {
@@ -78,11 +82,18 @@ pub fn analyze_project(
     let mut hir = BTreeMap::new();
     let mut resolution_tables = BTreeMap::new();
     let mut semantic_tables = BTreeMap::new();
+    let mut inference_tables = BTreeMap::new();
     for &entry_file_id in entry_files {
         if let Some(hir_table) = context.cached_hir_for_entry(entry_file_id) {
             hir.insert(entry_file_id, hir_table.clone());
         }
-        if let (Some(graph), Some(symbols), Some(imports), Some(external_lookup), Some(item_definitions)) = (
+        if let (
+            Some(graph),
+            Some(symbols),
+            Some(imports),
+            Some(external_lookup),
+            Some(item_definitions),
+        ) = (
             context.cached_scope_graph_for_entry(entry_file_id),
             context.cached_scope_symbols_for_entry(entry_file_id),
             context.cached_imports_for_entry(entry_file_id),
@@ -103,6 +114,22 @@ pub fn analyze_project(
         }
         if let Some(semantic) = context.cached_semantic_for_entry(entry_file_id)
         {
+            let inferred = infer_body_types(
+                &semantic.hir,
+                &semantic.typed_items,
+                &semantic.resolved_bodies,
+                &semantic.body_envs,
+            );
+            let inference_diagnostics = diagnostics_from_inference_checks(
+                context.db(),
+                &semantic.resolved_bodies,
+                &inferred.issues,
+            );
+            extend_analysis_diagnostics(
+                &mut diagnostics,
+                &inference_diagnostics,
+            );
+            inference_tables.insert(entry_file_id, inferred);
             semantic_tables.insert(entry_file_id, semantic.clone());
         }
     }
@@ -114,6 +141,7 @@ pub fn analyze_project(
         hir,
         resolution_tables,
         semantic_tables,
+        inference_tables,
         diagnostics,
     })
 }
@@ -126,7 +154,9 @@ fn extend_analysis_diagnostics(
         source
             .as_slice()
             .iter()
-            .filter(|diagnostic| diagnostic.message != "unresolved macro import")
+            .filter(|diagnostic| {
+                diagnostic.message != "unresolved macro import"
+            })
             .cloned(),
     );
 }
@@ -137,7 +167,9 @@ fn analyze_entry_recursive(
     desugared_files: &[DesugaredFile],
     visiting: &mut BTreeSet<FileId>,
 ) -> Result<(), ParseSessionError> {
-    if context.cached_analysis_diagnostics_for_entry(entry_file_id).is_some()
+    if context
+        .cached_analysis_diagnostics_for_entry(entry_file_id)
+        .is_some()
         && (context.cached_semantic_for_entry(entry_file_id).is_some()
             || context.is_entry_unresolved(entry_file_id))
     {
@@ -167,8 +199,8 @@ fn analyze_entry_recursive(
     };
 
     let mut named_roots = context.dependency_named_roots().clone();
-    let (library_root_name, library_root_file_id) = context
-        .current_library_root_config();
+    let (library_root_name, library_root_file_id) =
+        context.current_library_root_config();
     let library_root_name = library_root_name.map(ToOwned::to_owned);
     if root_kind == ResolvedScopeKind::BinaryRoot
         && let (Some(root_name), Some(library_root_file_id)) =
@@ -258,8 +290,12 @@ fn resolve_scope_graph_with_diagnostics(
         }
         other => {
             let mut diagnostics = DiagnosticsBag::new();
-            match resolve_project_scopes(db, desugared_files, root_file_id, other)
-            {
+            match resolve_project_scopes(
+                db,
+                desugared_files,
+                root_file_id,
+                other,
+            ) {
                 Ok(graph) => (Some(graph), diagnostics),
                 Err(error) => {
                     diagnostics.push(diagnostic_from_resolve_error(db, &error));

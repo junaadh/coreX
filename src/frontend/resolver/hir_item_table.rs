@@ -275,12 +275,23 @@ fn render_hir_type(module: &HirModule, type_id: HirTypeId) -> String {
                 path.segments.join("::")
             }
         }
-        crate::frontend::hir::HirTypeKind::Reference { mutable, inner } => {
+        crate::frontend::hir::HirTypeKind::Lifetime(name) => {
+            format!("'{name}")
+        }
+        crate::frontend::hir::HirTypeKind::Reference {
+            mutable,
+            lifetime,
+            inner,
+        } => {
             let inner = render_hir_type(module, *inner);
+            let lifetime_str = lifetime
+                .as_ref()
+                .map(|l| format!("'{l} "))
+                .unwrap_or_default();
             if *mutable {
-                format!("&mut {inner}")
+                format!("&{lifetime_str}mut {inner}")
             } else {
-                format!("&{inner}")
+                format!("&{lifetime_str}{inner}")
             }
         }
         crate::frontend::hir::HirTypeKind::Pointer { mutable, inner } => {
@@ -312,5 +323,13 @@ fn render_hir_type(module: &HirModule, type_id: HirTypeId) -> String {
             format!("{base_name}<{rendered_args}>")
         }
         crate::frontend::hir::HirTypeKind::SelfType => "Self".to_string(),
+        crate::frontend::hir::HirTypeKind::Tuple(elems) => {
+            let rendered = elems
+                .iter()
+                .map(|e| render_hir_type(module, *e))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("({})", rendered)
+        }
     }
 }

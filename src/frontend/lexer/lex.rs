@@ -12,10 +12,10 @@
 //! across normal, string, and interpolation modes.
 
 use super::{
-    CommentError, SourceCursor, Span, StringLexError, StringLexMode, Token,
-    TokenKind, lex_char_literal, lex_ident_like, lex_interpolation_end,
-    lex_number, lex_punct_or_operator, lex_string_segment, lex_string_start,
-    skip_trivia,
+    classify_keyword_token, lex_char_literal, lex_ident_like,
+    lex_interpolation_end, lex_lifetime, lex_number, lex_punct_or_operator,
+    lex_string_segment, lex_string_start, skip_trivia, CommentError,
+    SourceCursor, Span, StringLexError, StringLexMode, Token, TokenKind,
 };
 
 /// Errors produced by integrated tokenization.
@@ -211,6 +211,10 @@ impl<'a> Lexer<'a> {
         }
 
         if let Some(token) = lex_number(&mut self.cursor) {
+            return Ok(Some(token));
+        }
+
+        if let Some(token) = lex_lifetime(&mut self.cursor) {
             return Ok(Some(token));
         }
 

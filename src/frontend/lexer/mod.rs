@@ -121,21 +121,21 @@ pub mod string;
 mod token;
 
 pub use comment::{
-    Comment, CommentError, collect_doc_comments, consume_block_comment,
-    consume_comment, consume_doc_comment, consume_line_comment,
-    consume_outer_doc_comment, is_doc_comment_kind, is_outer_doc_comment_kind,
-    skip_trivia, skip_whitespace,
+    collect_doc_comments, consume_block_comment, consume_comment,
+    consume_doc_comment, consume_line_comment, consume_outer_doc_comment,
+    is_doc_comment_kind, is_outer_doc_comment_kind, skip_trivia,
+    skip_whitespace, Comment, CommentError,
 };
 pub use cursor::SourceCursor;
-pub use ident::lex_ident_like;
+pub use ident::{lex_ident_like, lex_lifetime};
 pub use lex::{Lexer, LexerError};
 pub use number::lex_number;
 pub use punct::lex_punct_or_operator;
 pub use string::{
-    StringLexError, StringLexMode, lex_char_literal, lex_interpolation_end,
-    lex_string_segment, lex_string_start,
+    lex_char_literal, lex_interpolation_end, lex_string_segment,
+    lex_string_start, StringLexError, StringLexMode,
 };
 pub use token::{
-    CommentKind, Keyword, Span, Token, TokenKind, classify_keyword,
-    classify_keyword_token,
+    classify_keyword, classify_keyword_token, CommentKind, Keyword, Span,
+    Token, TokenKind,
 };

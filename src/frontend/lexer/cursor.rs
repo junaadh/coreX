@@ -143,6 +143,15 @@ impl<'a> SourceCursor<'a> {
         Span::new(start, self.offset)
     }
 
+    /// Resets the cursor to a previously marked position.
+    ///
+    /// `pos` should come from `mark()` on this cursor instance.
+    pub fn reset(&mut self, pos: usize) {
+        debug_assert!(pos <= self.source.len());
+        debug_assert!(self.source.is_char_boundary(pos));
+        self.offset = pos;
+    }
+
     /// Consumes characters while `pred` returns `true`.
     pub fn eat_while(&mut self, pred: impl Fn(char) -> bool) {
         while let Some(ch) = self.peek() {

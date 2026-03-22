@@ -121,7 +121,11 @@ impl HirPathResolutionTable {
         }
 
         // Build the associated member index
-        let member_index = HirAssociatedMemberIndex::build(hir_files, hir_modules, item_table)?;
+        let member_index = HirAssociatedMemberIndex::build(
+            hir_files,
+            hir_modules,
+            item_table,
+        )?;
 
         for hir_file in hir_files {
             let _module = hir_modules.get(&hir_file.file_id).ok_or(
@@ -170,14 +174,15 @@ impl HirPathResolutionTable {
                         .and_then(|items| items.get(&path.segments[0]))
                         .copied()
                     {
-                        if let Some(member_info) =
-                            member_index.lookup(type_item_ref, &path.segments[1])
+                        if let Some(member_info) = member_index
+                            .lookup(type_item_ref, &path.segments[1])
                         {
-                            let resolution = HirPathResolution::AssociatedMember {
-                                type_item_ref,
-                                member_name: path.segments[1].clone(),
-                                member_kind: member_info.member_kind,
-                            };
+                            let resolution =
+                                HirPathResolution::AssociatedMember {
+                                    type_item_ref,
+                                    member_name: path.segments[1].clone(),
+                                    member_kind: member_info.member_kind,
+                                };
                             by_expr.insert(expr_ref, resolution.clone());
                             by_path.insert(path_ref, resolution);
                             continue;
@@ -272,7 +277,11 @@ impl HirPathResolutionTable {
             .collect::<BTreeMap<_, _>>();
 
         // Build the associated member index
-        let member_index = HirAssociatedMemberIndex::build(hir_files, hir_modules, item_table)?;
+        let member_index = HirAssociatedMemberIndex::build(
+            hir_files,
+            hir_modules,
+            item_table,
+        )?;
 
         for hir_file in hir_files {
             let module = hir_modules.get(&hir_file.file_id).ok_or(
@@ -451,7 +460,9 @@ impl HirAssociatedMemberIndex {
         type_item_ref: HirItemRef,
         member_name: &str,
     ) -> Option<AssociatedMemberInfo> {
-        self.members.get(&(type_item_ref, member_name.to_string())).copied()
+        self.members
+            .get(&(type_item_ref, member_name.to_string()))
+            .copied()
     }
 
     /// Build the associated member index from HIR files and modules.
@@ -485,13 +496,16 @@ impl HirAssociatedMemberIndex {
                 };
 
                 match item.kind {
-                    HirCollectedItemKind::Struct | HirCollectedItemKind::Enum => {
+                    HirCollectedItemKind::Struct
+                    | HirCollectedItemKind::Enum => {
                         // Index methods and initializers defined directly on the type
-                        if let Some(hir_item) = module.items.get(&item_ref.item_id) {
+                        if let Some(hir_item) =
+                            module.items.get(&item_ref.item_id)
+                        {
                             let functions = match &hir_item.kind {
-                                crate::frontend::hir::HirItemKind::Struct(s) => {
-                                    &s.functions
-                                }
+                                crate::frontend::hir::HirItemKind::Struct(
+                                    s,
+                                ) => &s.functions,
                                 crate::frontend::hir::HirItemKind::Enum(e) => {
                                     &e.functions
                                 }
@@ -499,11 +513,12 @@ impl HirAssociatedMemberIndex {
                             };
 
                             for function in functions {
-                                let member_kind = if function.init_origin.is_some() {
-                                    AssociatedMemberKind::Initializer
-                                } else {
-                                    AssociatedMemberKind::Method
-                                };
+                                let member_kind =
+                                    if function.init_origin.is_some() {
+                                        AssociatedMemberKind::Initializer
+                                    } else {
+                                        AssociatedMemberKind::Method
+                                    };
                                 members.insert(
                                     (*item_ref, function.name.clone()),
                                     AssociatedMemberInfo { member_kind },
@@ -514,9 +529,12 @@ impl HirAssociatedMemberIndex {
                     HirCollectedItemKind::Impl => {
                         // For impl blocks, we need to resolve the target type
                         // and index members under that type
-                        if let Some(hir_item) = module.items.get(&item_ref.item_id) {
-                            if let crate::frontend::hir::HirItemKind::Impl(impl_block) =
-                                &hir_item.kind
+                        if let Some(hir_item) =
+                            module.items.get(&item_ref.item_id)
+                        {
+                            if let crate::frontend::hir::HirItemKind::Impl(
+                                impl_block,
+                            ) = &hir_item.kind
                             {
                                 // Try to resolve the impl target type to an item reference
                                 // For now, we'll handle simple named types
@@ -528,15 +546,19 @@ impl HirAssociatedMemberIndex {
 
                                 if let Some(target_ref) = target_item_ref {
                                     for function in &impl_block.functions {
-                                        let member_kind =
-                                            if function.init_origin.is_some() {
-                                                AssociatedMemberKind::Initializer
-                                            } else {
-                                                AssociatedMemberKind::Method
-                                            };
+                                        let member_kind = if function
+                                            .init_origin
+                                            .is_some()
+                                        {
+                                            AssociatedMemberKind::Initializer
+                                        } else {
+                                            AssociatedMemberKind::Method
+                                        };
                                         members.insert(
                                             (target_ref, function.name.clone()),
-                                            AssociatedMemberInfo { member_kind },
+                                            AssociatedMemberInfo {
+                                                member_kind,
+                                            },
                                         );
                                     }
                                 }

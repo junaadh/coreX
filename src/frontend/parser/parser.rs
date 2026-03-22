@@ -4,17 +4,18 @@ use crate::frontend::ast::{
     DocComment, DocCommentKind, EnumCase, EnumCaseParam, EnumDecl, EnumMember,
     Expr, ExternBlock, ExternFunctionDecl, ExternMember, FunctionDecl,
     GenericParam, ImplDecl, ImplMember, InitDecl, InitKind, Item, LetStmt,
-    MacroBlock, MacroClause, MacroClauseKind, MacroDecl, MacroExprArgs,
-    MacroInputKind, MacroParam, MatchArm, MatchArmBody, Modifier, ParamDecl,
-    ParamLabel, Pattern, ProtocolDecl, ProtocolFunctionMember,
-    ProtocolInitMember, ProtocolMember, ProtocolPropertyRequirement,
-    ReceiverKind, ScopeDecl, Spanned, StringLiteral, StringPart, StructDecl,
-    StructField, StructLiteralField, StructMember, StructPatternField, Type,
-    TypeExpr, UseItem, UsePath, UseTree, VarStmt, Visibility, WhileStmt,
+    Lifetime, MacroBlock, MacroClause, MacroClauseKind, MacroDecl,
+    MacroExprArgs, MacroInputKind, MacroParam, MatchArm, MatchArmBody,
+    Modifier, ParamDecl, ParamLabel, Pattern, ProtocolDecl,
+    ProtocolFunctionMember, ProtocolInitMember, ProtocolMember,
+    ProtocolPropertyRequirement, ReceiverKind, ScopeDecl, Spanned,
+    StringLiteral, StringPart, StructDecl, StructField, StructLiteralField,
+    StructMember, StructPatternField, Type, TypeExpr, UseItem, UsePath,
+    UseTree, VarStmt, Visibility, WhileStmt,
 };
 use crate::frontend::lexer::{
-    CommentKind, Lexer, LexerError, Span, Token, TokenKind,
-    collect_doc_comments,
+    collect_doc_comments, CommentKind, Lexer, LexerError, Span, Token,
+    TokenKind,
 };
 
 use super::error::ParseError;
@@ -732,8 +733,17 @@ impl<'a> Parser<'a> {
         let mut params = Vec::new();
         if !self.at(TokenKind::Gt) {
             loop {
-                let (name, span) = self.expect_identifier_text()?;
-                params.push(Spanned::new(GenericParam { name }, span));
+                if self.at(TokenKind::Lifetime) {
+                    let (name, span) = self.expect_lifetime()?;
+                    params.push(Spanned::new(
+                        GenericParam::Lifetime { name },
+                        span,
+                    ));
+                } else {
+                    let (name, span) = self.expect_identifier_text()?;
+                    params
+                        .push(Spanned::new(GenericParam::Type { name }, span));
+                }
                 if self.eat(TokenKind::Comma).is_some() {
                     if self.at(TokenKind::Gt) {
                         break;
@@ -745,6 +755,49 @@ impl<'a> Parser<'a> {
         }
         self.expect(TokenKind::Gt)?;
         Ok(params)
+    }
+
+    fn parse_optional_lifetime_params(
+        &mut self,
+    ) -> Result<Vec<Spanned<GenericParam>>, ParseError> {
+        if !self.at(TokenKind::Lt) {
+            return Ok(Vec::new());
+        }
+
+        self.expect(TokenKind::Lt)?;
+        let mut params = Vec::new();
+        if !self.at(TokenKind::Gt) {
+            loop {
+                if self.at(TokenKind::Lifetime) {
+                    let (name, span) = self.expect_lifetime()?;
+                    params.push(Spanned::new(
+                        GenericParam::Lifetime { name },
+                        span,
+                    ));
+                } else {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "lifetime parameter",
+                        found: self.peek().kind,
+                        span: self.peek().span,
+                    });
+                }
+                if self.eat(TokenKind::Comma).is_some() {
+                    if self.at(TokenKind::Gt) {
+                        break;
+                    }
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(TokenKind::Gt)?;
+        Ok(params)
+    }
+
+    fn expect_lifetime(&mut self) -> Result<(String, Span), ParseError> {
+        let tok = self.expect(TokenKind::Lifetime)?;
+        let name = self.source[tok.span.start + 1..tok.span.end].to_string();
+        Ok((name, tok.span))
     }
 
     /// Parses a `struct` declaration and its member container.
@@ -814,7 +867,8 @@ impl<'a> Parser<'a> {
             TokenKind::KwInit => {
                 if visibility.is_some() {
                     return Err(ParseError::UnexpectedToken {
-                        expected: "struct initializer; visibility is not allowed",
+                        expected:
+                            "struct initializer; visibility is not allowed",
                         found: TokenKind::KwInit,
                         span: self.peek().span,
                     });
@@ -835,7 +889,8 @@ impl<'a> Parser<'a> {
             TokenKind::Ident => {
                 if visibility.is_some() || !modifiers.is_empty() {
                     return Err(ParseError::UnexpectedToken {
-                        expected: "struct field; modifiers are not allowed on fields",
+                        expected:
+                            "struct field; modifiers are not allowed on fields",
                         found: self.peek().kind,
                         span: self.peek().span,
                     });
@@ -984,7 +1039,8 @@ impl<'a> Parser<'a> {
             TokenKind::Ident => {
                 if visibility.is_some() || !modifiers.is_empty() {
                     return Err(ParseError::UnexpectedToken {
-                        expected: "enum case; modifiers are not allowed on cases",
+                        expected:
+                            "enum case; modifiers are not allowed on cases",
                         found: self.peek().kind,
                         span: self.peek().span,
                     });
@@ -1115,6 +1171,7 @@ impl<'a> Parser<'a> {
         modifiers: Vec<Modifier>,
     ) -> Result<Spanned<ImplDecl>, ParseError> {
         self.expect(TokenKind::KwImpl)?;
+        let lifetime_params = self.parse_optional_lifetime_params()?;
         let first_type = self.parse_type()?;
         let (target, conformance) = if self.eat(TokenKind::KwFor).is_some() {
             let implementing_type = self.parse_type()?;
@@ -1141,6 +1198,7 @@ impl<'a> Parser<'a> {
                 docs,
                 attributes,
                 modifiers,
+                lifetime_params,
                 target,
                 conformance,
                 members,
@@ -1177,6 +1235,20 @@ impl<'a> Parser<'a> {
                 )?;
                 let span = function.span;
                 Ok(Spanned::new(ImplMember::Function(function), span))
+            }
+            TokenKind::KwType => {
+                if visibility.is_some() {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "impl associated type; visibility is inherited from protocol",
+                        found: TokenKind::KwType,
+                        span: self.peek().span,
+                    });
+                }
+                let assoc = self.parse_associated_type_decl_with_prefix(
+                    start, docs, attributes,
+                )?;
+                let span = assoc.span;
+                Ok(Spanned::new(ImplMember::AssociatedType(assoc), span))
             }
             _ => Err(ParseError::UnexpectedToken {
                 expected: "impl member",
@@ -1367,7 +1439,8 @@ impl<'a> Parser<'a> {
         }
         if self.at(TokenKind::Bang) {
             return Err(ParseError::UnexpectedToken {
-                expected: "init with return type annotation (-> Result<Self, E>)",
+                expected:
+                    "init with return type annotation (-> Result<Self, E>)",
                 found: TokenKind::Bang,
                 span: self.peek().span,
             });
@@ -1604,7 +1677,8 @@ impl<'a> Parser<'a> {
         }
         if self.at(TokenKind::Bang) {
             return Err(ParseError::UnexpectedToken {
-                expected: "init with return type annotation (-> Result<Self, E>)",
+                expected:
+                    "init with return type annotation (-> Result<Self, E>)",
                 found: TokenKind::Bang,
                 span: self.peek().span,
             });
@@ -2197,7 +2271,8 @@ impl<'a> Parser<'a> {
     fn parse_stmt(&mut self) -> Result<Spanned<ast::Stmt>, ParseError> {
         if self.attribute_prefix_before_statement() {
             return Err(ParseError::UnexpectedToken {
-                expected: "statement (attributes are only allowed on declarations)",
+                expected:
+                    "statement (attributes are only allowed on declarations)",
                 found: self.peek().kind,
                 span: self.peek().span,
             });
@@ -2590,12 +2665,30 @@ impl<'a> Parser<'a> {
             TokenKind::Amp => {
                 let start = self.bump().span.start;
                 let mutable = self.eat(TokenKind::KwMut).is_some();
+                let lifetime = if self.at(TokenKind::Lifetime) {
+                    let (name, span) = self.expect_lifetime()?;
+                    Some(Lifetime { name, span })
+                } else {
+                    None
+                };
                 let inner = self.parse_type()?;
                 let span = Span::new(start, inner.span.end);
                 if mutable {
-                    Spanned::new(Type::MutableReference(Box::new(inner)), span)
+                    Spanned::new(
+                        Type::MutableReference {
+                            lifetime,
+                            inner: Box::new(inner),
+                        },
+                        span,
+                    )
                 } else {
-                    Spanned::new(Type::Reference(Box::new(inner)), span)
+                    Spanned::new(
+                        Type::Reference {
+                            lifetime,
+                            inner: Box::new(inner),
+                        },
+                        span,
+                    )
                 }
             }
             TokenKind::Star => {
@@ -2620,10 +2713,33 @@ impl<'a> Parser<'a> {
             }
             TokenKind::LParen => {
                 let start = self.bump().span.start;
-                let inner = self.parse_type()?;
-                let end = self.expect(TokenKind::RParen)?.span.end;
-                let span = Span::new(start, end);
-                Spanned::new(Type::Grouped(Box::new(inner)), span)
+                // Check if this is a tuple type `(T, U, ...)` or just a grouped type `(T)`
+                if self.at(TokenKind::RParen) {
+                    // Unit type `()`
+                    let end = self.expect(TokenKind::RParen)?.span.end;
+                    let span = Span::new(start, end);
+                    Spanned::new(Type::Tuple(Vec::new()), span)
+                } else {
+                    let first = self.parse_type()?;
+                    if self.eat(TokenKind::Comma).is_some() {
+                        // This is a tuple type
+                        let mut types = vec![first];
+                        while !self.at(TokenKind::RParen) {
+                            types.push(self.parse_type()?);
+                            if !self.eat(TokenKind::Comma).is_some() {
+                                break;
+                            }
+                        }
+                        let end = self.expect(TokenKind::RParen)?.span.end;
+                        let span = Span::new(start, end);
+                        Spanned::new(Type::Tuple(types), span)
+                    } else {
+                        // Single element `(T)` coerces to `T`
+                        let end = self.expect(TokenKind::RParen)?.span.end;
+                        let span = Span::new(start, end);
+                        Spanned::new(first.node, span)
+                    }
+                }
             }
             TokenKind::KwSelfType => {
                 let tok = self.bump();
@@ -2702,7 +2818,15 @@ impl<'a> Parser<'a> {
 
         if !self.at(TokenKind::Gt) {
             loop {
-                args.push(self.parse_type()?);
+                if self.at(TokenKind::Lifetime) {
+                    let (name, span) = self.expect_lifetime()?;
+                    args.push(Spanned::new(
+                        Type::Lifetime(Lifetime { name, span }),
+                        span,
+                    ));
+                } else {
+                    args.push(self.parse_type()?);
+                }
                 if self.eat(TokenKind::Comma).is_some() {
                     if self.at(TokenKind::Gt) {
                         break;
@@ -4125,7 +4249,8 @@ impl<'a> Parser<'a> {
                 if self.eat(TokenKind::DotDot).is_some() {
                     if has_rest {
                         return Err(ParseError::UnexpectedToken {
-                            expected: "at most one `..` rest marker in struct pattern",
+                            expected:
+                                "at most one `..` rest marker in struct pattern",
                             found: self.peek().kind,
                             span: self.peek().span,
                         });
@@ -4150,7 +4275,8 @@ impl<'a> Parser<'a> {
                 }
                 if has_rest {
                     return Err(ParseError::UnexpectedToken {
-                        expected: "`..` rest marker must be final in struct pattern",
+                        expected:
+                            "`..` rest marker must be final in struct pattern",
                         found: self.peek().kind,
                         span: self.peek().span,
                     });
@@ -4197,7 +4323,8 @@ impl<'a> Parser<'a> {
                 if self.eat(TokenKind::DotDot).is_some() {
                     if rest.is_some() {
                         return Err(ParseError::UnexpectedToken {
-                            expected: "at most one `..` rest marker in array pattern",
+                            expected:
+                                "at most one `..` rest marker in array pattern",
                             found: self.peek().kind,
                             span: self.peek().span,
                         });
@@ -4227,7 +4354,8 @@ impl<'a> Parser<'a> {
                 }
                 if rest.is_some() {
                     return Err(ParseError::UnexpectedToken {
-                        expected: "`..` rest marker must be final in array pattern",
+                        expected:
+                            "`..` rest marker must be final in array pattern",
                         found: self.peek().kind,
                         span: self.peek().span,
                     });
@@ -5946,11 +6074,8 @@ mod tests {
         let err = parser.parse_file().expect_err("expected parse error");
         match err {
             ParseError::UnexpectedToken { expected, .. } => {
-                assert!(
-                    expected.contains(
-                        "attributes are only allowed on declarations"
-                    )
-                );
+                assert!(expected
+                    .contains("attributes are only allowed on declarations"));
             }
             _ => panic!("expected unexpected-token parse error"),
         }
@@ -6209,8 +6334,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_string_literal_reports_error_on_missing_interpolation_end_or_string_end()
-     {
+    fn parse_string_literal_reports_error_on_missing_interpolation_end_or_string_end(
+    ) {
         let mut parser = parse_expr_with_parser("\"a\\(x y)b\"");
         let err = parser.parse_expr().expect_err("expected parse error");
         assert!(matches!(err, ParseError::UnexpectedToken { .. }));
@@ -7451,10 +7576,15 @@ mod tests {
     fn parse_reference_type() {
         let ty = parse_type_from_source("&Foo");
         match ty.node {
-            Type::Reference(inner) => match inner.node {
-                Type::Named { segments } => assert_eq!(segments, vec!["Foo"]),
-                _ => panic!("expected named inner type"),
-            },
+            Type::Reference { lifetime, inner } => {
+                assert!(lifetime.is_none());
+                match inner.node {
+                    Type::Named { segments } => {
+                        assert_eq!(segments, vec!["Foo"])
+                    }
+                    _ => panic!("expected named inner type"),
+                }
+            }
             _ => panic!("expected reference type"),
         }
     }
@@ -7462,7 +7592,13 @@ mod tests {
     #[test]
     fn parse_mutable_reference_type() {
         let ty = parse_type_from_source("&mut Foo");
-        assert!(matches!(ty.node, Type::MutableReference(_)));
+        assert!(matches!(
+            ty.node,
+            Type::MutableReference {
+                lifetime: _,
+                inner: _
+            }
+        ));
     }
 
     #[test]
@@ -7498,7 +7634,7 @@ mod tests {
     #[test]
     fn parse_grouped_type() {
         let ty = parse_type_from_source("(Foo)");
-        assert!(matches!(ty.node, Type::Grouped(_)));
+        assert!(matches!(ty.node, Type::Named { .. }));
     }
 
     #[test]

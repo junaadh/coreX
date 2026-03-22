@@ -1,7 +1,3 @@
-use crate::frontend::semantic::body_env::BodyTypeEnvironmentTable;
-use crate::frontend::semantic::external_lookup::ExternalSemanticLookup;
-use crate::frontend::semantic::hir_input::{SemanticBodyRef, SemanticHirInput};
-use crate::frontend::semantic::{TypedItemData, TypedItemTable};
 use super::signatures::TypedFunctionSignature;
 use super::{BuiltinType, Type};
 use crate::frontend::ast::Span;
@@ -14,6 +10,10 @@ use crate::frontend::resolver::{
     DeclarationOwner, ImportBindingKind, ItemId, LocalId, LocalMutability,
     ResolvedBody, ResolvedBodyTable, ResolvedImports,
 };
+use crate::frontend::semantic::body_env::BodyTypeEnvironmentTable;
+use crate::frontend::semantic::external_lookup::ExternalSemanticLookup;
+use crate::frontend::semantic::hir_input::{SemanticBodyRef, SemanticHirInput};
+use crate::frontend::semantic::{TypedItemData, TypedItemTable};
 use crate::frontend::source::FileId;
 use std::collections::BTreeMap;
 
@@ -276,7 +276,10 @@ struct BodyExprChecker<'a> {
     module: &'a HirModule,
     hir_input: &'a SemanticHirInput,
     local_types: BTreeMap<LocalId, Type>,
-    local_bindings: BTreeMap<LocalId, crate::frontend::semantic::body_env::BodyLocalBindingInfo>,
+    local_bindings: BTreeMap<
+        LocalId,
+        crate::frontend::semantic::body_env::BodyLocalBindingInfo,
+    >,
     imports: &'a BTreeMap<FileId, ResolvedImports>,
     external_lookup: &'a ExternalSemanticLookup,
     expr_ids_by_span:
@@ -633,12 +636,29 @@ impl<'a> BodyExprChecker<'a> {
                         );
                     }
                     CallSignatureResolution::Missing => {
-                        issues.push(ExprCheckIssue {
-                            owner: self.body.owner.clone(),
-                            body_index: self.body.body_index,
-                            span,
-                            kind: ExprCheckIssueKind::InvalidCallCallee,
-                        });
+                        // Check if this is a call to a local variable
+                        let is_local_variable_call = self
+                            .hir_input
+                            .hir_path_table
+                            .by_expr(self.body_ref.file_id, *callee)
+                            .and_then(|resolution| match resolution {
+                                crate::frontend::resolver::HirPathResolution::Local(_) => {
+                                    Some(true)
+                                }
+                                _ => Some(false),
+                            })
+                            .unwrap_or(false);
+
+                        // Report error for local variable calls, but allow single-segment
+                        // paths (like enum cases) through to type inference
+                        if is_local_variable_call {
+                            issues.push(ExprCheckIssue {
+                                owner: self.body.owner.clone(),
+                                body_index: self.body.body_index,
+                                span,
+                                kind: ExprCheckIssueKind::InvalidCallCallee,
+                            });
+                        }
                         return self.store_and_return(
                             body_expr_id,
                             span,
@@ -1101,6 +1121,13 @@ impl<'a> BodyExprChecker<'a> {
             return Type::error();
         }
 
+        // Single-segment paths without resolution might be enum cases
+        // Type inference will handle them via scope search
+        if segments.len() == 1 {
+            // Return error without adding issue - let type inference handle it
+            return Type::error();
+        }
+
         issues.push(ExprCheckIssue {
             owner: self.body.owner.clone(),
             body_index: self.body.body_index,
@@ -1236,8 +1263,7 @@ impl<'a> BodyExprChecker<'a> {
         path: &[String],
         typed_items: &TypedItemTable,
     ) -> Option<TypedFunctionSignature> {
-        if path.len() < 2
-            || path.last().is_none_or(|segment| segment != "init")
+        if path.len() < 2 || path.last().is_none_or(|segment| segment != "init")
         {
             return None;
         }

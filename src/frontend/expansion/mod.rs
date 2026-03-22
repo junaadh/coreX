@@ -369,8 +369,9 @@ impl MacroDefinitionIndex {
         &self,
         name: &str,
     ) -> Option<(FileId, crate::frontend::ast::Span)> {
-        self.get(name)
-            .map(|definition| (definition.defining_file_id, definition.declaration_span))
+        self.get(name).map(|definition| {
+            (definition.defining_file_id, definition.declaration_span)
+        })
     }
 
     /// Returns deterministic duplicate-definition diagnostics.
@@ -1961,6 +1962,9 @@ fn expand_impl_decl(
             ImplMember::Function(function_decl) => {
                 expand_function_decl(&mut function_decl.node, pass);
             }
+            ImplMember::AssociatedType(_assoc) => {
+                // Associated type definitions don't need expansion
+            }
         }
     }
 }
@@ -2244,31 +2248,41 @@ fn expand_expr(expr: &mut Spanned<Expr>, pass: &mut ExpansionPass<'_, '_>) {
         | Expr::SelfValue
         | Expr::SelfType
         | Expr::ShorthandMember { .. } => {}
+        Expr::Tuple(elems) => {
+            for elem in elems {
+                expand_expr(elem, pass);
+            }
+        }
     }
 }
 
 fn expand_type(ty: &mut Type, pass: &mut ExpansionPass<'_, '_>) {
     match ty {
+        Type::Lifetime(_) => {}
         Type::GenericApplication { base, args } => {
             expand_type(&mut base.node, pass);
             for arg in args {
                 expand_type(&mut arg.node, pass);
             }
         }
-        Type::Reference(inner)
-        | Type::MutableReference(inner)
+        Type::Reference { lifetime: _, inner }
+        | Type::MutableReference { lifetime: _, inner }
         | Type::ConstPointer(inner)
         | Type::MutablePointer(inner)
         | Type::Array(inner)
-        | Type::Optional(inner)
-        | Type::Grouped(inner) => {
+        | Type::Optional(inner) => {
             expand_type(&mut inner.node, pass);
+        }
+        Type::Tuple(elems) => {
+            for elem in elems {
+                expand_type(&mut elem.node, pass);
+            }
         }
         Type::Result { ok, err } => {
             expand_type(&mut ok.node, pass);
             expand_type(&mut err.node, pass);
         }
-        Type::Named { .. } | Type::SelfType => {}
+        Type::Named { .. } | Type::SelfType | Type::Lifetime(_) => {}
     }
 }
 
@@ -3798,6 +3812,11 @@ fn hygienize_expr(expr: &mut Spanned<Expr>, hygiene: &mut HygieneContext) {
         | Expr::SelfValue
         | Expr::SelfType
         | Expr::ShorthandMember { .. } => {}
+        Expr::Tuple(elems) => {
+            for elem in elems {
+                hygienize_expr(elem, hygiene);
+            }
+        }
     }
 }
 
@@ -3972,7 +3991,12 @@ fn render_expr_to_source(expr: &Expr) -> Result<String, Diagnostic> {
             output.push('}');
             Ok(output)
         }
-        Expr::Closure { params, body, uses_shorthand_params, .. } => {
+        Expr::Closure {
+            params,
+            body,
+            uses_shorthand_params,
+            ..
+        } => {
             // If the closure has no parameters and uses shorthand params,
             // render it as just the block (not as a closure expression)
             if params.is_empty() && *uses_shorthand_params {
@@ -3996,12 +4020,29 @@ fn render_expr_to_source(expr: &Expr) -> Result<String, Diagnostic> {
 fn render_type_to_source(ty: &Type) -> Result<String, Diagnostic> {
     match ty {
         Type::Named { segments } => Ok(segments.join("::")),
+        Type::Lifetime(lifetime) => Ok(format!("'{}", lifetime.name)),
         Type::SelfType => Ok("Self".to_string()),
-        Type::Reference(inner) => {
-            Ok(format!("&{}", render_type_to_source(&inner.node)?))
+        Type::Reference { lifetime, inner } => {
+            let lifetime_str = lifetime
+                .as_ref()
+                .map(|l| format!("'{} ", l.name))
+                .unwrap_or_default();
+            Ok(format!(
+                "&{}{}",
+                lifetime_str,
+                render_type_to_source(&inner.node)?
+            ))
         }
-        Type::MutableReference(inner) => {
-            Ok(format!("&mut {}", render_type_to_source(&inner.node)?))
+        Type::MutableReference { lifetime, inner } => {
+            let lifetime_str = lifetime
+                .as_ref()
+                .map(|l| format!("'{} ", l.name))
+                .unwrap_or_default();
+            Ok(format!(
+                "&mut {}{}",
+                lifetime_str,
+                render_type_to_source(&inner.node)?
+            ))
         }
         Type::ConstPointer(inner) => {
             Ok(format!("*{}", render_type_to_source(&inner.node)?))
@@ -4015,8 +4056,17 @@ fn render_type_to_source(ty: &Type) -> Result<String, Diagnostic> {
         Type::Optional(inner) => {
             Ok(format!("{}?", render_type_to_source(&inner.node)?))
         }
-        Type::Grouped(inner) => {
-            Ok(format!("({})", render_type_to_source(&inner.node)?))
+        Type::Tuple(elems) => {
+            if elems.is_empty() {
+                Ok("()".to_string())
+            } else {
+                let rendered = elems
+                    .iter()
+                    .map(|e| render_type_to_source(&e.node))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(", ");
+                Ok(format!("({})", rendered))
+            }
         }
         Type::GenericApplication { base, args } => {
             let rendered_args = args
@@ -4077,12 +4127,18 @@ fn render_assign_op(op: crate::frontend::ast::AssignOp) -> &'static str {
     }
 }
 
-fn render_stmt_to_source(stmt: &Spanned<crate::frontend::ast::Stmt>) -> Result<String, Diagnostic> {
+fn render_stmt_to_source(
+    stmt: &Spanned<crate::frontend::ast::Stmt>,
+) -> Result<String, Diagnostic> {
     match &stmt.node {
-        crate::frontend::ast::Stmt::Expr { expr, .. } => render_expr_to_source(&expr.node),
+        crate::frontend::ast::Stmt::Expr { expr, .. } => {
+            render_expr_to_source(&expr.node)
+        }
         crate::frontend::ast::Stmt::Let(let_stmt) => {
             let mut output = String::from("let ");
-            output.push_str(&render_pattern_to_source(&let_stmt.node.pattern.node)?);
+            output.push_str(&render_pattern_to_source(
+                &let_stmt.node.pattern.node,
+            )?);
             if let Some(t) = &let_stmt.node.ty {
                 output.push_str(": ");
                 output.push_str(&render_type_to_source(&t.node)?);
@@ -4097,7 +4153,9 @@ fn render_stmt_to_source(stmt: &Spanned<crate::frontend::ast::Stmt>) -> Result<S
     }
 }
 
-fn render_block_to_source(block: &crate::frontend::ast::Block) -> Result<String, Diagnostic> {
+fn render_block_to_source(
+    block: &crate::frontend::ast::Block,
+) -> Result<String, Diagnostic> {
     let mut output = String::from("{");
     for stmt in &block.statements {
         output.push_str(&render_stmt_to_source(stmt)?);
@@ -4110,7 +4168,9 @@ fn render_block_to_source(block: &crate::frontend::ast::Block) -> Result<String,
     Ok(output)
 }
 
-fn render_pattern_to_source(pattern: &crate::frontend::ast::Pattern) -> Result<String, Diagnostic> {
+fn render_pattern_to_source(
+    pattern: &crate::frontend::ast::Pattern,
+) -> Result<String, Diagnostic> {
     match pattern {
         crate::frontend::ast::Pattern::Identifier(name) => Ok(name.clone()),
         _ => Ok(String::from("_")),

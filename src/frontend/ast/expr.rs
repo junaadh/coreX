@@ -268,4 +268,6 @@ pub enum Expr {
     Try {
         expr: Box<Spanned<Expr>>,
     },
+    /// Tuple literal expression `(a, b, c)`.
+    Tuple(Vec<Spanned<Expr>>),
 }

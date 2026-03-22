@@ -4,11 +4,12 @@
 //! - ordinary identifiers
 //! - reserved keywords (via existing keyword classification helpers)
 //! - closure shorthand params (`$0`, `$1`, ...)
+//! - lifetime names (`'a`, `'static`)
 //!
 //! Builtin primitive type names remain ordinary identifiers lexically.
 //! They are recognized as builtins in later semantic analysis.
 
-use super::{SourceCursor, Token, TokenKind, classify_keyword_token};
+use super::{classify_keyword_token, SourceCursor, Span, Token, TokenKind};
 
 /// Lexes one identifier-like token at the current cursor position.
 ///
@@ -38,6 +39,45 @@ pub fn lex_ident_like(cursor: &mut SourceCursor<'_>) -> Option<Token> {
     let spelling = cursor.slice_from(start);
     let kind = classify_keyword_token(spelling).unwrap_or(TokenKind::Ident);
     Some(Token::new(kind, cursor.current_span_from(start)))
+}
+
+/// Lexes a lifetime token like `'a` or `'static`.
+///
+/// Returns `None` without consuming input when current position does not
+/// start with `'` followed by an identifier.
+#[must_use]
+pub fn lex_lifetime(cursor: &mut SourceCursor<'_>) -> Option<Token> {
+    if cursor.peek() != Some('\'') {
+        return None;
+    }
+
+    let start = cursor.mark();
+    let _ = cursor.bump(); // consume '
+
+    // Lifetime must be followed by an identifier start
+    let next = cursor.peek()?;
+    if !is_ident_start(next) {
+        // Not a valid lifetime - backtrack and return None
+        cursor.reset(start);
+        return None;
+    }
+
+    // Lex the identifier part of the lifetime
+    let ident_start = cursor.mark();
+    let _ = cursor.bump();
+    cursor.eat_while(is_ident_continue);
+
+    let lifetime_name = cursor.slice_from(ident_start);
+    // Lifetimes cannot be keywords
+    if classify_keyword_token(lifetime_name).is_some() {
+        cursor.reset(start);
+        return None;
+    }
+
+    Some(Token::new(
+        TokenKind::Lifetime,
+        cursor.current_span_from(start),
+    ))
 }
 
 fn lex_closure_shorthand_param(cursor: &mut SourceCursor<'_>) -> Option<Token> {
@@ -129,7 +169,8 @@ mod tests {
     #[test]
     fn lex_closure_shorthand_param_single_digit() {
         let mut cursor = SourceCursor::new("$0");
-        let token = lex_ident_like(&mut cursor).expect("shorthand");
+        let token =
+            lex_closure_shorthand_param(&mut cursor).expect("shorthand");
         assert_eq!(token.kind, TokenKind::ClosureShorthandParam);
         assert!(cursor.is_eof());
     }
@@ -137,7 +178,8 @@ mod tests {
     #[test]
     fn lex_closure_shorthand_param_multi_digit() {
         let mut cursor = SourceCursor::new("$12");
-        let token = lex_ident_like(&mut cursor).expect("shorthand");
+        let token =
+            lex_closure_shorthand_param(&mut cursor).expect("shorthand");
         assert_eq!(token.kind, TokenKind::ClosureShorthandParam);
         assert_eq!(token.span.start, 0);
         assert_eq!(token.span.end, 3);
@@ -147,7 +189,8 @@ mod tests {
     #[test]
     fn closure_shorthand_stops_before_identifier_tail() {
         let mut cursor = SourceCursor::new("$0abc");
-        let token = lex_ident_like(&mut cursor).expect("shorthand");
+        let token =
+            lex_closure_shorthand_param(&mut cursor).expect("shorthand");
         assert_eq!(token.kind, TokenKind::ClosureShorthandParam);
         assert_eq!(token.span.start, 0);
         assert_eq!(token.span.end, 2);
@@ -192,7 +235,7 @@ mod tests {
 
         let mut shorthand = SourceCursor::new("$12x");
         let shorthand_token =
-            lex_ident_like(&mut shorthand).expect("shorthand");
+            lex_closure_shorthand_param(&mut shorthand).expect("shorthand");
         assert_eq!(shorthand_token.kind, TokenKind::ClosureShorthandParam);
         assert_eq!(shorthand_token.span.start, 0);
         assert_eq!(shorthand_token.span.end, 3);
@@ -204,5 +247,71 @@ mod tests {
         let token = lex_ident_like(&mut cursor).expect("identifier");
         assert_eq!(token.kind, TokenKind::Ident);
         assert!(cursor.is_eof());
+    }
+
+    #[test]
+    fn lex_simple_lifetime() {
+        let mut cursor = SourceCursor::new("'a");
+        let token = lex_lifetime(&mut cursor).expect("lifetime");
+        assert_eq!(token.kind, TokenKind::Lifetime);
+        assert_eq!(token.span.start, 0);
+        assert_eq!(token.span.end, 2);
+        assert!(cursor.is_eof());
+    }
+
+    #[test]
+    fn lex_lifetime_longer_name() {
+        let mut cursor = SourceCursor::new("'static");
+        let token = lex_lifetime(&mut cursor).expect("lifetime");
+        assert_eq!(token.kind, TokenKind::Lifetime);
+        assert_eq!(token.span.start, 0);
+        assert_eq!(token.span.end, 7);
+        assert!(cursor.is_eof());
+    }
+
+    #[test]
+    fn lex_lifetime_with_underscore() {
+        let mut cursor = SourceCursor::new("'_");
+        let token = lex_lifetime(&mut cursor).expect("lifetime");
+        assert_eq!(token.kind, TokenKind::Lifetime);
+        assert_eq!(token.span.start, 0);
+        assert_eq!(token.span.end, 2);
+        assert!(cursor.is_eof());
+    }
+
+    #[test]
+    fn lex_lifetime_followed_by_type() {
+        let mut cursor = SourceCursor::new("'a T");
+        let token = lex_lifetime(&mut cursor).expect("lifetime");
+        assert_eq!(token.kind, TokenKind::Lifetime);
+        assert_eq!(token.span.start, 0);
+        assert_eq!(token.span.end, 2);
+        assert_eq!(cursor.remaining(), " T");
+    }
+
+    #[test]
+    fn lifetime_does_not_lex_keyword() {
+        for keyword in ["'fn", "'struct", "'self"] {
+            let mut cursor = SourceCursor::new(keyword);
+            let token = lex_lifetime(&mut cursor);
+            assert!(token.is_none(), "input: {keyword}");
+            assert_eq!(cursor.offset(), 0, "input: {keyword}");
+        }
+    }
+
+    #[test]
+    fn lifetime_does_not_lex_empty() {
+        let mut cursor = SourceCursor::new("''");
+        let token = lex_lifetime(&mut cursor);
+        assert!(token.is_none());
+        assert_eq!(cursor.offset(), 0);
+    }
+
+    #[test]
+    fn lifetime_does_not_lex_number() {
+        let mut cursor = SourceCursor::new("'1");
+        let token = lex_lifetime(&mut cursor);
+        assert!(token.is_none());
+        assert_eq!(cursor.offset(), 0);
     }
 }

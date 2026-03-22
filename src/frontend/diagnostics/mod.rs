@@ -22,5 +22,6 @@ pub use render::DiagnosticRenderer;
 pub use resolve::diagnostic_from_resolve_error;
 pub use semantic::{
     diagnostic_from_control_flow_issue, diagnostic_from_expr_check_issue,
-    diagnostic_from_stmt_check_issue, diagnostics_from_semantic_checks,
+    diagnostic_from_stmt_check_issue, diagnostics_from_inference_checks,
+    diagnostics_from_semantic_checks,
 };

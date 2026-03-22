@@ -39,8 +39,10 @@ pub struct FrontendContext {
     library_root_file_id: Option<FileId>,
     hir_by_entry_file_id: BTreeMap<FileId, SemanticHirInput>,
     scope_graph_by_entry_file_id: BTreeMap<FileId, ScopeGraph>,
-    scope_symbols_by_entry_file_id: BTreeMap<FileId, BTreeMap<FileId, ScopeSymbols>>,
-    imports_by_entry_file_id: BTreeMap<FileId, BTreeMap<FileId, ResolvedImports>>,
+    scope_symbols_by_entry_file_id:
+        BTreeMap<FileId, BTreeMap<FileId, ScopeSymbols>>,
+    imports_by_entry_file_id:
+        BTreeMap<FileId, BTreeMap<FileId, ResolvedImports>>,
     external_lookup_by_entry_file_id: BTreeMap<FileId, ExternalSemanticLookup>,
     item_definitions_by_entry_file_id:
         BTreeMap<FileId, BTreeMap<ItemId, DefinitionLocation>>,
@@ -261,7 +263,9 @@ impl FrontendContext {
 
     /// Returns configured current-library named root bridge.
     #[must_use]
-    pub fn current_library_root_config(&self) -> (Option<&str>, Option<FileId>) {
+    pub fn current_library_root_config(
+        &self,
+    ) -> (Option<&str>, Option<FileId>) {
         (
             self.current_library_import_root.as_deref(),
             self.library_root_file_id,
@@ -702,7 +706,8 @@ impl FrontendContext {
         &self,
         entry_file_id: FileId,
     ) -> Option<&DiagnosticsBag> {
-        self.analysis_diagnostics_by_entry_file_id.get(&entry_file_id)
+        self.analysis_diagnostics_by_entry_file_id
+            .get(&entry_file_id)
     }
 
     #[must_use]
@@ -727,7 +732,8 @@ impl FrontendContext {
         external_lookup: ExternalSemanticLookup,
         item_definitions: BTreeMap<ItemId, DefinitionLocation>,
     ) {
-        self.scope_graph_by_entry_file_id.insert(entry_file_id, graph);
+        self.scope_graph_by_entry_file_id
+            .insert(entry_file_id, graph);
         self.scope_symbols_by_entry_file_id
             .insert(entry_file_id, symbols);
         self.imports_by_entry_file_id.insert(entry_file_id, imports);
@@ -743,7 +749,8 @@ impl FrontendContext {
         entry_file_id: FileId,
         semantic: SemanticAnalysis,
     ) {
-        self.semantic_by_entry_file_id.insert(entry_file_id, semantic);
+        self.semantic_by_entry_file_id
+            .insert(entry_file_id, semantic);
         self.unresolved_entries.remove(&entry_file_id);
     }
 

@@ -1,14 +1,14 @@
 use super::body_env::BodyTypeEnvironmentTable;
 use super::hir_input::SemanticHirInput;
 use super::{BuiltinType, Type, TypedItemTable};
-use crate::midend::type_check::{
-    ExprCheckIssue, ExprCheckIssueKind, ExpressionTypeTable,
-    check_expression_types, BodyStmtId, StatementKind, StatementTypeEntry,
-    StatementTypeTable, check_statements_with_expression_types,
-};
 use crate::frontend::ast::Span;
 use crate::frontend::hir::HirBodyId;
 use crate::frontend::resolver::{DeclarationOwner, ResolvedBodyTable};
+use crate::midend::type_check::{
+    BodyStmtId, ExprCheckIssue, ExprCheckIssueKind, ExpressionTypeTable,
+    StatementKind, StatementTypeEntry, StatementTypeTable,
+    check_expression_types, check_statements_with_expression_types,
+};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

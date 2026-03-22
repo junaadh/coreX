@@ -59,11 +59,8 @@ impl SourceDb {
         let Some(existing) = self.file(id) else {
             return false;
         };
-        let updated = SourceFile::new(
-            id,
-            existing.path().to_path_buf(),
-            source.into(),
-        );
+        let updated =
+            SourceFile::new(id, existing.path().to_path_buf(), source.into());
         let Some(slot) = self.file_mut(id) else {
             return false;
         };

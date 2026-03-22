@@ -11,19 +11,20 @@ use core_x::frontend::hir::{
     HirArrayElement, HirBodyId, HirExprId, HirExprKind, HirStmtKind,
     HirStructExprField,
 };
-use core_x::frontend::resolver::{
-    ItemId, ResolvedScopeKind,
-};
+use core_x::frontend::resolver::{ItemId, LocalId, ResolvedScopeKind};
 use core_x::frontend::source::{FileId, SourceDb, SourceFile};
 use core_x::frontend::{
     DefinitionLocation, DefinitionTarget, DesugaredFile, Diagnostic,
     DiagnosticsBag, ExternalSemanticLookup, FrontendContext, GlobalItem,
     GlobalItemTable, ImportRootKind, MacroDefinitionIndex, MacroScopeTable,
-    ParseSessionError, ProjectLoader, SemanticAnalysis,
-    SemanticCompletionKind, analyze_project,
-    build_target_roots, completion_candidates_for_file,
+    ParseSessionError, ProjectLoader, SemanticAnalysis, SemanticCompletionKind,
+    analyze_project, build_target_roots, completion_candidates_for_file,
     load_local_dependency_project_graph, local_binding_type,
     lookup_definition_target,
+};
+use core_x::midend::{
+    BodyInferenceTable, CompletionContext, CompletionData, CompletionInput,
+    CompletionKind, completion_candidates,
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -40,6 +41,7 @@ pub struct DocumentAnalysis {
     pub diagnostics: DiagnosticsBag,
     pub imports: BTreeMap<FileId, core_x::frontend::ResolvedImports>,
     pub semantic: Option<SemanticAnalysis>,
+    pub inference: Option<BodyInferenceTable>,
     external_lookup: ExternalSemanticLookup,
     path_by_file_id: BTreeMap<FileId, PathBuf>,
     file_id_by_path: BTreeMap<PathBuf, FileId>,
@@ -72,14 +74,18 @@ fn analyze_document_uncached(
     };
     let open_text_by_path = state.open_text_by_path();
     if state.pipeline_state(uri).is_none() {
-        let pipeline = if let Some(project_root) = find_project_root(&document.path) {
+        let pipeline = if let Some(project_root) =
+            find_project_root(&document.path)
+        {
             build_project_pipeline_state(
                 &document.path,
                 &document.text,
                 &open_text_by_path,
                 &project_root,
             )
-            .or_else(|_| build_standalone_pipeline_state(&document.path, &document.text))?
+            .or_else(|_| {
+                build_standalone_pipeline_state(&document.path, &document.text)
+            })?
         } else {
             build_standalone_pipeline_state(&document.path, &document.text)?
         };
@@ -90,14 +96,15 @@ fn analyze_document_uncached(
         return Err(format!("missing analysis pipeline state for {uri}"));
     };
     sync_pipeline_with_open_documents(pipeline, &open_text_by_path)?;
-    let frontend_analysis = analyze_project(&mut pipeline.frontend, &pipeline.entry_files)
-        .map_err(|error| {
-            format_parse_session_error(
-                &pipeline.frontend,
-                error,
-                "failed to run canonical frontend analysis for",
-            )
-        })?;
+    let frontend_analysis =
+        analyze_project(&mut pipeline.frontend, &pipeline.entry_files)
+            .map_err(|error| {
+                format_parse_session_error(
+                    &pipeline.frontend,
+                    error,
+                    "failed to run canonical frontend analysis for",
+                )
+            })?;
     build_document_analysis_from_frontend(
         uri.to_string(),
         pipeline,
@@ -189,7 +196,15 @@ pub fn hover_for_position(
 ) -> Option<Value> {
     let file = analysis.db.file(analysis.primary_file_id)?;
     let offset = position_to_offset(file, position)?;
-    let (word, span) = word_span_at_position(file, position)?;
+    let word_span = word_span_at_position(file, position);
+    let word = word_span.as_ref().map(|(word, _)| word.clone());
+    let highlight_span = word_span.map_or_else(
+        || {
+            let end = offset.saturating_add(1).min(file.len());
+            core_x::frontend::ast::Span::new(offset, end)
+        },
+        |(_, span)| span,
+    );
 
     if let Some(semantic) = &analysis.semantic {
         if let Some(target) = lookup_definition_target(
@@ -199,13 +214,17 @@ pub fn hover_for_position(
             &analysis.item_definitions,
             analysis.primary_file_id,
             offset,
-            Some(&word),
+            word.as_deref(),
         ) {
             let hover_text = match target {
                 DefinitionTarget::LocalBinding { local_id, .. } => {
-                    let local_type = local_binding_type(semantic, local_id)?;
+                    let local_type = inferred_local_type_for_resolved_local(
+                        analysis, semantic, local_id,
+                    )
+                    .or_else(|| local_binding_type(semantic, local_id))?;
+                    let local_name = word.as_deref().unwrap_or("binding");
                     format!(
-                        "local `{word}`: {}",
+                        "local `{local_name}`: {}",
                         format_type(local_type, &semantic.global_items)
                     )
                 }
@@ -251,7 +270,19 @@ pub fn hover_for_position(
                     "kind": "plaintext",
                     "value": hover_text,
                 },
-                "range": span_to_lsp_range(file, span),
+                "range": span_to_lsp_range(file, highlight_span),
+            }));
+        }
+
+        if let Some(expr_hover_text) =
+            inferred_expression_hover_text(analysis, semantic, offset)
+        {
+            return Some(json!({
+                "contents": {
+                    "kind": "plaintext",
+                    "value": expr_hover_text,
+                },
+                "range": span_to_lsp_range(file, highlight_span),
             }));
         }
     }
@@ -315,22 +346,74 @@ pub fn completion_for_position(
     let prefix = word_span_at_position(file, position)
         .map(|(word, _)| word)
         .unwrap_or_default();
-    let mut items = BTreeMap::new();
 
-    for keyword in [
-        "fn", "struct", "enum", "protocol", "scope", "use", "let", "var", "if",
-        "else", "while", "for", "return", "async", "unsafe", "await", "root",
-        "super",
-    ] {
-        insert_completion_item(
-            &mut items,
-            keyword.to_string(),
-            14,
-            "keyword".to_string(),
-        );
-    }
+    let Some(offset) = position_to_offset(file, position) else {
+        return Vec::new();
+    };
 
+    // Try HIR-driven completion first
     if let Some(semantic) = &analysis.semantic {
+        // Prepare HIR files and analysis data for completion input
+        let hir_files: BTreeMap<
+            core_x::frontend::source::FileId,
+            core_x::frontend::hir::HirFile,
+        > = semantic
+            .hir
+            .hir_files
+            .iter()
+            .map(|hir_file| (hir_file.file_id, hir_file.clone()))
+            .collect();
+
+        // Get expression type table
+        let expression_types = semantic.expr_types.clone();
+
+        // Get signature table
+        let signatures = semantic.signatures.clone();
+
+        // Build completion input
+        let completion_input = CompletionInput::new(
+            &analysis.db,
+            &hir_files,
+            semantic,
+            &signatures,
+            &expression_types,
+            &analysis.imports,
+            &analysis.external_lookup,
+        );
+
+        // Compute completion candidates from midend
+        let hir_completion_items = if let Some(completion_data) =
+            completion_candidates(&completion_input, analysis.primary_file_id, offset)
+        {
+            convert_completion_data_to_lsp(completion_data, &prefix)
+        } else {
+            Vec::new()
+        };
+
+        // Build items map from HIR completion
+        let mut items: BTreeMap<String, Value> = BTreeMap::new();
+        for item in hir_completion_items {
+            if let Some(label) = item.get("label").and_then(Value::as_str) {
+                items.insert(label.to_string(), item);
+            }
+        }
+
+        // Add keywords
+        for keyword in [
+            "fn", "struct", "enum", "protocol", "scope", "use", "let", "var", "if",
+            "else", "while", "for", "return", "async", "unsafe", "await", "root",
+            "super",
+        ] {
+            insert_completion_item(
+                &mut items,
+                keyword.to_string(),
+                14,
+                "keyword".to_string(),
+            );
+        }
+
+        // Always add semantic completion candidates (they complement HIR completion)
+        // The midend completion may not include all local bindings yet
         for candidate in completion_candidates_for_file(
             semantic,
             &analysis.imports,
@@ -343,20 +426,22 @@ pub fn completion_for_position(
                 candidate.detail,
             );
         }
+
+        return items
+            .into_values()
+            .filter(|entry| {
+                if prefix.is_empty() {
+                    return true;
+                }
+                entry
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .is_some_and(|label| label.starts_with(&prefix))
+            })
+            .collect();
     }
 
-    items
-        .into_values()
-        .filter(|entry| {
-            if prefix.is_empty() {
-                return true;
-            }
-            entry
-                .get("label")
-                .and_then(Value::as_str)
-                .is_some_and(|label| label.starts_with(&prefix))
-        })
-        .collect()
+    Vec::new()
 }
 
 pub fn inlay_hints_for_range(
@@ -375,6 +460,9 @@ pub fn inlay_hints_for_range(
     let Some(semantic) = &analysis.semantic else {
         return Vec::new();
     };
+    let Some(inference) = &analysis.inference else {
+        return Vec::new();
+    };
 
     let mut seen = BTreeSet::new();
     let mut hints = Vec::new();
@@ -382,15 +470,6 @@ pub fn inlay_hints_for_range(
         if body.containing_scope_file_id != analysis.primary_file_id {
             continue;
         }
-        let Some(typed_body) =
-            semantic.typed_bodies.body(&body.owner, body.body_index)
-        else {
-            continue;
-        };
-        let Some(env) = semantic.body_envs.env(&body.owner, body.body_index)
-        else {
-            continue;
-        };
 
         for local in &body.locals {
             if local.declared_type.is_some() {
@@ -403,12 +482,11 @@ pub fn inlay_hints_for_range(
             ) {
                 continue;
             }
-            let Some(hir_local_id) =
-                env.hir_local_id_for_resolved_local(local.id)
-            else {
-                continue;
-            };
-            let Some(ty) = typed_body.local_types.get(&hir_local_id) else {
+            let Some(ty) = inference.local_type_for_resolved_local(
+                &body.owner,
+                body.body_index,
+                local.id,
+            ) else {
                 continue;
             };
             if ty.is_error() {
@@ -453,6 +531,84 @@ pub fn inlay_hints_for_range(
         lhs_line.cmp(&rhs_line).then(lhs_col.cmp(&rhs_col))
     });
     hints
+}
+
+fn inferred_local_type_for_resolved_local<'a>(
+    analysis: &'a DocumentAnalysis,
+    semantic: &SemanticAnalysis,
+    local_id: LocalId,
+) -> Option<&'a core_x::frontend::Type> {
+    let inference = analysis.inference.as_ref()?;
+    for body in semantic.resolved_bodies.iter() {
+        if !body.locals.iter().any(|local| local.id == local_id) {
+            continue;
+        }
+        if let Some(ty) = inference.local_type_for_resolved_local(
+            &body.owner,
+            body.body_index,
+            local_id,
+        ) {
+            return Some(ty);
+        }
+    }
+    None
+}
+
+fn inferred_expression_hover_text(
+    analysis: &DocumentAnalysis,
+    semantic: &SemanticAnalysis,
+    offset: usize,
+) -> Option<String> {
+    let inference = analysis.inference.as_ref()?;
+    let mut best = None::<(usize, core_x::frontend::Type)>;
+
+    for body in semantic.resolved_bodies.iter() {
+        if body.containing_scope_file_id != analysis.primary_file_id {
+            continue;
+        }
+        let Some(body_ref) =
+            semantic.hir.body_ref(&body.owner, body.body_index)
+        else {
+            continue;
+        };
+        if body_ref.file_id != analysis.primary_file_id {
+            continue;
+        }
+        let Some(module) = semantic.hir.hir_modules.get(&body_ref.file_id)
+        else {
+            continue;
+        };
+
+        for (expr_id, expr) in &module.exprs {
+            let span = expr.origin.span;
+            if !(span.start <= offset && offset <= span.end) {
+                continue;
+            }
+            let Some(ty) = inference.expr_type_for_hir_expr(
+                &body.owner,
+                body.body_index,
+                *expr_id,
+            ) else {
+                continue;
+            };
+            if ty.is_error() {
+                continue;
+            }
+            let span_len = span.end.saturating_sub(span.start);
+            if best
+                .as_ref()
+                .is_none_or(|(existing_len, _)| span_len <= *existing_len)
+            {
+                best = Some((span_len, ty.clone()));
+            }
+        }
+    }
+
+    let (_, ty) = best?;
+    Some(format!(
+        "expr: {}",
+        format_type(&ty, &semantic.global_items)
+    ))
 }
 
 fn build_standalone_pipeline_state(
@@ -540,19 +696,19 @@ fn build_project_pipeline_state(
             (root.kind == ImportRootKind::CurrentLibrary).then(|| name.clone())
         });
     let dependency_named_roots =
-        build_dependency_named_roots(&project_graph, &target_roots)
-            .map_err(|error| {
-                format!("failed to build dependency import roots: {error}")
-            })?;
+        build_dependency_named_roots(&project_graph, &target_roots).map_err(
+            |error| format!("failed to build dependency import roots: {error}"),
+        )?;
     frontend.set_dependency_named_roots(dependency_named_roots);
     let library_root_file_id = manifest.library.as_ref().and_then(|library| {
-        file_id_by_path.get(&normalize_path(&library.root_file)).copied()
+        file_id_by_path
+            .get(&normalize_path(&library.root_file))
+            .copied()
     });
-    frontend
-        .configure_current_library_root(
-            current_library_import_root,
-            library_root_file_id,
-        );
+    frontend.configure_current_library_root(
+        current_library_import_root,
+        library_root_file_id,
+    );
 
     let (root_kind, root_file_id) =
         select_target_for_file(&manifest, &path, &file_id_by_path)?;
@@ -603,7 +759,14 @@ fn build_document_analysis_from_frontend(
     let imports = resolution
         .map(|tables| tables.imports.clone())
         .unwrap_or_default();
-    let semantic = frontend_analysis.semantic_tables.get(&primary_entry).cloned();
+    let semantic = frontend_analysis
+        .semantic_tables
+        .get(&primary_entry)
+        .cloned();
+    let inference = frontend_analysis
+        .inference_tables
+        .get(&primary_entry)
+        .cloned();
     let external_lookup = resolution
         .map(|tables| tables.external_lookup.clone())
         .unwrap_or_else(ExternalSemanticLookup::new);
@@ -628,6 +791,7 @@ fn build_document_analysis_from_frontend(
         diagnostics: frontend_analysis.diagnostics,
         imports,
         semantic,
+        inference,
         external_lookup,
         path_by_file_id: pipeline.frontend.path_by_file_id().clone(),
         file_id_by_path: pipeline.frontend.file_id_by_path().clone(),
@@ -747,93 +911,95 @@ fn collect_method_definitions(
                 ),
                 _ => continue,
             };
-            let Some(item_id) = in_scope_items
-                .iter()
-                .find_map(|(name, kind, id)| {
+            let Some(item_id) =
+                in_scope_items.iter().find_map(|(name, kind, id)| {
                     (name == &item_name && *kind == item_kind).then_some(*id)
                 })
             else {
                 continue;
             };
-        match &item.node {
-            Item::Struct(struct_decl) => {
-                for member in &struct_decl.node.members {
-                    match &member.node {
-                        StructMember::Function(function_decl) => {
-                            method_definitions.insert(
-                                (item_id, function_decl.node.name.clone()),
-                                DefinitionLocation {
-                                    file_id: parsed.file_id,
-                                    span: member.span,
-                                },
-                            );
+            match &item.node {
+                Item::Struct(struct_decl) => {
+                    for member in &struct_decl.node.members {
+                        match &member.node {
+                            StructMember::Function(function_decl) => {
+                                method_definitions.insert(
+                                    (item_id, function_decl.node.name.clone()),
+                                    DefinitionLocation {
+                                        file_id: parsed.file_id,
+                                        span: member.span,
+                                    },
+                                );
+                            }
+                            StructMember::Init(_) => {
+                                method_definitions.insert(
+                                    (item_id, "init".to_string()),
+                                    DefinitionLocation {
+                                        file_id: parsed.file_id,
+                                        span: member.span,
+                                    },
+                                );
+                            }
+                            StructMember::Field(_) => {}
                         }
-                        StructMember::Init(_) => {
-                            method_definitions.insert(
-                                (item_id, "init".to_string()),
-                                DefinitionLocation {
-                                    file_id: parsed.file_id,
-                                    span: member.span,
-                                },
-                            );
-                        }
-                        StructMember::Field(_) => {}
                     }
                 }
-            }
-            Item::Enum(enum_decl) => {
-                for member in &enum_decl.node.members {
-                    match &member.node {
-                        EnumMember::Function(function_decl) => {
-                            method_definitions.insert(
-                                (item_id, function_decl.node.name.clone()),
-                                DefinitionLocation {
-                                    file_id: parsed.file_id,
-                                    span: member.span,
-                                },
-                            );
+                Item::Enum(enum_decl) => {
+                    for member in &enum_decl.node.members {
+                        match &member.node {
+                            EnumMember::Function(function_decl) => {
+                                method_definitions.insert(
+                                    (item_id, function_decl.node.name.clone()),
+                                    DefinitionLocation {
+                                        file_id: parsed.file_id,
+                                        span: member.span,
+                                    },
+                                );
+                            }
+                            EnumMember::Init(_) => {
+                                method_definitions.insert(
+                                    (item_id, "init".to_string()),
+                                    DefinitionLocation {
+                                        file_id: parsed.file_id,
+                                        span: member.span,
+                                    },
+                                );
+                            }
+                            EnumMember::Case(_) => {}
                         }
-                        EnumMember::Init(_) => {
-                            method_definitions.insert(
-                                (item_id, "init".to_string()),
-                                DefinitionLocation {
-                                    file_id: parsed.file_id,
-                                    span: member.span,
-                                },
-                            );
-                        }
-                        EnumMember::Case(_) => {}
                     }
                 }
-            }
-            Item::Protocol(protocol_decl) => {
-                for member in &protocol_decl.node.members {
-                    match &member.node {
-                        ProtocolMember::Function(function_member) => {
-                            method_definitions.insert(
-                                (item_id, function_member.node.name.clone()),
-                                DefinitionLocation {
-                                    file_id: parsed.file_id,
-                                    span: member.span,
-                                },
-                            );
+                Item::Protocol(protocol_decl) => {
+                    for member in &protocol_decl.node.members {
+                        match &member.node {
+                            ProtocolMember::Function(function_member) => {
+                                method_definitions.insert(
+                                    (
+                                        item_id,
+                                        function_member.node.name.clone(),
+                                    ),
+                                    DefinitionLocation {
+                                        file_id: parsed.file_id,
+                                        span: member.span,
+                                    },
+                                );
+                            }
+                            ProtocolMember::Initializer(_) => {
+                                method_definitions.insert(
+                                    (item_id, "init".to_string()),
+                                    DefinitionLocation {
+                                        file_id: parsed.file_id,
+                                        span: member.span,
+                                    },
+                                );
+                            }
+                            ProtocolMember::AssociatedType(_)
+                            | ProtocolMember::Property(_) => {}
                         }
-                        ProtocolMember::Initializer(_) => {
-                            method_definitions.insert(
-                                (item_id, "init".to_string()),
-                                DefinitionLocation {
-                                    file_id: parsed.file_id,
-                                    span: member.span,
-                                },
-                            );
-                        }
-                        ProtocolMember::AssociatedType(_)
-                        | ProtocolMember::Property(_) => {}
                     }
                 }
+                _ => {}
             }
-            _ => {}
-        }
         }
     }
 
@@ -870,7 +1036,8 @@ fn method_location_for_position(
         ) else {
             continue;
         };
-        let Some(receiver_item_id) = named_item_id_from_type(receiver_ty) else {
+        let Some(receiver_item_id) = named_item_id_from_type(receiver_ty)
+        else {
             continue;
         };
         let key = (receiver_item_id, method_call.method_name.clone());
@@ -984,10 +1151,9 @@ fn search_method_call_in_expr(
                     method_name: method_name.clone(),
                     span_len: span.end.saturating_sub(span.start),
                 };
-                if best.as_ref().map_or(
-                    true,
-                    |existing| candidate.span_len <= existing.span_len,
-                ) {
+                if best.as_ref().map_or(true, |existing| {
+                    candidate.span_len <= existing.span_len
+                }) {
                     *best = Some(candidate);
                 }
             }
@@ -998,8 +1164,9 @@ fn search_method_call_in_expr(
         HirExprKind::Array { elements } => {
             for element in elements {
                 let child = match element {
-                    HirArrayElement::Expr(id)
-                    | HirArrayElement::Spread(id) => *id,
+                    HirArrayElement::Expr(id) | HirArrayElement::Spread(id) => {
+                        *id
+                    }
                 };
                 search_method_call_in_expr(
                     module,
@@ -1032,10 +1199,9 @@ fn search_method_call_in_expr(
             if let Some(child) =
                 find_method_call_at_offset(module, *body, offset, fallback_word)
             {
-                if best.as_ref().map_or(
-                    true,
-                    |existing| child.span_len <= existing.span_len,
-                ) {
+                if best.as_ref().map_or(true, |existing| {
+                    child.span_len <= existing.span_len
+                }) {
                     *best = Some(child);
                 }
             }
@@ -1058,10 +1224,9 @@ fn search_method_call_in_expr(
                 offset,
                 fallback_word,
             ) {
-                if best.as_ref().map_or(
-                    true,
-                    |existing| child.span_len <= existing.span_len,
-                ) {
+                if best.as_ref().map_or(true, |existing| {
+                    child.span_len <= existing.span_len
+                }) {
                     *best = Some(child);
                 }
             }
@@ -1086,10 +1251,9 @@ fn search_method_call_in_expr(
             if let Some(child) =
                 find_method_call_at_offset(module, *body, offset, fallback_word)
             {
-                if best.as_ref().map_or(
-                    true,
-                    |existing| child.span_len <= existing.span_len,
-                ) {
+                if best.as_ref().map_or(true, |existing| {
+                    child.span_len <= existing.span_len
+                }) {
                     *best = Some(child);
                 }
             }
@@ -1105,10 +1269,9 @@ fn search_method_call_in_expr(
             if let Some(child) =
                 find_method_call_at_offset(module, *body, offset, fallback_word)
             {
-                if best.as_ref().map_or(
-                    true,
-                    |existing| child.span_len <= existing.span_len,
-                ) {
+                if best.as_ref().map_or(true, |existing| {
+                    child.span_len <= existing.span_len
+                }) {
                     *best = Some(child);
                 }
             }
@@ -1154,8 +1317,20 @@ fn search_method_call_in_expr(
             );
         }
         HirExprKind::Binary { lhs, rhs, .. } => {
-            search_method_call_in_expr(module, *lhs, offset, fallback_word, best);
-            search_method_call_in_expr(module, *rhs, offset, fallback_word, best);
+            search_method_call_in_expr(
+                module,
+                *lhs,
+                offset,
+                fallback_word,
+                best,
+            );
+            search_method_call_in_expr(
+                module,
+                *rhs,
+                offset,
+                fallback_word,
+                best,
+            );
         }
         HirExprKind::Field { base, .. }
         | HirExprKind::OptionalField { base, .. }
@@ -1251,10 +1426,9 @@ fn search_method_call_in_expr(
             if let Some(child) =
                 find_method_call_at_offset(module, *body, offset, fallback_word)
             {
-                if best.as_ref().map_or(
-                    true,
-                    |existing| child.span_len <= existing.span_len,
-                ) {
+                if best.as_ref().map_or(true, |existing| {
+                    child.span_len <= existing.span_len
+                }) {
                     *best = Some(child);
                 }
             }
@@ -1457,6 +1631,78 @@ fn completion_kind_for_semantic_candidate(kind: SemanticCompletionKind) -> i32 {
         SemanticCompletionKind::ImportEnum | SemanticCompletionKind::Enum => 13,
         SemanticCompletionKind::ImportProtocol
         | SemanticCompletionKind::Protocol => 8,
+    }
+}
+
+/// Convert HIR-driven completion data to LSP completion items.
+///
+/// This function converts the semantic completion results from the new
+/// midend::completion system into LSP completion items.
+fn convert_completion_data_to_lsp(
+    completion_data: CompletionData,
+    prefix: &str,
+) -> Vec<Value> {
+    let context_info = format_completion_context(&completion_data.context);
+
+    completion_data
+        .candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            // Filter by prefix if provided
+            if !prefix.is_empty() && !candidate.label.starts_with(prefix) {
+                return None;
+            }
+
+            let lsp_kind = completion_kind_to_lsp(candidate.kind);
+
+            Some(json!({
+                "label": candidate.label,
+                "kind": lsp_kind,
+                "detail": candidate.detail.unwrap_or_default(),
+                "documentation": candidate.documentation.unwrap_or_default(),
+                "context": context_info,
+                "deprecated": candidate.metadata.deprecated,
+            }))
+        })
+        .collect()
+}
+
+/// Format completion context for debugging/display purposes.
+fn format_completion_context(context: &CompletionContext) -> String {
+    match context {
+        CompletionContext::Global => "global".to_string(),
+        CompletionContext::PathAccess { scope_item } => {
+            format!("path::{:?}", scope_item)
+        }
+        CompletionContext::AssociatedAccess { base_type } => {
+            format!("associated::{:?}", base_type)
+        }
+        CompletionContext::MemberAccess { receiver_type } => {
+            format!("member::{:?}", receiver_type)
+        }
+        CompletionContext::EnumCaseAccess { enum_type } => {
+            format!("enum::{:?}", enum_type)
+        }
+    }
+}
+
+/// Convert internal CompletionKind to LSP completion item kind.
+///
+/// LSP completion item kinds are defined by the Language Server Protocol.
+/// See: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#completionItemKind
+fn completion_kind_to_lsp(kind: CompletionKind) -> i32 {
+    match kind {
+        CompletionKind::Local => 6,           // Variable
+        CompletionKind::Function => 3,        // Function
+        CompletionKind::Struct => 22,         // Struct
+        CompletionKind::Enum => 13,           // Enum
+        CompletionKind::EnumVariant => 12, // EnumMember (LSP 3.15+) or close to it
+        CompletionKind::Protocol => 8,     // Interface
+        CompletionKind::Field => 5,        // Field
+        CompletionKind::Scope => 9,        // Module
+        CompletionKind::TypeParameter => 14, // TypeParameter
+        CompletionKind::AssociatedType => 14, // TypeParameter (close enough)
+        CompletionKind::Property => 10,    // Property
     }
 }
 

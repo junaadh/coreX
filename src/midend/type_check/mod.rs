@@ -15,7 +15,7 @@ pub use expr_check::{
 pub use signatures::{
     SignatureTypingIssue, SignatureTypingIssueKind, TypedAssociatedTypeBounds,
     TypedEnumCaseSignature, TypedEnumSignatureData, TypedFunctionSignature,
-    TypedImplSignature, TypedNamedFunctionSignature,
+    TypedImplSignature, TypedNamedFunctionSignature, TypedParamLabel,
     TypedProtocolProperty, TypedProtocolSignatureData, TypedSignatureTable,
     TypedStructField, TypedStructSignatureData, type_declaration_signatures,
 };
@@ -34,4 +34,6 @@ pub use typed_bodies::{
 };
 
 // Re-export types from frontend::semantic that are still needed
-pub use crate::frontend::semantic::types::{BuiltinType, Mutability, NamedTypeKind, Type};
+pub use crate::frontend::semantic::types::{
+    BuiltinType, Mutability, NamedTypeKind, Type,
+};

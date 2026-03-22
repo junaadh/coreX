@@ -1,7 +1,4 @@
 use super::expr_check::{ExpressionTypeTable, check_expression_types};
-use crate::frontend::semantic::body_env::BodyTypeEnvironmentTable;
-use crate::frontend::semantic::hir_input::{SemanticBodyRef, SemanticHirInput};
-use crate::frontend::semantic::TypedItemTable;
 use super::{BuiltinType, Type};
 use crate::frontend::ast::Span;
 use crate::frontend::hir::{
@@ -11,6 +8,9 @@ use crate::frontend::hir::{
 use crate::frontend::resolver::{
     DeclarationOwner, LocalId, ResolvedBody, ResolvedBodyTable,
 };
+use crate::frontend::semantic::TypedItemTable;
+use crate::frontend::semantic::body_env::BodyTypeEnvironmentTable;
+use crate::frontend::semantic::hir_input::{SemanticBodyRef, SemanticHirInput};
 use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

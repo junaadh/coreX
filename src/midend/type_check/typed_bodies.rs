@@ -1,11 +1,15 @@
 use super::Type;
-use crate::frontend::semantic::body_env::{BodyLocalBindingInfo, BodyTypeEnvironmentTable};
-use crate::frontend::semantic::control_flow::{BodyControlFlowId, ControlFlowTable};
-use crate::frontend::semantic::hir_input::SemanticHirInput;
 use super::expr_check::{BodyExprId, ExpressionTypeTable};
 use super::stmt_check::StatementTypeTable;
 use crate::frontend::hir::HirBodyId;
 use crate::frontend::resolver::{BodyKind, DeclarationOwner, LocalId};
+use crate::frontend::semantic::body_env::{
+    BodyLocalBindingInfo, BodyTypeEnvironmentTable,
+};
+use crate::frontend::semantic::control_flow::{
+    BodyControlFlowId, ControlFlowTable,
+};
+use crate::frontend::semantic::hir_input::SemanticHirInput;
 use crate::frontend::source::FileId;
 use std::collections::BTreeMap;
 

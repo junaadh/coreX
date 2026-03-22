@@ -513,6 +513,9 @@ impl<'a> BodyResolver<'a> {
                                         .or_default()
                                         .push(body);
                                 }
+                                ImplMember::AssociatedType(_assoc) => {
+                                    // Associated types don't have bodies
+                                }
                             }
                         }
                     }
@@ -611,7 +614,8 @@ impl<'a> BodyResolver<'a> {
         init_decl: &crate::frontend::ast::InitDecl,
     ) -> ResolvedBody {
         // Extract the receiver kind if present
-        let receiver_kind = init_decl.receiver.as_ref().map(|receiver| receiver.node);
+        let receiver_kind =
+            init_decl.receiver.as_ref().map(|receiver| receiver.node);
 
         let mut resolved = ResolvedBody {
             owner,
@@ -734,10 +738,8 @@ impl<'a> BodyResolver<'a> {
         init_member: &crate::frontend::ast::ProtocolInitMember,
     ) -> ResolvedBody {
         // Extract the receiver kind if present
-        let receiver_kind = init_member
-            .receiver
-            .as_ref()
-            .map(|receiver| receiver.node);
+        let receiver_kind =
+            init_member.receiver.as_ref().map(|receiver| receiver.node);
 
         let mut resolved = ResolvedBody {
             owner,
@@ -1361,6 +1363,11 @@ impl<'a> BodyResolver<'a> {
             | Expr::ShorthandMember { .. }
             | Expr::MethodCall { .. }
             | Expr::ConstructorCall { .. } => {}
+            Expr::Tuple(elems) => {
+                for elem in elems {
+                    self.resolve_expr(scope_file_id, scopes, body, elem, false);
+                }
+            }
         }
     }
 
@@ -1600,13 +1607,16 @@ impl<'a> BodyResolver<'a> {
                 }
             }
             AstType::SelfType => ResolvedTypeRef::SelfType,
-            AstType::Reference(inner) => ResolvedTypeRef::Reference(Box::new(
-                self.resolve_type_ref(owner, scope_file_id, &inner.node),
-            )),
-            AstType::MutableReference(inner) => {
-                ResolvedTypeRef::MutableReference(Box::new(
-                    self.resolve_type_ref(owner, scope_file_id, &inner.node),
-                ))
+            AstType::Lifetime(lifetime) => ResolvedTypeRef::Lifetime(lifetime.name.clone()),
+            AstType::Reference { lifetime, inner } => ResolvedTypeRef::Reference {
+                lifetime: lifetime.as_ref().map(|l| l.name.clone()),
+                inner: Box::new(self.resolve_type_ref(owner, scope_file_id, &inner.node)),
+            },
+            AstType::MutableReference { lifetime, inner } => {
+                ResolvedTypeRef::MutableReference {
+                    lifetime: lifetime.as_ref().map(|l| l.name.clone()),
+                    inner: Box::new(self.resolve_type_ref(owner, scope_file_id, &inner.node)),
+                }
             }
             AstType::ConstPointer(inner) => {
                 ResolvedTypeRef::ConstPointer(Box::new(self.resolve_type_ref(
@@ -1638,9 +1648,9 @@ impl<'a> BodyResolver<'a> {
                     &err.node,
                 )),
             },
-            AstType::Grouped(inner) => ResolvedTypeRef::Grouped(Box::new(
-                self.resolve_type_ref(owner, scope_file_id, &inner.node),
-            )),
+            AstType::Tuple(elems) => ResolvedTypeRef::Tuple(
+                elems.iter().map(|e| self.resolve_type_ref(owner, scope_file_id, &e.node)).collect()
+            ),
         }
     }
 

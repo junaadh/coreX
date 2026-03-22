@@ -1,12 +1,12 @@
 use super::Type;
-use crate::midend::type_check::signatures::{
-    TypedEnumSignatureData, TypedFunctionSignature, TypedImplSignature,
-    TypedProtocolSignatureData, TypedSignatureTable, TypedStructSignatureData,
-};
 use crate::frontend::resolver::{
     DeclarationOwner, GlobalItemTable, ItemId, ItemKind,
 };
 use crate::frontend::source::FileId;
+use crate::midend::type_check::signatures::{
+    TypedEnumSignatureData, TypedFunctionSignature, TypedImplSignature,
+    TypedProtocolSignatureData, TypedSignatureTable, TypedStructSignatureData,
+};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

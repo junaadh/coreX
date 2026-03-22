@@ -87,9 +87,11 @@ pub struct ParamDecl {
     pub ty: Spanned<Type>,
 }
 
+/// A generic parameter that can be either a type parameter or a lifetime parameter.
 #[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
-pub struct GenericParam {
-    pub name: String,
+pub enum GenericParam {
+    Type { name: String },
+    Lifetime { name: String },
 }
 
 #[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
@@ -215,6 +217,7 @@ pub struct EnumDecl {
 pub enum ImplMember {
     Init(Spanned<InitDecl>),
     Function(Spanned<FunctionDecl>),
+    AssociatedType(Spanned<AssociatedTypeDecl>),
 }
 
 #[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
@@ -222,6 +225,7 @@ pub struct ImplDecl {
     pub docs: Vec<Spanned<DocComment>>,
     pub attributes: Vec<Spanned<Attribute>>,
     pub modifiers: Vec<Modifier>,
+    pub lifetime_params: Vec<Spanned<GenericParam>>,
     pub target: Spanned<Type>,
     pub conformance: Option<Spanned<Type>>,
     pub members: Vec<Spanned<ImplMember>>,

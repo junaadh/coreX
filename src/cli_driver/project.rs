@@ -49,13 +49,14 @@ pub fn parse_single_file(
     let source = fs::read_to_string(path)?;
     let mut context = FrontendContext::new();
     let file_id = context.add_file(path.to_path_buf(), source);
-    let analysis = analyze_project(&mut context, &[file_id]).map_err(|error| {
-        format_parse_session_error(
-            &context,
-            error,
-            "failed to run frontend canonical analysis for",
-        )
-    })?;
+    let analysis =
+        analyze_project(&mut context, &[file_id]).map_err(|error| {
+            format_parse_session_error(
+                &context,
+                error,
+                "failed to run frontend canonical analysis for",
+            )
+        })?;
     let desugared = analysis
         .desugared
         .iter()
@@ -147,20 +148,20 @@ pub fn load_project_context(
     if let Some(target) = &library_target {
         entry_file_ids.push(target.root_file_id);
     }
-    entry_file_ids.extend(binary_targets.iter().map(|target| target.root_file_id));
+    entry_file_ids
+        .extend(binary_targets.iter().map(|target| target.root_file_id));
     if entry_file_ids.is_empty() {
         entry_file_ids.extend(frontend.ordered_file_ids().iter().copied());
     }
 
-    let analysis = analyze_project(&mut frontend, &entry_file_ids).map_err(
-        |error| {
+    let analysis =
+        analyze_project(&mut frontend, &entry_file_ids).map_err(|error| {
             format_parse_session_error(
                 &frontend,
                 error,
                 "failed to run frontend canonical analysis for project file",
             )
-        },
-    )?;
+        })?;
     let ordered_file_ids = frontend.ordered_file_ids().to_vec();
     let path_by_file_id = frontend.path_by_file_id().clone();
     let desugared_files = analysis.desugared.clone();
@@ -431,15 +432,14 @@ fn parse_loaded_project_files(
         entry_file_ids.extend(frontend.ordered_file_ids().iter().copied());
     }
 
-    let analysis = analyze_project(&mut frontend, &entry_file_ids).map_err(
-        |error| {
+    let analysis =
+        analyze_project(&mut frontend, &entry_file_ids).map_err(|error| {
             format_parse_session_error(
                 &frontend,
                 error,
                 "failed to run frontend canonical analysis for dependency file",
             )
-        },
-    )?;
+        })?;
     let path_by_file_id = frontend.path_by_file_id().clone();
     Ok((analysis, file_id_by_path, path_by_file_id))
 }

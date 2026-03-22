@@ -1,6 +1,16 @@
 macro passthrough {
 	rule (input: Expr) => { input };
 }
+/// a
+enum TokenKind {
+	Slash,
+	Star,
+	LParen,
+
+	fn is_star(&self) -> bool {
+		self == .Star
+	}
+}
 
 fn main() {
 	let a = @passthrough(1);
@@ -12,4 +22,9 @@ fn main() {
 	// Type mismatch
 	// b = 1;
 	b = false;
+
+	var a = TokenKind.Slash;
+	a = .Star;
+	let b = .LParen;
+	let is_star = a.is_star();
 }

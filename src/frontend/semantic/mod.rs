@@ -40,15 +40,15 @@ pub use types::{BuiltinType, Mutability, NamedTypeKind, Type};
 
 // Re-export from midend for backward compatibility
 pub use crate::midend::type_check::{
-    ExprCheckIssue, ExprCheckIssueKind, ExpressionTypeTable, StmtCheckIssue,
-    StmtCheckIssueKind, StatementKind, StatementTypeEntry, StatementTypeTable,
+    ExprCheckIssue, ExprCheckIssueKind, ExpressionTypeTable,
+    SignatureTypingIssue, SignatureTypingIssueKind, StatementKind,
+    StatementTypeEntry, StatementTypeTable, StmtCheckIssue, StmtCheckIssueKind,
     TypedBody, TypedBodyId, TypedBodyIssueKind, TypedBodyIssueMarker,
     TypedBodyTable, TypedBodyTableIssue, TypedBodyTableIssueKind,
     TypedEnumCaseSignature, TypedEnumSignatureData, TypedFunctionSignature,
     TypedImplSignature, TypedNamedFunctionSignature, TypedProtocolProperty,
     TypedProtocolSignatureData, TypedSignatureTable, TypedStructSignatureData,
-    SignatureTypingIssue, SignatureTypingIssueKind,
-    check_expression_types, check_expression_types_with_external_lookup,
-    check_statements, check_statements_with_expression_types,
-    type_declaration_signatures, build_typed_body_table,
+    build_typed_body_table, check_expression_types,
+    check_expression_types_with_external_lookup, check_statements,
+    check_statements_with_expression_types, type_declaration_signatures,
 };

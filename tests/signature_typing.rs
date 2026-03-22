@@ -5,7 +5,7 @@ use core_x::frontend::resolver::{
 use core_x::frontend::source::{FileId, SourceDb};
 use core_x::frontend::{
     DesugaredFile, NamedTypeKind, SemanticHirInput, SignatureTypingIssueKind,
-    Type, type_declaration_signatures,
+    Type, TypedParamLabel, type_declaration_signatures,
 };
 
 fn parsed_to_desugared(
@@ -414,4 +414,105 @@ fn missing_item_metadata_uses_structured_issue() {
                 if item_id == f_id
         ) && issue.containing_scope_file_id == Some(root.file_id)
     }));
+}
+
+#[test]
+fn typed_signatures_preserve_external_parameter_labels() {
+    let mut db = SourceDb::new();
+    let root = add_and_parse(
+        &mut db,
+        "src/root.cx",
+        "struct S { init(_ x: i32, label y: i32, z: i32) {} fn make(_ a: i32, ext b: i32, c: i32) {} } fn f(_ a: i32, label b: i32, c: i32) {}",
+    );
+    let parsed_files = vec![root.clone()];
+    let graph = resolve_library_graph(&db, &parsed_files, root.file_id);
+    let (item_table, hir) = resolve_tables(&graph, &parsed_files);
+    let typed = type_declaration_signatures(&hir, &item_table);
+
+    let f_id = get_item_id(&item_table, &["f"]);
+    let f_sig = typed.function(f_id).expect("f signature");
+    assert_eq!(
+        f_sig.param_labels,
+        vec![
+            TypedParamLabel::None,
+            TypedParamLabel::Explicit("label".to_string()),
+            TypedParamLabel::FromName,
+        ]
+    );
+
+    let s_id = get_item_id(&item_table, &["S"]);
+    let s_sig = typed.struct_data(s_id).expect("S signature");
+    assert_eq!(s_sig.initializer_signatures.len(), 1);
+    assert_eq!(
+        s_sig.initializer_signatures[0].param_labels,
+        vec![
+            TypedParamLabel::None,
+            TypedParamLabel::Explicit("label".to_string()),
+            TypedParamLabel::FromName,
+        ]
+    );
+    assert_eq!(s_sig.method_signatures.len(), 1);
+    assert_eq!(
+        s_sig.method_signatures[0].signature.param_labels,
+        vec![
+            TypedParamLabel::None,
+            TypedParamLabel::Explicit("ext".to_string()),
+            TypedParamLabel::FromName,
+        ]
+    );
+}
+
+#[test]
+fn self_type_resolves_in_impl_member_signatures() {
+    let mut db = SourceDb::new();
+    let root = add_and_parse(
+        &mut db,
+        "src/root.cx",
+        "struct S { fn own(_ value: Self) -> Self {} } impl S { init(_ value: Self) {} fn bounce(_ value: Self) -> Self {} }",
+    );
+    let parsed_files = vec![root.clone()];
+    let graph = resolve_library_graph(&db, &parsed_files, root.file_id);
+    let (item_table, hir) = resolve_tables(&graph, &parsed_files);
+    let typed = type_declaration_signatures(&hir, &item_table);
+
+    let s_id = get_item_id(&item_table, &["S"]);
+    let struct_sig = typed.struct_data(s_id).expect("struct signature");
+    assert_named_type(
+        &struct_sig.method_signatures[0].signature.param_types[0],
+        s_id,
+        NamedTypeKind::Struct,
+    );
+    assert_named_type(
+        struct_sig.method_signatures[0]
+            .signature
+            .return_type
+            .as_ref()
+            .expect("return type"),
+        s_id,
+        NamedTypeKind::Struct,
+    );
+
+    let impls = typed.impls_in_scope(root.file_id);
+    assert_eq!(impls.len(), 1);
+    assert_eq!(impls[0].initializer_signatures.len(), 1);
+    assert_named_type(
+        &impls[0].initializer_signatures[0].param_types[0],
+        s_id,
+        NamedTypeKind::Struct,
+    );
+    assert_eq!(impls[0].method_signatures.len(), 1);
+    assert_named_type(
+        &impls[0].method_signatures[0].signature.param_types[0],
+        s_id,
+        NamedTypeKind::Struct,
+    );
+    assert_named_type(
+        impls[0].method_signatures[0]
+            .signature
+            .return_type
+            .as_ref()
+            .expect("return type"),
+        s_id,
+        NamedTypeKind::Struct,
+    );
 }

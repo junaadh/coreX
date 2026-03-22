@@ -1,11 +1,13 @@
 use super::hir_input::SemanticHirInput;
-use crate::midend::type_check::signatures::TypedFunctionSignature;
-use super::{BuiltinType, Mutability, NamedTypeKind, Type, TypedItemData, TypedItemTable};
+use super::{
+    BuiltinType, Mutability, NamedTypeKind, Type, TypedItemData, TypedItemTable,
+};
 use crate::frontend::resolver::{
     BodyKind, DeclarationOwner, ItemId, LocalId, LocalKind, LocalMutability,
     ResolvedBody, ResolvedBodyTable, ResolvedTypeRef,
 };
 use crate::frontend::source::FileId;
+use crate::midend::type_check::signatures::TypedFunctionSignature;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +52,10 @@ pub enum BodyEnvIssueKind {
     MissingTypedItemForLocalType {
         local_id: LocalId,
         item_id: ItemId,
+    },
+    UnsupportedLocalType {
+        local_id: LocalId,
+        description: String,
     },
     UnsupportedLocalTypeSurface {
         local_id: LocalId,
@@ -352,8 +358,7 @@ fn build_one_body_env(
                     issues.push(BodyEnvIssue {
                         owner: body.owner.clone(),
                         body_index: body.body_index,
-                        containing_scope_file_id: body
-                            .containing_scope_file_id,
+                        containing_scope_file_id: body.containing_scope_file_id,
                         kind: BodyEnvIssueKind::MissingSelfType {
                             local_id: hir_local_id,
                         },
@@ -598,6 +603,18 @@ fn lower_local_type_ref(
     issues: &mut Vec<BodyEnvIssue>,
 ) -> Type {
     match ty {
+        ResolvedTypeRef::Lifetime(name) => {
+            issues.push(BodyEnvIssue {
+                owner: owner.clone(),
+                body_index,
+                containing_scope_file_id,
+                kind: BodyEnvIssueKind::UnsupportedLocalType {
+                    local_id,
+                    description: format!("lifetime '{name}'"),
+                },
+            });
+            Type::error()
+        }
         ResolvedTypeRef::Named { segments, resolved } => {
             if let Some(builtin) = builtin_from_segments(segments) {
                 return Type::builtin(builtin);
@@ -651,7 +668,7 @@ fn lower_local_type_ref(
                 }
             }
         }
-        ResolvedTypeRef::Reference(inner) => Type::pointer(
+        ResolvedTypeRef::Reference { lifetime: _, inner } => Type::pointer(
             lower_local_type_ref(
                 owner,
                 body_index,
@@ -663,7 +680,7 @@ fn lower_local_type_ref(
             ),
             super::Mutability::Const,
         ),
-        ResolvedTypeRef::MutableReference(inner)
+        ResolvedTypeRef::MutableReference { lifetime: _, inner }
         | ResolvedTypeRef::MutablePointer(inner) => Type::pointer(
             lower_local_type_ref(
                 owner,
@@ -688,15 +705,35 @@ fn lower_local_type_ref(
             ),
             super::Mutability::Const,
         ),
-        ResolvedTypeRef::Grouped(inner) => lower_local_type_ref(
-            owner,
-            body_index,
-            containing_scope_file_id,
-            local_id,
-            inner,
-            typed_items,
-            issues,
-        ),
+        ResolvedTypeRef::Tuple(elems) => {
+            // For single-element tuples, use the inner type
+            if elems.len() == 1 {
+                lower_local_type_ref(
+                    owner,
+                    body_index,
+                    containing_scope_file_id,
+                    local_id,
+                    &elems[0],
+                    typed_items,
+                    issues,
+                )
+            } else {
+                // Multi-element tuple - record as error for now
+                issues.push(BodyEnvIssue {
+                    owner: owner.clone(),
+                    body_index,
+                    containing_scope_file_id,
+                    kind: BodyEnvIssueKind::UnsupportedLocalType {
+                        local_id,
+                        description: format!(
+                            "tuple with {} elements",
+                            elems.len()
+                        ),
+                    },
+                });
+                Type::error()
+            }
+        }
         ResolvedTypeRef::SelfType => self_type_for_owner(typed_items, owner)
             .unwrap_or_else(|| {
                 issues.push(BodyEnvIssue {

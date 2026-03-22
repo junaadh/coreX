@@ -524,6 +524,30 @@ mod tests {
     }
 
     #[test]
+    fn hover_reports_inferred_expression_type() {
+        let file_path =
+            unique_temp_dir("hover_inferred_expr").join("hover_expr.cx");
+        let uri = path_to_uri(&file_path);
+        let source = "fn main() {\n  let value = 1;\n}\n";
+        let messages = run_with_messages(&[
+            initialize_message(1),
+            initialized_message(),
+            did_open_message(&uri, source),
+            hover_message(4, &uri, 1, 15),
+            shutdown_message(2),
+            exit_message(),
+        ]);
+        let response = find_response(&messages, 4).expect("hover response");
+        let value = response["result"]["contents"]["value"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            value.contains("expr: i32"),
+            "expected inferred expression hover type, got: {value}"
+        );
+    }
+
+    #[test]
     fn definition_resolves_item_reference() {
         let file_path = unique_temp_dir("definition").join("definition.cx");
         let uri = path_to_uri(&file_path);
@@ -793,12 +817,12 @@ mod tests {
     fn inlay_hint_reports_inferred_local_type() {
         let file_path = unique_temp_dir("inlay_hint").join("inlay.cx");
         let uri = path_to_uri(&file_path);
-        let source = "fn main() {\n  let value = 1;\n  value\n}\n";
+        let source = "fn main() {\n  let value = 1;\n}\n";
         let messages = run_with_messages(&[
             initialize_message(1),
             initialized_message(),
             did_open_message(&uri, source),
-            inlay_hint_message(8, &uri, 0, 0, 3, 1),
+            inlay_hint_message(8, &uri, 0, 0, 2, 1),
             shutdown_message(2),
             exit_message(),
         ]);
@@ -1061,6 +1085,42 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_and_lsp_share_inference_diagnostics() {
+        let file_path =
+            unique_temp_dir("shared_pipeline_inference").join("shared.cx");
+        let uri = path_to_uri(&file_path);
+        let source = "fn main() {\n  let value;\n}\n";
+
+        let messages = run_with_messages(&[
+            initialize_message(1),
+            initialized_message(),
+            did_open_message(&uri, source),
+            shutdown_message(2),
+            exit_message(),
+        ]);
+        let lsp_diagnostics =
+            find_publish_diagnostics(&messages, &uri).expect("diagnostics");
+        let mut lsp_messages = lsp_diagnostics["params"]["diagnostics"]
+            .as_array()
+            .expect("diagnostics array")
+            .iter()
+            .filter_map(|entry| entry.get("message").and_then(Value::as_str))
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        lsp_messages.sort();
+        lsp_messages.dedup();
+
+        let cli_messages = canonical_diagnostic_messages(&file_path, source);
+        assert_eq!(lsp_messages, cli_messages);
+        assert!(
+            cli_messages
+                .iter()
+                .any(|message| message.contains("type annotation required")),
+            "expected inference diagnostics to include explicit annotation requirement"
+        );
+    }
+
+    #[test]
     fn test_g2d_method() {
         let file_path = unique_temp_dir("g2d_method").join("test.cx");
         let uri = path_to_uri(&file_path);
@@ -1068,7 +1128,8 @@ mod tests {
         let method_decl_line = source
             .lines()
             .position(|line| line.contains("fn get_x("))
-            .expect("method declaration line") as u32;
+            .expect("method declaration line")
+            as u32;
         let call_line = source
             .lines()
             .position(|line| line.contains("p.get_x()"))
@@ -1110,8 +1171,7 @@ mod tests {
 
     #[test]
     fn test_constructor_call() {
-        let file_path =
-            unique_temp_dir("constructor_call").join("main.cx");
+        let file_path = unique_temp_dir("constructor_call").join("main.cx");
         let uri = path_to_uri(&file_path);
         let source = "struct Point {\n  x: I32,\n  y: I32,\n  init(_ x: I32, _ y: I32) -> Self {\n    Self { x, y }\n  }\n}\n\nfn main() {\n  Point(1, 2)\n}\n";
 

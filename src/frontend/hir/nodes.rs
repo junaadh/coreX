@@ -452,8 +452,10 @@ impl HirType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HirTypeKind {
     Path(HirPath),
+    Lifetime(String),
     Reference {
         mutable: bool,
+        lifetime: Option<String>,
         inner: HirTypeId,
     },
     Pointer {
@@ -472,6 +474,7 @@ pub enum HirTypeKind {
         args: Vec<HirTypeId>,
     },
     SelfType,
+    Tuple(Vec<HirTypeId>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

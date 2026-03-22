@@ -1,6 +1,13 @@
 //! Source type AST nodes.
 
-use super::span::Spanned;
+use super::span::{Span, Spanned};
+
+/// A lifetime annotation like `'a` or `'static`.
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Lifetime {
+    pub name: String,
+    pub span: Span,
+}
 
 /// Source type syntax.
 ///
@@ -13,13 +20,20 @@ pub enum Type {
     Named {
         segments: Vec<String>,
     },
+    Lifetime(Lifetime),
     GenericApplication {
         base: Box<Spanned<Type>>,
         args: Vec<Spanned<Type>>,
     },
     SelfType,
-    Reference(Box<Spanned<Type>>),
-    MutableReference(Box<Spanned<Type>>),
+    Reference {
+        lifetime: Option<Lifetime>,
+        inner: Box<Spanned<Type>>,
+    },
+    MutableReference {
+        lifetime: Option<Lifetime>,
+        inner: Box<Spanned<Type>>,
+    },
     /// Pointer from source `*T` (immutable/read-only pointee form).
     ///
     /// Variant name is legacy and corresponds to source `*T`, not `*const T`.
@@ -31,5 +45,5 @@ pub enum Type {
         ok: Box<Spanned<Type>>,
         err: Box<Spanned<Type>>,
     },
-    Grouped(Box<Spanned<Type>>),
+    Tuple(Vec<Spanned<Type>>),
 }

@@ -1,15 +1,17 @@
 use super::analysis::{
     analyze_semantics_with_external_lookup, resolve_hir_semantic_input,
 };
-use crate::midend::type_check::signatures::TypedFunctionSignature;
 use super::types::Type;
 use crate::frontend::DesugaredFile;
-use crate::frontend::ast::{ExternMember, Item, Span};
+use crate::frontend::ast::{ExternMember, Item, ParamLabel, Span};
 use crate::frontend::resolver::{
     NamedImportRoot, ScopeGraph,
     resolve_project_imports_with_named_roots_and_diagnostics,
 };
 use crate::frontend::source::{FileId, SourceDb};
+use crate::midend::type_check::signatures::{
+    TypedFunctionSignature, TypedParamLabel,
+};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -375,6 +377,17 @@ fn extern_function_signature(
     decl: &crate::frontend::ast::ExternFunctionDecl,
 ) -> TypedFunctionSignature {
     TypedFunctionSignature {
+        param_labels: decl
+            .params
+            .iter()
+            .map(|param| match &param.node.label {
+                ParamLabel::None => TypedParamLabel::None,
+                ParamLabel::Explicit(label) => {
+                    TypedParamLabel::Explicit(label.clone())
+                }
+                ParamLabel::FromName => TypedParamLabel::FromName,
+            })
+            .collect(),
         param_types: vec![Type::error(); decl.params.len()],
         return_type: decl.return_type.as_ref().map(|_| Type::error()),
     }

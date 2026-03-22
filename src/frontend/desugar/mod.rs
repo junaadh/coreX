@@ -253,19 +253,16 @@ mod tests {
     }
 
     #[test]
-    fn test_desugar_ty_removes_grouped_wrappers() {
+    fn test_desugar_ty_coerces_single_element_tuples() {
         use crate::frontend::ast::{Spanned, Type};
 
         let ty = Spanned::new(
-            Type::Grouped(Box::new(Spanned::new(
-                Type::Grouped(Box::new(Spanned::new(
-                    Type::Named {
-                        segments: vec!["String".to_string()],
-                    },
-                    Span::new(2, 8),
-                ))),
-                Span::new(1, 9),
-            ))),
+            Type::Tuple(vec![Spanned::new(
+                Type::Named {
+                    segments: vec!["String".to_string()],
+                },
+                Span::new(2, 8),
+            )]),
             Span::new(0, 10),
         );
 
@@ -295,12 +292,12 @@ mod tests {
                         Span::new(4, 5),
                     ),
                     ty: Some(Spanned::new(
-                        Type::Grouped(Box::new(Spanned::new(
+                        Type::Tuple(vec![Spanned::new(
                             Type::Named {
                                 segments: vec!["I32".to_string()],
                             },
                             Span::new(7, 10),
-                        ))),
+                        )]),
                         Span::new(6, 11),
                     )),
                     value: Some(Box::new(Spanned::new(

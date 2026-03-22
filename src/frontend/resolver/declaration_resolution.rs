@@ -2,12 +2,12 @@ use super::import_resolver::{ImportBindingKind, ResolvedImports};
 use super::item_ids::ItemId;
 use super::item_table::GlobalItemTable;
 use super::model::ScopeGraph;
-use crate::frontend::DesugaredFile;
 use crate::frontend::ast::{
     EnumCaseParam, EnumMember, FunctionDecl, ImplDecl, ImplMember, Item,
-    ParamDecl, ProtocolMember, StructMember, Type,
+    ParamDecl, ProtocolMember, Spanned, StructMember, Type,
 };
 use crate::frontend::source::FileId;
+use crate::frontend::DesugaredFile;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,13 +22,20 @@ pub enum ResolvedTypeRef {
         segments: Vec<String>,
         resolved: Option<ResolvedItemRef>,
     },
+    Lifetime(String),
     GenericApplication {
         base: Box<ResolvedTypeRef>,
         args: Vec<ResolvedTypeRef>,
     },
     SelfType,
-    Reference(Box<ResolvedTypeRef>),
-    MutableReference(Box<ResolvedTypeRef>),
+    Reference {
+        lifetime: Option<String>,
+        inner: Box<ResolvedTypeRef>,
+    },
+    MutableReference {
+        lifetime: Option<String>,
+        inner: Box<ResolvedTypeRef>,
+    },
     ConstPointer(Box<ResolvedTypeRef>),
     MutablePointer(Box<ResolvedTypeRef>),
     Array(Box<ResolvedTypeRef>),
@@ -37,7 +44,7 @@ pub enum ResolvedTypeRef {
         ok: Box<ResolvedTypeRef>,
         err: Box<ResolvedTypeRef>,
     },
-    Grouped(Box<ResolvedTypeRef>),
+    Tuple(Vec<ResolvedTypeRef>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +137,14 @@ pub struct UnresolvedDeclarationPath {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnresolvedLifetime {
+    pub owner: Option<DeclarationOwner>,
+    pub containing_scope_file_id: Option<FileId>,
+    pub name: String,
+    pub span: crate::frontend::ast::Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedImplDeclaration {
     pub owner: DeclarationOwner,
     pub containing_scope_file_id: FileId,
@@ -144,6 +159,7 @@ pub struct ResolvedDeclarationTable {
     pub by_item_id: BTreeMap<ItemId, ResolvedDeclaration>,
     pub impls_by_scope_file_id: BTreeMap<FileId, Vec<ResolvedImplDeclaration>>,
     pub unresolved_paths: Vec<UnresolvedDeclarationPath>,
+    pub unresolved_lifetimes: Vec<UnresolvedLifetime>,
 }
 
 impl ResolvedDeclarationTable {
@@ -185,6 +201,8 @@ pub fn resolve_declaration_types(
         imports,
         item_table,
         unresolved_paths: Vec::new(),
+        unresolved_lifetimes: Vec::new(),
+        in_scope_lifetimes: Vec::new(),
     }
     .resolve()
 }
@@ -195,9 +213,31 @@ struct DeclarationResolver<'a> {
     imports: &'a BTreeMap<FileId, ResolvedImports>,
     item_table: &'a GlobalItemTable,
     unresolved_paths: Vec<UnresolvedDeclarationPath>,
+    unresolved_lifetimes: Vec<UnresolvedLifetime>,
+    in_scope_lifetimes: Vec<String>,
 }
 
 impl<'a> DeclarationResolver<'a> {
+    fn is_lifetime_in_scope(&self, name: &str) -> bool {
+        self.in_scope_lifetimes.iter().any(|l| l == name)
+    }
+
+    fn push_lifetime(&mut self, name: String) {
+        self.in_scope_lifetimes.push(name);
+    }
+
+    fn push_lifetimes(&mut self, lifetimes: &[String]) {
+        for l in lifetimes {
+            self.push_lifetime(l.clone());
+        }
+    }
+
+    fn pop_lifetimes(&mut self, count: usize) {
+        for _ in 0..count {
+            self.in_scope_lifetimes.pop();
+        }
+    }
+
     fn resolve(mut self) -> ResolvedDeclarationTable {
         let mut by_item_id = BTreeMap::new();
         let mut impls_by_scope_file_id: BTreeMap<
@@ -247,11 +287,15 @@ impl<'a> DeclarationResolver<'a> {
                             continue;
                         }
                         let owner = DeclarationOwner::Item(item_id);
+                        let lifetime_count = self.push_generic_lifetimes(
+                            &struct_decl.node.generic_params,
+                        );
                         let declaration = self.resolve_struct_declaration(
                             &owner,
                             *scope_file_id,
                             &struct_decl.node.members,
                         );
+                        self.pop_lifetimes(lifetime_count);
                         by_item_id.insert(
                             item_id,
                             ResolvedDeclaration::Struct(declaration),
@@ -269,11 +313,15 @@ impl<'a> DeclarationResolver<'a> {
                             continue;
                         }
                         let owner = DeclarationOwner::Item(item_id);
+                        let lifetime_count = self.push_generic_lifetimes(
+                            &enum_decl.node.generic_params,
+                        );
                         let declaration = self.resolve_enum_declaration(
                             &owner,
                             *scope_file_id,
                             &enum_decl.node.members,
                         );
+                        self.pop_lifetimes(lifetime_count);
                         by_item_id.insert(
                             item_id,
                             ResolvedDeclaration::Enum(declaration),
@@ -291,11 +339,15 @@ impl<'a> DeclarationResolver<'a> {
                             continue;
                         }
                         let owner = DeclarationOwner::Item(item_id);
+                        let lifetime_count = self.push_generic_lifetimes(
+                            &protocol_decl.node.generic_params,
+                        );
                         let declaration = self.resolve_protocol_declaration(
                             &owner,
                             *scope_file_id,
                             &protocol_decl.node,
                         );
+                        self.pop_lifetimes(lifetime_count);
                         by_item_id.insert(
                             item_id,
                             ResolvedDeclaration::Protocol(declaration),
@@ -307,11 +359,15 @@ impl<'a> DeclarationResolver<'a> {
                             impl_index,
                         };
                         impl_index = impl_index.saturating_add(1);
+                        let lifetime_count = self.push_generic_lifetimes(
+                            &impl_decl.node.lifetime_params,
+                        );
                         let resolved_impl = self.resolve_impl_declaration(
                             &owner,
                             *scope_file_id,
                             &impl_decl.node,
                         );
+                        self.pop_lifetimes(lifetime_count);
                         impls_by_scope_file_id
                             .entry(*scope_file_id)
                             .or_default()
@@ -326,6 +382,7 @@ impl<'a> DeclarationResolver<'a> {
             by_item_id,
             impls_by_scope_file_id,
             unresolved_paths: self.unresolved_paths,
+            unresolved_lifetimes: self.unresolved_lifetimes,
         }
     }
 
@@ -612,6 +669,10 @@ impl<'a> DeclarationResolver<'a> {
                         &init_decl.node.params,
                     ));
                 }
+                ImplMember::AssociatedType(_assoc) => {
+                    // Associated type definitions in impl Protocol for Type
+                    // These are resolved during protocol conformance checking
+                }
             }
         }
 
@@ -631,12 +692,41 @@ impl<'a> DeclarationResolver<'a> {
         scope_file_id: FileId,
         function_decl: &FunctionDecl,
     ) -> ResolvedFunctionSignature {
-        self.resolve_function_signature_from_parts(
+        let lifetime_count =
+            self.push_generic_lifetimes(&function_decl.generic_params);
+        let result = self.resolve_function_signature_from_parts(
             owner,
             scope_file_id,
             &function_decl.params,
             function_decl.return_type.as_ref(),
-        )
+        );
+        self.pop_lifetimes(lifetime_count);
+        result
+    }
+
+    fn push_generic_lifetimes(
+        &mut self,
+        generic_params: &[Spanned<crate::frontend::ast::GenericParam>],
+    ) -> usize {
+        let mut count = 0;
+        let mut seen = std::collections::HashSet::new();
+        for param in generic_params {
+            if let crate::frontend::ast::GenericParam::Lifetime { name } =
+                &param.node
+            {
+                if !seen.insert(name.clone()) {
+                    self.unresolved_lifetimes.push(UnresolvedLifetime {
+                        owner: None,
+                        containing_scope_file_id: None,
+                        name: name.clone(),
+                        span: param.span,
+                    });
+                }
+                self.push_lifetime(name.clone());
+                count += 1;
+            }
+        }
+        count
     }
 
     fn resolve_function_signature_from_parts(
@@ -721,13 +811,56 @@ impl<'a> DeclarationResolver<'a> {
                 }
             }
             Type::SelfType => ResolvedTypeRef::SelfType,
-            Type::Reference(inner) => ResolvedTypeRef::Reference(Box::new(
-                self.resolve_type_ref(owner, scope_file_id, &inner.node),
-            )),
-            Type::MutableReference(inner) => {
-                ResolvedTypeRef::MutableReference(Box::new(
-                    self.resolve_type_ref(owner, scope_file_id, &inner.node),
-                ))
+            Type::Lifetime(lifetime) => {
+                if !self.is_lifetime_in_scope(&lifetime.name) {
+                    self.unresolved_lifetimes.push(UnresolvedLifetime {
+                        owner: Some(owner.clone()),
+                        containing_scope_file_id: Some(scope_file_id),
+                        name: lifetime.name.clone(),
+                        span: lifetime.span,
+                    });
+                }
+                ResolvedTypeRef::Lifetime(lifetime.name.clone())
+            }
+            Type::Reference { lifetime, inner } => {
+                if let Some(l) = lifetime {
+                    if !self.is_lifetime_in_scope(&l.name) {
+                        self.unresolved_lifetimes.push(UnresolvedLifetime {
+                            owner: Some(owner.clone()),
+                            containing_scope_file_id: Some(scope_file_id),
+                            name: l.name.clone(),
+                            span: l.span,
+                        });
+                    }
+                }
+                ResolvedTypeRef::Reference {
+                    lifetime: lifetime.as_ref().map(|l| l.name.clone()),
+                    inner: Box::new(self.resolve_type_ref(
+                        owner,
+                        scope_file_id,
+                        &inner.node,
+                    )),
+                }
+            }
+            Type::MutableReference { lifetime, inner } => {
+                if let Some(l) = lifetime {
+                    if !self.is_lifetime_in_scope(&l.name) {
+                        self.unresolved_lifetimes.push(UnresolvedLifetime {
+                            owner: Some(owner.clone()),
+                            containing_scope_file_id: Some(scope_file_id),
+                            name: l.name.clone(),
+                            span: l.span,
+                        });
+                    }
+                }
+                ResolvedTypeRef::MutableReference {
+                    lifetime: lifetime.as_ref().map(|l| l.name.clone()),
+                    inner: Box::new(self.resolve_type_ref(
+                        owner,
+                        scope_file_id,
+                        &inner.node,
+                    )),
+                }
             }
             Type::ConstPointer(inner) => {
                 ResolvedTypeRef::ConstPointer(Box::new(self.resolve_type_ref(
@@ -759,9 +892,14 @@ impl<'a> DeclarationResolver<'a> {
                     &err.node,
                 )),
             },
-            Type::Grouped(inner) => ResolvedTypeRef::Grouped(Box::new(
-                self.resolve_type_ref(owner, scope_file_id, &inner.node),
-            )),
+            Type::Tuple(elems) => ResolvedTypeRef::Tuple(
+                elems
+                    .iter()
+                    .map(|e| {
+                        self.resolve_type_ref(owner, scope_file_id, &e.node)
+                    })
+                    .collect(),
+            ),
         }
     }
 
